@@ -9,7 +9,7 @@ packages = [{include = "poetry add _lock _d _path=\"requirements"}]
 [tool.poetry.dependencies]
 python = "^3.8"
 beautifulsoup4 = "^4.9.3"
-bs4 = "^0.0.1"
+bs4 = "^0.0.2"
 greenlet = "^1.1.0"
 importlib-metadata = "^4.5.0"
 lxml = "^4.6.3"
