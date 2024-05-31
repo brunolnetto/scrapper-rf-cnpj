@@ -1,14 +1,13 @@
-from timy import timer
-from os import path
+from os import path, environ
 import pandas as pd
 from sqlalchemy import text
 
 from utils.dataframe import to_sql
 from utils.misc import delete_var, update_progress, get_line_count
-from core.constants import (
-    TABLES_INFO_DICT, CHUNK_SIZE
-)
-from models.pydantic import Database, TableInfo
+from core.constants import TABLES_INFO_DICT, CHUNK_SIZE
+
+from core.schemas import TableInfo
+from database.schemas import Database
 from setup.logging import logger
 
 ##########################################################################
@@ -67,7 +66,7 @@ def populate_table_with_filename(
 
         update_progress(index * CHUNK_SIZE, row_count_estimation, filename)
         
-        # Gravar dados no banco:
+        # Gravar dados no banco
         to_sql(
             df_chunk, 
             filename=extracted_file_path,
@@ -85,7 +84,6 @@ def populate_table_with_filename(
 
     delete_var(df)
 
-# @timer('Popular tabela')
 def populate_table_with_filenames(
     database: Database, 
     table_info: TableInfo, 
@@ -127,6 +125,23 @@ def populate_table_with_filenames(
     logger.info(f'Arquivos de {table_info.label} finalizados!')
 
 
+def table_name_to_table_info(table_name: str) -> TableInfo:
+    table_info_dict = TABLES_INFO_DICT[table_name]
+    
+    # Get table info
+    label = table_info_dict['label']
+    zip_group = table_info_dict['group']
+    columns = table_info_dict['columns']
+    encoding = table_info_dict['encoding']
+    transform_map = table_info_dict.get('transform_map', lambda x: x)
+    expression = table_info_dict['expression']
+
+    # Create table info object
+    return TableInfo(
+        label, zip_group, table_name, columns, encoding, transform_map, expression
+    )
+
+
 def populate_table(
     database: Database, 
     table_name: str, 
@@ -145,19 +160,10 @@ def populate_table(
     Returns:
         None
     """
-    table_info = TABLES_INFO_DICT[table_name]
-    
-    # Get table info
-    label = table_info['label']
-    columns = table_info['columns']
-    encoding = table_info['encoding']
-    transform_map = table_info.get('transform_map', lambda x: x)
-
-    # Create table info object
-    table_info = TableInfo(label, table_name, columns, encoding, transform_map)
+    table_info = table_name_to_table_info(table_name)
     populate_table_with_filenames(database, table_info, from_folder, table_files)
 
-@timer('Criar indices do banco')
+
 def generate_tables_indices(engine, tables):
     """
     Generates indices for the database tables.
@@ -194,3 +200,4 @@ def generate_tables_indices(engine, tables):
     
     except Exception as e:
         logger.error(f"Erro ao criar índices: {e}") 
+

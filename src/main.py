@@ -2,68 +2,33 @@
   - Nome do projeto : ETL - CNPJs da Receita Federal do Brasil
   - Objetivo        : Baixar, transformar e carregar dados da Receita Federal do Brasil
 """
-from os import getenv
-from shutil import rmtree
 
-from setup.logging import logger
-
-from utils.models import  create_audits, create_audit_metadata
-
-from core.base import get_sink_folder, setup_database
-from core.etl import get_RF_data, load_database
-from core.scrapper import scrap_RF
-
-from utils.models import insert_audit
-
-# ############################################################################################ 
-# INFORMAÇÕES SOBRE O PROCESSO
-# #############################################################################################
-# Tempo de execução do processo (em segundos): 12.657 (3hrs e 31 min)
-# #############################################################################################
-# Tempo de execução por arquivo:
-# 
-#   - Empresa                   : 4676 s
-#   - Socios                    : 1479 s
-#   - Estabelecimento           : 3331 s
-#   - Simples nacional          : 3169 s
-#   - CNAE                      : 0.22 s
-#   - Motivos de situação atual : 0.03 s
-#   - Municípios                : 0.45 s
-#   - Natureza jurídica         : 0.45 s
-#   - País                      : 0.45 s
-#   - Qualificação de sócios    : 0.03 s
-# 
-# #############################################################################################
+from setup.base import get_sink_folder, init_database
+from core.etl import CNPJ_ETL
+from core.utils.schemas import create_file_groups
+from database.utils.models import create_audits
 
 # Folders and database setup
-output_path, extracted_path = get_sink_folder()
-database = setup_database()
+download_folder, extract_folder = get_sink_folder()
+database = init_database()
 
-# Get files info
-files_info = scrap_RF()
+# Source and target
+data_url = 'http://200.152.38.155/CNPJ'
+filename = 'LAYOUT_DADOS_ABERTOS_CNPJ.pdf'
 
-# NOTE: Test purposes only
-if getenv('ENVIRONMENT', 'development') == 'development':
-  files_info = [ files_info[0], files_info[21] ]
+# Você também pode acessar por: https://dados.rfb.gov.br/CNPJ/
+layout_url = f'{data_url}/{filename}'
 
-# Create audits
-audits = create_audits(database, files_info)
+scrapper = CNPJ_ETL(
+    database,
+    data_url,
+    layout_url,
+    download_folder,
+    extract_folder,
+    is_parallel=False,
+    delete_zips=False
+)
 
-if audits:
-  # Retrieve data
-  audits = get_RF_data(audits, output_path, extracted_path)
-  
-  # Create audit metadata
-  audit_metadata = create_audit_metadata(database, audits, output_path)
+# Scrap data
+scrapper.run()
 
-  # Deletar arquivos baixados
-  rmtree(output_path)
-
-  # Load database
-  audit_metadata = load_database(database, extracted_path, audit_metadata)
-
-  # Insert audit metadata
-  for audit in audit_metadata.audit_list:
-      insert_audit(database, audit)
-
-logger.info("""Fim do processo! Você pode utilizar o banco de dados!""")

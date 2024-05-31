@@ -1,14 +1,14 @@
 from os import getenv, path, getcwd
 from dotenv import load_dotenv  
 from typing import Union
-from sqlalchemy import create_engine
 from psycopg2 import OperationalError
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.ext.declarative import declarative_base
 
 from setup.logging import logger
-from models.pydantic import Database
 from utils.misc import makedir 
+from database.models import Base
+from database.schemas import Database
+from database.engine import create_database
+from utils.docker import get_postgres_host
 
 def get_sink_folder():
     """
@@ -21,11 +21,11 @@ def get_sink_folder():
     load_dotenv(env_path)
     
     root_path = path.join(getcwd(), 'data') 
-    default_output_file_path = path.join(root_path, 'OUTPUT_FILES')
+    default_output_file_path = path.join(root_path, 'DOWNLOAD_FILES')
     default_input_file_path = path.join(root_path, 'EXTRACTED_FILES')
     
     # Read details from ".env" file:
-    output_route = getenv('OUTPUT_PATH', default_output_file_path)
+    output_route = getenv('DOWNLOAD_PATH', default_output_file_path)
     extract_route = getenv('EXTRACT_PATH', default_input_file_path)
     
     # Create the output and extracted folders if they do not exist
@@ -37,7 +37,7 @@ def get_sink_folder():
     
     return output_folder, extract_folder
 
-def setup_database() -> Union[Database, None]:
+def init_database() -> Union[Database, None]:
     """
     Connects to a PostgreSQL database using environment variables for connection details.
 
@@ -49,29 +49,35 @@ def setup_database() -> Union[Database, None]:
     env_path = path.join(getcwd(), '.env')
     load_dotenv(env_path)
     
+    # Get the host based on the environment
+    if getenv('ENVIRONMENT') == 'docker':
+        host = get_postgres_host()
+    else: 
+        host = getenv('POSTGRES_HOST', 'localhost')
+
     try:
         # Get environment variables
+        port = int(getenv('POSTGRES_PORT', '5432'))
         user = getenv('POSTGRES_USER', 'postgres')
         passw = getenv('POSTGRES_PASSWORD', 'postgres')
-        host = getenv('POSTGRES_HOST', 'localhost')
-        port = getenv('POSTGRES_PORT', '5432')
         database_name = getenv('POSTGRES_NAME')
+        
+        # setup_database(host, port, sudo_user, sudo_pwd, user, passw, database_name )
         
         # Connect to the database
         db_uri = f'postgresql://{user}:{passw}@{host}:{port}/{database_name}'
-        
-        engine = create_engine(db_uri)
-        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        
+
+        # Create the database engine and session maker
+        timeout=5*60*60 # 5 hours
+        database_obj = create_database(db_uri, session_timeout=timeout)
+
         # Create all tables defined using the Base class (if not already created)
-        Base = declarative_base()
-        Base.metadata.create_all(engine)
+        Base.metadata.create_all(database_obj.engine)
         
         logger.info('Connection to the database established!')
-        return Database(engine=engine, session_maker=SessionLocal)
+        return database_obj
     
     except OperationalError as e:
-        summary = "Error connecting to database"
-        logger.error(f"{summary}: {e}")
+        logger.error(f"Error connecting to database: {e}")
         return None
 

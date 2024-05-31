@@ -1,14 +1,39 @@
 version: "3.8"
 
-networks:
-  CNPJ_net:
-
 services:
+  crawler-db:
+    container_name: crawler-db
+    image: postgres:14
+    restart: always
+    env_file: .env
+    networks:
+      - CNPJ_net
+    expose:
+      - "$POSTGRES_PORT"
+    ports:
+      - "$POSTGRES_PORT:$POSTGRES_PORT"
+    command: postgres -c listen_addresses='*' -p $POSTGRES_PORT
+    volumes:
+      - ./data:/var/lib/postgresql/data_ 
+
   crawler:
+    container_name: crawler
+    depends_on:
+      - crawler-db
     build: 
       context: .
       dockerfile: Dockerfile
-    command: ["python3", "src/main.py"]
     networks:
       - CNPJ_net
     restart: unless-stopped
+    volumes:
+      - ./alembic/versions:/app/alembic/versions:ro
+      - .:/app  # Mount your project directory
+    command: bash -c "cd app && alembic upgrade head"  # Upgrade database schema on startup
+
+networks:
+  CNPJ_net:
+
+volumes:
+  postgres_data:
+  
