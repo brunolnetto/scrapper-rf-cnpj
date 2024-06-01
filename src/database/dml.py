@@ -1,6 +1,7 @@
 from os import path, environ
 import pandas as pd
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 from utils.dataframe import to_sql
 from utils.misc import delete_var, update_progress, get_line_count
@@ -110,7 +111,10 @@ def populate_table_with_filenames(
         query=text(f"DROP TABLE IF EXISTS {table_info.table_name};")
         
         # Execute the compiled SQL string
-        conn.execute(query)
+        try:
+            conn.execute(query)
+        except OperationalError as e:
+            logger.error(f"Erro ao deletar tabela {table_info.table_name}: {e}")
     
     # Inserir dados
     for filename in filenames:
