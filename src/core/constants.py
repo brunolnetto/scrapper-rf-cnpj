@@ -1,3 +1,5 @@
+# Description: Core constants for the project
+
 from utils.misc import repeat_token
 
 # Chunk size for download and extraction 
