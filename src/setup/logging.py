@@ -17,25 +17,22 @@ load_dotenv()
 ENVIRONMENT = getenv('ENVIRONMENT', 'development')
 
 fields = [
-    "threadName",
     "name",
-    "thread",
-    "created",
     "process",
     "processName",
+    "threadName",
+    "thread",
+    "created",
+    "asctime",
     "relativeCreated",
-    "module",
-    "funcName",
-    "levelno",
     "msecs",
     "pathname",
-    "lineno",
-    "asctime",
-    "message",
+    "module",
     "filename",
+    "funcName",
+    "levelno",
     "levelname",
-    "special",
-    "run"
+    "message",
 ]
 
 logging_format=" ".join(map(lambda field_name: f"%({field_name})s", fields))
