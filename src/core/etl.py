@@ -35,8 +35,8 @@ class CNPJ_ETL:
         self.extract_folder = extract_folder
         self.is_parallel = is_parallel
         
-    def scrap(self):
-        """
+    def _scrap(self):
+        """  
         Scrapes the RF (Receita Federal) website to extract file information.
 
         Returns:
@@ -72,7 +72,8 @@ class CNPJ_ETL:
             if has_data:
                 filename = filename_cell.text.strip()
 
-                if filename.lower().endswith('.zip'):
+                if filename.endswith('.zip'):
+                    # Extract date and format it
                     date_text = date_cell.text.strip()
 
                     # Try converting date text to datetime object (adjust format if needed)
@@ -120,6 +121,25 @@ class CNPJ_ETL:
         remove_folder(self.download_folder)
 
 
+    def scrap_data(self):
+        """
+        Finds the files on the RF (Receita Federal) website and scrapes the data.
+        
+        Returns:
+            audits: A list of AuditDB objects.
+        """
+        
+        # Scrap data
+        files_info = self._scrap()
+
+        # Create file groups
+        file_groups_info = create_file_groups(files_info)
+
+        # Create audits
+        audits = create_audits(self.database, file_groups_info)
+        
+        return audits
+
     def retrieve_data(self):
         """
         Retrieves the data from the database.
@@ -128,13 +148,7 @@ class CNPJ_ETL:
             None
         """
         # Scrap data
-        files_info = self.scrap()
-
-        # Create file groups
-        file_groups_info = create_file_groups(files_info)
-
-        # Create audits
-        audits = create_audits(self.database, file_groups_info)
+        audits = self.scrap_data()
 
         # # Test purpose only
         # from os import getenv
@@ -146,11 +160,8 @@ class CNPJ_ETL:
         #         )
         #     )
         
-        if audits:
-            # Get data
-            return self.get_data(audits)
-        else:
-            None
+        # Get data
+        return self.get_data(audits) if audits else None
 
     def load_data(self, audit_metadata: AuditMetadata):
         """
