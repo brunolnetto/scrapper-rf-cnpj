@@ -1,4 +1,4 @@
-from os import path
+from os import path, getcwd
 import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
@@ -11,13 +11,15 @@ from core.schemas import TableInfo
 from database.schemas import Database
 from setup.logging import logger
 
+MAX_RETRIES=3
+
 ##########################################################################
 ## LOAD AND TRANSFORM
 ##########################################################################
 def populate_table_with_filename(
     database: Database, 
     table_info: TableInfo,
-    to_folder: str,
+    source_folder: str,
     filename: str
 ): 
     """
@@ -40,7 +42,7 @@ def populate_table_with_filename(
     
     df = pd.DataFrame(data)
     dtypes = { column: str for column in table_info.columns }
-    extracted_file_path = path.join(to_folder, filename)
+    extracted_file_path = path.join(getcwd(), source_folder, filename)
     
     csv_read_props = {
         "filepath_or_buffer": extracted_file_path,
@@ -51,32 +53,42 @@ def populate_table_with_filename(
         "dtype": dtypes,
         "encoding": table_info.encoding,
         "low_memory": False,
-        "memory_map": True
+        "memory_map": True,
+        "on_bad_lines": 'skip'
     }
     
     row_count_estimation = get_line_count(extracted_file_path)
     
     for index, df_chunk in enumerate(pd.read_csv(**csv_read_props)):
-        # Tratamento do arquivo antes de inserir na base:
-        df_chunk = df_chunk.reset_index()
-        del df_chunk['index']
+        for retry_count in range(MAX_RETRIES):
+            try:
+                # Tratamento do arquivo antes de inserir na base:
+                df_chunk = df_chunk.reset_index()
+                del df_chunk['index']
+                
+                # Renomear colunas
+                df_chunk.columns = table_info.columns
+                df_chunk = table_info.transform_map(df_chunk)
 
-        # Renomear colunas
-        df_chunk.columns = table_info.columns
-        df_chunk = table_info.transform_map(df_chunk)
+                update_progress(index * CHUNK_SIZE, row_count_estimation, filename)
+                
+                # Gravar dados no banco
+                to_sql(
+                    df_chunk, 
+                    filename=extracted_file_path,
+                    tablename=table_info.table_name, 
+                    conn=database.engine, 
+                    if_exists='append', 
+                    index=False,
+                    verbose=False
+                )
+                break
 
-        update_progress(index * CHUNK_SIZE, row_count_estimation, filename)
-        
-        # Gravar dados no banco
-        to_sql(
-            df_chunk, 
-            filename=extracted_file_path,
-            tablename=table_info.table_name, 
-            conn=database.engine, 
-            if_exists='append', 
-            index=False,
-            verbose=False
-        )
+            except:
+                logger.error(f'Falha em inserir chunk {index} de arquivo {extracted_file_path}. Tentativa {retry_count+1}/{MAX_RETRIES}')
+
+        if(retry_count == MAX_RETRIES-1):
+                raise Exception('Falhou em inserir chunk {index} de arquivo {extracted_file_path}.')
     
     update_progress(row_count_estimation, row_count_estimation, filename)
     print()
@@ -88,7 +100,7 @@ def populate_table_with_filename(
 def populate_table_with_filenames(
     database: Database, 
     table_info: TableInfo, 
-    from_folder: str,
+    source_folder: str,
     filenames: list
 ):
     """
@@ -97,7 +109,7 @@ def populate_table_with_filenames(
     Args:
         database (Database): The database object.
         table_info (TableInfo): The table information object.
-        from_folder (str): The folder path where the files are located.
+        source_folder (str): The folder path where the files are located.
         filenames (list): A list of file names.
 
     Returns:
@@ -120,11 +132,21 @@ def populate_table_with_filenames(
     for filename in filenames:
         logger.info('Trabalhando no arquivo: ' + filename + ' [...]')
         try:
-            populate_table_with_filename(database, table_info, from_folder, filename)
+            for retry_count in range(MAX_RETRIES):
+                try:
+                    file_path=path.join(getcwd(), source_folder, filename)
+                    populate_table_with_filename(database, table_info, source_folder, filename)
+                    break
+
+                except:
+                    logger.error(f'Falha em inserir arquivo {file_path}. Tentativa {retry_count+1}/{MAX_RETRIES}')            
+            
+            if(retry_count == MAX_RETRIES-1):
+                raise Exception('Falhou em inserir chunk {index} de arquivo {extracted_file_path}.')
 
         except Exception as e:
-            summary=f'Falha em salvar arquivo {filename} em tabela {table_info.table_name}'
-            logger.info(f'{summary}: {e}')
+            summary=f'Falha em salvar arquivo {file_path} em tabela {table_info.table_name}'
+            logger.error(f'{summary}: {e}')
     
     logger.info(f'Arquivos de {table_info.label} finalizados!')
 
@@ -183,7 +205,7 @@ def generate_tables_indices(engine, tables):
 
     # Criar índices
     fields_tables = [(f'{table}_cnpj', table) for table in tables]
-    mask="create index {field} on {table}(cnpj_basico);"
+    mask="create index {field} on {table}(cnpj_basico) using btree(\"cnpj_basico\");"
     
     try:
         with engine.connect() as conn:
