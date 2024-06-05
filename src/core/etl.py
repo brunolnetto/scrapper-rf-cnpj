@@ -36,7 +36,7 @@ class CNPJ_ETL:
         self.is_parallel = is_parallel
         
     def _scrap(self):
-        """  
+        """
         Scrapes the RF (Receita Federal) website to extract file information.
 
         Returns:
@@ -68,6 +68,7 @@ class CNPJ_ETL:
             )
             size_cell = row.find('td', text=lambda text: text and is_size_type(text))
             
+            
             has_data = filename_cell and date_cell and size_cell
             if has_data:
                 filename = filename_cell.text.strip()
@@ -93,7 +94,7 @@ class CNPJ_ETL:
                         file_size=convert_to_bytes(size_value_str)
                     )
                     files_info.append(file_info)
-                
+        
         return files_info
     
     def get_data(self, audits: List[AuditDB]):
@@ -119,6 +120,18 @@ class CNPJ_ETL:
 
         # Delete download folder content
         remove_folder(self.download_folder)
+
+    def scrap_data(self):
+        # Scrap data
+        files_info = self._scrap()
+
+        # Create file groups
+        file_groups_info = create_file_groups(files_info)
+
+        # Create audits
+        audits = create_audits(self.database, file_groups_info)
+
+        return audits
 
 
     def scrap_data(self):
@@ -147,7 +160,6 @@ class CNPJ_ETL:
         Returns:
             None
         """
-        # Scrap data
         audits = self.scrap_data()
 
         # # Test purpose only
@@ -162,6 +174,7 @@ class CNPJ_ETL:
         
         # Get data
         return self.get_data(audits) if audits else None
+            
 
     def load_data(self, audit_metadata: AuditMetadata):
         """
