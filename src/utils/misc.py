@@ -232,27 +232,24 @@ def update_progress(index, total, message):
     stdout.write(f'\r{progress}')
     stdout.flush()
 
+from fileinput import FileInput
+
 def get_line_count(filepath):
-    """
-    Uses the `wc -l` command to get the line count of a file.
+  """
+  Counts the number of lines in a file using fileinput.
 
-    Args:
-        filepath (str): Path to the file.
+  Args:
+      filepath (str): Path to the file.
 
-    Returns:
-        int: Number of lines in the file (or None on error).
-    """
-    try:
-        # Execute the 'wc -l' command and capture the output
-        result = subprocess.run(["wc", "-l", filepath], capture_output=True)
-        result.check_returncode()  # Raise exception for non-zero return code
-        
-        # Extract the line count (first element) and convert to integer
-        line_count = int(result.stdout.decode().strip().split()[0])
-        return line_count
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Error running wc command: {e}")
-    
+  Returns:
+      int: Number of lines in the file (or None on error).
+  """
+  try:
+    with FileInput(filepath) as f:
+      line_count = sum(1 for _ in f)
+    return line_count
+  except Exception as e:
+    print(f"Error counting lines: {e}")
     return None
 
 def convert_to_bytes(size_str):
