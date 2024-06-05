@@ -294,7 +294,7 @@ def get_RF_data(
     )
 
 
-def load_RF_data_on_database(database, from_folder, audit_metadata):
+def load_RF_data_on_database(database, source_folder, audit_metadata):
     """
     Populates the database with data from multiple tables.
 
@@ -316,7 +316,7 @@ def load_RF_data_on_database(database, from_folder, audit_metadata):
         table_filenames = sum(table_files_list, [])
 
         # Populate this table
-        populate_table(database, table_name, from_folder, table_filenames)
+        populate_table(database, table_name, source_folder, table_filenames)
 
         # Update audit metadata
         audit_metadata.audit_list[index].audi_inserted_at = datetime.now()
