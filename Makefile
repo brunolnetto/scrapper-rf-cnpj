@@ -1,7 +1,5 @@
 .PHONY: build run stop ps host
 
-OMIT_PATHS := "backend/tests/*"
-
 define PRINT_HELP_PYSCRIPT
 import re, sys
 
