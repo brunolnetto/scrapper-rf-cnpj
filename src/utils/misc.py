@@ -9,6 +9,7 @@ import subprocess
 import re
 from tqdm import tqdm
 import wget
+from fileinput import FileInput
 
 from setup.logging import logger
 
@@ -232,8 +233,6 @@ def update_progress(index, total, message):
     stdout.write(f'\r{progress}')
     stdout.flush()
 
-from fileinput import FileInput
-
 def get_line_count(filepath):
   """
   Counts the number of lines in a file using fileinput.
@@ -249,7 +248,7 @@ def get_line_count(filepath):
       line_count = sum(1 for _ in f)
     return line_count
   except Exception as e:
-    print(f"Error counting lines: {e}")
+    logger.error(f"Error counting lines: {e}")
     return None
 
 def convert_to_bytes(size_str):

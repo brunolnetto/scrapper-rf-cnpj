@@ -22,8 +22,9 @@ fields = [
     "processName",
     "threadName",
     "thread",
-    "created",
+    "taskName",
     "asctime",
+    "created",
     "relativeCreated",
     "msecs",
     "pathname",
@@ -33,7 +34,6 @@ fields = [
     "levelno",
     "levelname",
     "message",
-    "taskName",
 ]
 
 logging_format=" ".join(map(lambda field_name: f"%({field_name})s", fields))

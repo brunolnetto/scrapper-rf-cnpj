@@ -1,5 +1,5 @@
 from os import getenv, path, getcwd
-from dotenv import load_dotenv  
+from dotenv import load_dotenv
 from typing import Union
 from psycopg2 import OperationalError
 
