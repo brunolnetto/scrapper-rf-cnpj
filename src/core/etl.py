@@ -117,20 +117,11 @@ class CNPJ_ETL:
                 self.is_parallel
             )
 
-            # Create audit metadata
-            audit_metadata = create_audit_metadata(audits, self.download_folder)
-
             # Delete download folder content
             if self.delete_zips:
                 remove_folder(self.download_folder)
-            
-            return audit_metadata
 
     def audit_scrapped_files(self, files_info: List[FileInfo]):
-        """
-        
-        """
-        
         condition_map = lambda info: \
             info.filename.endswith('.zip') or \
             (
@@ -147,9 +138,9 @@ class CNPJ_ETL:
         
         return audits
 
-    def retrieve_data(self):
+    def fetch_data(self):
         """
-        Retrieves the data from the database.
+        Filters the data to be loaded into the database.
 
         Returns:
             None
@@ -158,7 +149,19 @@ class CNPJ_ETL:
         files_info = self.scrap_data()
 
         # Audit scrapped files
-        audits = self.audit_scrapped_files(files_info)        
+        audits = self.audit_scrapped_files(files_info)
+        
+        return audits
+
+    def retrieve_data(self):
+        """
+        Retrieves the data from the database.
+
+        Returns:
+            None
+        """
+        # Scrap data
+        audits = self.fetch_data()
     
         # # Test purpose only
         # from os import getenv
@@ -171,7 +174,13 @@ class CNPJ_ETL:
         #     )
         
         # Get data
-        return self.get_data(audits) if audits else None
+        if audits:
+            # Get data
+            self.get_data(audits)
+            return audits
+
+        else:
+            return []
             
 
     def load_data(self, audit_metadata: AuditMetadata):
@@ -182,14 +191,32 @@ class CNPJ_ETL:
             None
         """
         # Load database
-        audit_metadata = load_RF_data_on_database(
+        load_RF_data_on_database(
             self.database, self.extract_folder, audit_metadata
         )
+        
 
-        # Insert audit metadata
-        for audit in audit_metadata.audit_list:
-            insert_audit(self.database, audit)
+    def load_without_download(self):
+        """
+        Uploads the data to the database without downloading it.
 
+        Returns:
+            None
+        """
+        audits = self.fetch_data()
+
+        if audits:
+            # Create audit metadata
+            audit_metadata = create_audit_metadata(audits, self.download_folder)
+            
+            for audit in audit_metadata.audit_list:
+                audit.audi_downloaded_at=datetime.now()
+                audit.audi_processed_at=datetime.now()
+            
+            # Load data
+            self.load_data(audit_metadata)
+        else: 
+            logger.warn("No data to load!")
 
     def run(self):
         """
@@ -198,10 +225,18 @@ class CNPJ_ETL:
         Returns:
             None
         """
-        audit_metadata = self.retrieve_data()
+        audits = self.retrieve_data()
 
-        if audit_metadata:
+        if audits:
+            # Create audit metadata
+            audit_metadata = create_audit_metadata(audits, self.download_folder)
+
             # Load data
             self.load_data(audit_metadata)
+
+            # Insert audit metadata
+            for audit in audit_metadata.audit_list:
+                insert_audit(self.database, audit)
+            
         else: 
             logger.warn("No data to load!")

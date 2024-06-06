@@ -7,6 +7,7 @@ from setup.base import get_sink_folder, init_database
 from core.etl import CNPJ_ETL
 from core.utils.schemas import create_file_groups
 from database.utils.models import create_audits
+from core.schemas import TableIndexInfo
 
 # Folders and database setup
 download_folder, extract_folder = get_sink_folder()
@@ -29,6 +30,6 @@ scrapper = CNPJ_ETL(
     delete_zips=False
 )
 
-# Scrap data
+# # Scrap data
 scrapper.run()
 

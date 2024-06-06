@@ -2,6 +2,7 @@ from os import path, getcwd
 import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
+from alive_progress import alive_bar
 
 from utils.dataframe import to_sql
 from utils.misc import delete_var, update_progress, get_line_count
@@ -10,6 +11,7 @@ from core.constants import TABLES_INFO_DICT
 from core.schemas import TableInfo
 from database.schemas import Database
 from setup.logging import logger
+import numpy as np
 
 MAX_RETRIES=3
 
@@ -36,13 +38,6 @@ def populate_table_with_filename(
     Returns:
         None
     """
-    len_cols=len(table_info.columns)
-    data = {
-        str(col): []
-        for col in range(0, len_cols)
-    }
-    
-    df = pd.DataFrame(data)
     dtypes = { column: str for column in table_info.columns }
     extracted_file_path = path.join(getcwd(), source_folder, filename)
     
@@ -51,53 +46,66 @@ def populate_table_with_filename(
         "sep": ';', 
         "skiprows": 0,
         "chunksize": READ_CHUNK_SIZE, 
-        "header": None, 
         "dtype": dtypes,
+        "header": None, 
         "encoding": table_info.encoding,
         "low_memory": False,
         "memory_map": True,
         "on_bad_lines": 'skip'
     }
     
-    row_count_estimation = get_line_count(extracted_file_path)
+    row_count = get_line_count(extracted_file_path)
+    chunk_count = np.ceil(row_count/READ_CHUNK_SIZE)
     
     for index, df_chunk in enumerate(pd.read_csv(**csv_read_props)):
         for retry_count in range(MAX_RETRIES):
             try:
-                # Tratamento do arquivo antes de inserir na base:
+                # Transform chunk
                 df_chunk = df_chunk.reset_index()
+                
+                # Remove index column
                 del df_chunk['index']
                 
-                # Renomear colunas
+                # Cast for string
+                for column in df_chunk.columns:
+                    df_chunk[column] = df_chunk[column].astype(str)
+
+                # Rename columns
                 df_chunk.columns = table_info.columns
                 df_chunk = table_info.transform_map(df_chunk)
 
-                update_progress(index * READ_CHUNK_SIZE, row_count_estimation, filename)
-                
-                # Gravar dados no banco
-                to_sql(
-                    df_chunk, 
-                    filename=extracted_file_path,
-                    tablename=table_info.table_name, 
-                    conn=database.engine, 
-                    if_exists='append', 
-                    index=False,
-                    verbose=False
-                )
+                update_progress(index*READ_CHUNK_SIZE, row_count, filename)
+
+                # Query arguments
+                query_args = {
+                    "name": table_info.table_name,
+                    "if_exists": 'append',
+                    "con": database.engine,
+                    "index": index,
+                    "chunksize": 1000,
+                }
+
+                # Break the dataframe into chunks
+                df_chunk.to_sql(**query_args)
                 break
 
-            except:
-                logger.error(f'Failed to insert chunk {index} of file {extracted_file_path}. Attempt {retry_count+1}/{MAX_RETRIES}')
+            except Exception as e:
+                progress=f"({retry_count+1}/{MAX_RETRIES})"
+                summary=f"Failed to insert chunk {index} of file {extracted_file_path}"
+                logger.error(f'{progress} {summary}: {e}.')
 
-        if(retry_count == MAX_RETRIES-1):
-                raise Exception(f'Failed to insert chunk {index} of arquivo {extracted_file_path}.')
+            if(retry_count == MAX_RETRIES-1):
+                raise Exception(f'Failed to insert chunk {index} of file {extracted_file_path}.')
+
+        if(index == chunk_count-1):
+            break
     
-    update_progress(row_count_estimation, row_count_estimation, filename)
+    update_progress(row_count, row_count, filename)
     print()
     
     logger.info('File ' + filename + ' inserted with success on databae!')
 
-    delete_var(df)
+    delete_var(df_chunk)
 
 def populate_table_with_filenames(
     database: Database, 
@@ -140,11 +148,11 @@ def populate_table_with_filenames(
                     populate_table_with_filename(database, table_info, source_folder, filename)
                     break
 
-                except:
-                    logger.error(f'Failed to insert file {file_path}. Attempt {retry_count+1}/{MAX_RETRIES}')            
+                except Exception as e:
+                    logger.error(f'({retry_count+1}/{MAX_RETRIES}) Failed to insert file {file_path}: {e}')            
             
             if(retry_count == MAX_RETRIES-1):
-                raise Exception(f'Failed to insert file file {file_path}.')
+                raise Exception(f'Failed to insert file {file_path}.')
 
         except Exception as e:
             summary=f'Failed to save file {file_path} on table {table_info.table_name}'
@@ -206,7 +214,7 @@ def generate_tables_indices(engine, tables):
     logger.info(f"Generating indices on database tables {tables}")
 
     # Index metadata
-    fields_tables = [([f'{table}_cnpj'], table) for table in tables]
+    fields_tables = [(f'{table}_cnpj', table) for table in tables]
     mask="create index {field} on {table}(cnpj_basico) using btree(\"cnpj_basico\"); commit;"
     queries = [ 
         text(mask.format(field=field_, table=table_))
