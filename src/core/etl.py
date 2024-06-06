@@ -5,6 +5,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 from functools import reduce
 from shutil import rmtree
+import pytz
 
 from setup.logging import logger
 from core.utils.schemas import create_file_groups
@@ -34,8 +35,9 @@ class CNPJ_ETL:
         self.download_folder = download_folder
         self.extract_folder = extract_folder
         self.is_parallel = is_parallel
+        self.delete_zips = delete_zips
         
-    def _scrap(self):
+    def scrap_data(self):
         """
         Scrapes the RF (Receita Federal) website to extract file information.
 
@@ -60,7 +62,7 @@ class CNPJ_ETL:
             collect_date=lambda text: text and re.search(regex_pattern, text)
             date_cell = row.find('td', text=collect_date)
             
-            size_types=['K', 'M', 'G']
+            size_types=['K', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y']
             or_map = lambda a, b: a or b
             is_size_type = lambda text: reduce(
                 or_map, 
@@ -68,32 +70,34 @@ class CNPJ_ETL:
             )
             size_cell = row.find('td', text=lambda text: text and is_size_type(text))
             
-            
             has_data = filename_cell and date_cell and size_cell
             if has_data:
                 filename = filename_cell.text.strip()
 
-                if filename.endswith('.zip'):
-                    # Extract date and format it
-                    date_text = date_cell.text.strip()
+                # if filename.endswith('.zip'):
+                # Extract date and format it
+                date_text = date_cell.text.strip()
 
-                    # Try converting date text to datetime object (adjust format if needed)
-                    try:
-                        updated_at = datetime.strptime(date_text, "%Y-%m-%d %H:%M")
-                        updated_at = updated_at.replace(hour=0, minute=0, second=0, microsecond=0)
+                # Try converting date text to datetime object (adjust format if needed)
+                try:
+                    updated_at = datetime.strptime(date_text, "%Y-%m-%d %H:%M")
+                    sao_paulo_timezone = pytz.timezone("America/Sao_Paulo")
+                    updated_at = sao_paulo_timezone.localize(updated_at)
                     
-                    except ValueError:
-                        # Handle cases where date format doesn't match
-                        logger.error(f"Error parsing date for file: {filename}")
+                    updated_at = updated_at.replace(hour=0, minute=0, second=0, microsecond=0)
+                
+                except ValueError:
+                    # Handle cases where date format doesn't match
+                    logger.error(f"Error parsing date for file: {filename}")
 
-                    size_value_str = size_cell.text.strip()
-                    
-                    file_info = FileInfo(
-                        filename=filename, 
-                        updated_at=updated_at,
-                        file_size=convert_to_bytes(size_value_str)
-                    )
-                    files_info.append(file_info)
+                size_value_str = size_cell.text.strip()
+                
+                file_info = FileInfo(
+                    filename=filename, 
+                    updated_at=updated_at,
+                    file_size=convert_to_bytes(size_value_str)
+                )
+                files_info.append(file_info)
         
         return files_info
     
@@ -116,35 +120,25 @@ class CNPJ_ETL:
             # Create audit metadata
             audit_metadata = create_audit_metadata(audits, self.download_folder)
 
+            # Delete download folder content
+            if self.delete_zips:
+                remove_folder(self.download_folder)
+            
             return audit_metadata
 
-        # Delete download folder content
-        remove_folder(self.download_folder)
-
-    def scrap_data(self):
-        # Scrap data
-        files_info = self._scrap()
-
-        # Create file groups
-        file_groups_info = create_file_groups(files_info)
-
-        # Create audits
-        audits = create_audits(self.database, file_groups_info)
-
-        return audits
-
-
-    def scrap_data(self):
-        """
-        Finds the files on the RF (Receita Federal) website and scrapes the data.
-        
-        Returns:
-            audits: A list of AuditDB objects.
+    def audit_scrapped_files(self, files_info: List[FileInfo]):
         """
         
-        # Scrap data
-        files_info = self._scrap()
-
+        """
+        
+        condition_map = lambda info: \
+            info.filename.endswith('.zip') or \
+            (
+                info.filename.endswith('.pdf') and 
+                re.match(r'layout', info.filename, re.IGNORECASE)
+            )
+        files_info=list(filter(condition_map, files_info))
+    
         # Create file groups
         file_groups_info = create_file_groups(files_info)
 
@@ -160,8 +154,12 @@ class CNPJ_ETL:
         Returns:
             None
         """
-        audits = self.scrap_data()
+        # Scrap data
+        files_info = self.scrap_data()
 
+        # Audit scrapped files
+        audits = self.audit_scrapped_files(files_info)        
+    
         # # Test purpose only
         # from os import getenv
         # if getenv("ENVIRONMENT") == "development": 

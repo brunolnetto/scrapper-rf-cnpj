@@ -2,6 +2,7 @@ import pandas as pd
 
 from setup.logging import logger
 
+INSERT_CHUNK_SIZE = 1000
 def to_sql(dataframe: pd.DataFrame, **kwargs):
     '''
     Inserts the records from a DataFrame into a database table.
@@ -34,7 +35,8 @@ def to_sql(dataframe: pd.DataFrame, **kwargs):
         "name": tablename,
         "if_exists": if_exists,
         "con": conn,
-        "index": index
+        "index": index,
+        "chunksize": INSERT_CHUNK_SIZE,
     }
 
     # Break the dataframe into chunks

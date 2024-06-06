@@ -2,9 +2,6 @@
 
 from utils.misc import repeat_token
 
-# Chunk size for download and extraction 
-CHUNK_SIZE = 10000
-
 # Miscelaneous
 FENCE_LENGTH = 35
 FENCE_CHARACTER = '#'
@@ -35,7 +32,8 @@ TABLES_INFO_DICT = {
         ],
         'expression': 'EMPRE',
         'transform_map': empresa_transform_map,
-        'encoding': 'latin-1'
+        'encoding': 'latin-1',
+        'index_columns': ['cnpj_basico']
     },
     'estabelecimento': {
         'label': 'Estabelecimento',
@@ -73,7 +71,8 @@ TABLES_INFO_DICT = {
             'data_situacao_especial'
         ],
         'expression': 'ESTABELE',
-	    'encoding': 'latin-1'
+	    'encoding': 'latin-1',
+        'index_columns': ['cnpj_basico', 'cnpj_ordem', 'cnpj_dv']
     },
     'socios': {
         'label': 'Socios',
@@ -92,7 +91,8 @@ TABLES_INFO_DICT = {
             'faixa_etaria'
         ],
         'expression': 'SOCIO',
-        'encoding': 'latin-1'
+        'encoding': 'latin-1',
+        'index_columns': ['cnpj_basico']
     },
     'simples': {
         'label': 'Simples',
