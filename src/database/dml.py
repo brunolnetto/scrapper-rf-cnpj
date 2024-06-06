@@ -5,7 +5,7 @@ from sqlalchemy.exc import OperationalError
 
 from utils.dataframe import to_sql
 from utils.misc import delete_var, update_progress, get_line_count
-from core.constants import TABLES_INFO_DICT, CHUNK_SIZE
+from core.constants import TABLES_INFO_DICT
 
 from core.schemas import TableInfo
 from database.schemas import Database
@@ -16,6 +16,8 @@ MAX_RETRIES=3
 ##########################################################################
 ## LOAD AND TRANSFORM
 ##########################################################################
+# Chunk size for download and extraction 
+READ_CHUNK_SIZE = 10000
 def populate_table_with_filename(
     database: Database, 
     table_info: TableInfo,
@@ -48,7 +50,7 @@ def populate_table_with_filename(
         "filepath_or_buffer": extracted_file_path,
         "sep": ';', 
         "skiprows": 0,
-        "chunksize": CHUNK_SIZE, 
+        "chunksize": READ_CHUNK_SIZE, 
         "header": None, 
         "dtype": dtypes,
         "encoding": table_info.encoding,
@@ -70,7 +72,7 @@ def populate_table_with_filename(
                 df_chunk.columns = table_info.columns
                 df_chunk = table_info.transform_map(df_chunk)
 
-                update_progress(index * CHUNK_SIZE, row_count_estimation, filename)
+                update_progress(index * READ_CHUNK_SIZE, row_count_estimation, filename)
                 
                 # Gravar dados no banco
                 to_sql(
@@ -85,15 +87,15 @@ def populate_table_with_filename(
                 break
 
             except:
-                logger.error(f'Falha em inserir chunk {index} de arquivo {extracted_file_path}. Tentativa {retry_count+1}/{MAX_RETRIES}')
+                logger.error(f'Failed to insert chunk {index} of file {extracted_file_path}. Attempt {retry_count+1}/{MAX_RETRIES}')
 
         if(retry_count == MAX_RETRIES-1):
-                raise Exception('Falhou em inserir chunk {index} de arquivo {extracted_file_path}.')
+                raise Exception(f'Failed to insert chunk {index} of arquivo {extracted_file_path}.')
     
     update_progress(row_count_estimation, row_count_estimation, filename)
     print()
     
-    logger.info('Arquivo ' + filename + ' inserido com sucesso no banco de dados!')
+    logger.info('File ' + filename + ' inserted with success on databae!')
 
     delete_var(df)
 
@@ -115,7 +117,7 @@ def populate_table_with_filenames(
     Returns:
         None
     """
-    title=f'Arquivos de tabela {table_info.label.upper()}:'
+    title=f'Table files {table_info.label.upper()}:'
     logger.info(title)
     
     # Drop table (if exists)
@@ -126,11 +128,11 @@ def populate_table_with_filenames(
         try:
             conn.execute(query)
         except OperationalError as e:
-            logger.error(f"Erro ao deletar tabela {table_info.table_name}: {e}")
+            logger.error(f"Failed to erase table {table_info.table_name}: {e}")
     
     # Inserir dados
     for filename in filenames:
-        logger.info('Trabalhando no arquivo: ' + filename + ' [...]')
+        logger.info('Current file: ' + filename + '')
         try:
             for retry_count in range(MAX_RETRIES):
                 try:
@@ -139,16 +141,16 @@ def populate_table_with_filenames(
                     break
 
                 except:
-                    logger.error(f'Falha em inserir arquivo {file_path}. Tentativa {retry_count+1}/{MAX_RETRIES}')            
+                    logger.error(f'Failed to insert file {file_path}. Attempt {retry_count+1}/{MAX_RETRIES}')            
             
             if(retry_count == MAX_RETRIES-1):
-                raise Exception('Falhou em inserir chunk {index} de arquivo {extracted_file_path}.')
+                raise Exception(f'Failed to insert file file {file_path}.')
 
         except Exception as e:
-            summary=f'Falha em salvar arquivo {file_path} em tabela {table_info.table_name}'
+            summary=f'Failed to save file {file_path} on table {table_info.table_name}'
             logger.error(f'{summary}: {e}')
     
-    logger.info(f'Arquivos de {table_info.label} finalizados!')
+    logger.info(f'Finished files of table {table_info.label}!')
 
 
 def table_name_to_table_info(table_name: str) -> TableInfo:
@@ -201,29 +203,35 @@ def generate_tables_indices(engine, tables):
         None
     """
     # Criar índices na base de dados:
-    logger.info("Criando índices na base de dados [...]")
+    logger.info(f"Generating indices on database tables {tables}")
 
-    # Criar índices
-    fields_tables = [(f'{table}_cnpj', table) for table in tables]
-    mask="create index {field} on {table}(cnpj_basico) using btree(\"cnpj_basico\");"
+    # Index metadata
+    fields_tables = [([f'{table}_cnpj'], table) for table in tables]
+    mask="create index {field} on {table}(cnpj_basico) using btree(\"cnpj_basico\"); commit;"
+    queries = [ 
+        text(mask.format(field=field_, table=table_))
+        for field_, table_ in fields_tables 
+    ]
     
+    # Execute index queries
     try:
         with engine.connect() as conn:
-            queries = [ 
-                mask.format(field=field_, table=table_) 
-                for field_, table_ in fields_tables 
-            ]
-            query=text("\n".join(queries) + "\n" + "commit")
-            
-            # Execute the compiled SQL string
-            try:
-                conn.execute(query)
-            except Exception as e:
-                logger.error(f"Erro ao criar índices: {e}")
-
-        message = f"Índices criados nas tabelas, para a coluna `cnpj_basico`: {tables}"
+            for field_, table_ in fields_tables:
+                # Compile a SQL string
+                query=text(mask.format(field=field_, table=table_))
+                
+                # Execute the compiled SQL string
+                try:
+                    conn.execute(query)
+                except Exception as e:
+                    logger.error(f"Error generating indices for table {table_}: {e}")
+                
+                message = f"Index {field_} generated on table {table_}, for column `cnpj_basico`"
+                logger.info(message)
+        
+        message = f"Index {field_} created on tables {tables}"
         logger.info(message)
     
     except Exception as e:
-        logger.error(f"Erro ao criar índices: {e}") 
+        logger.error(f"Failed to generate indices: {e}") 
 
