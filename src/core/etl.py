@@ -74,30 +74,30 @@ class CNPJ_ETL:
             if has_data:
                 filename = filename_cell.text.strip()
 
-                # if filename.endswith('.zip'):
-                # Extract date and format it
-                date_text = date_cell.text.strip()
+                if filename.endswith('.zip'):
+                    # Extract date and format it
+                    date_text = date_cell.text.strip()
 
-                # Try converting date text to datetime object (adjust format if needed)
-                try:
-                    updated_at = datetime.strptime(date_text, "%Y-%m-%d %H:%M")
-                    sao_paulo_timezone = pytz.timezone("America/Sao_Paulo")
-                    updated_at = sao_paulo_timezone.localize(updated_at)
+                    # Try converting date text to datetime object (adjust format if needed)
+                    try:
+                        updated_at = datetime.strptime(date_text, "%Y-%m-%d %H:%M")
+                        sao_paulo_timezone = pytz.timezone("America/Sao_Paulo")
+                        updated_at = sao_paulo_timezone.localize(updated_at)
+                        
+                        updated_at = updated_at.replace(hour=0, minute=0, second=0, microsecond=0)
                     
-                    updated_at = updated_at.replace(hour=0, minute=0, second=0, microsecond=0)
-                
-                except ValueError:
-                    # Handle cases where date format doesn't match
-                    logger.error(f"Error parsing date for file: {filename}")
+                    except ValueError:
+                        # Handle cases where date format doesn't match
+                        logger.error(f"Error parsing date for file: {filename}")
 
-                size_value_str = size_cell.text.strip()
-                
-                file_info = FileInfo(
-                    filename=filename, 
-                    updated_at=updated_at,
-                    file_size=convert_to_bytes(size_value_str)
-                )
-                files_info.append(file_info)
+                    size_value_str = size_cell.text.strip()
+                    
+                    file_info = FileInfo(
+                        filename=filename, 
+                        updated_at=updated_at,
+                        file_size=convert_to_bytes(size_value_str)
+                    )
+                    files_info.append(file_info)
         
         return files_info
     
