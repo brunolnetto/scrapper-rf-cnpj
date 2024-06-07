@@ -51,7 +51,8 @@ def populate_table_with_filename(
         "encoding": table_info.encoding,
         "low_memory": False,
         "memory_map": True,
-        "on_bad_lines": 'skip'
+        "on_bad_lines": 'warn',
+        "encoding_errors": 'replace'
     }
     
     row_count = get_line_count(extracted_file_path)
@@ -103,7 +104,7 @@ def populate_table_with_filename(
     update_progress(row_count, row_count, filename)
     print()
     
-    logger.info('File ' + filename + ' inserted with success on databae!')
+    logger.info('File ' + filename + ' inserted with success on database!')
 
     delete_var(df_chunk)
 
@@ -227,7 +228,7 @@ def generate_tables_indices(engine, tables):
             for field_, table_ in fields_tables:
                 # Compile a SQL string
                 query=text(mask.format(field=field_, table=table_))
-                
+
                 # Execute the compiled SQL string
                 try:
                     conn.execute(query)
