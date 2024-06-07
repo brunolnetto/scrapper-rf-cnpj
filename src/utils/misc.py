@@ -1,14 +1,10 @@
 from sys import stdout
 from os import path, remove, cpu_count, stat
-from zipfile import ZipFile
 from requests import head
 from shutil import rmtree
 from unicodedata import normalize
 from os import makedirs
-import subprocess
 import re
-from tqdm import tqdm
-import wget
 from fileinput import FileInput
 from datetime import timedelta
 

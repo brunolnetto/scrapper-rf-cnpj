@@ -4,7 +4,6 @@ from urllib import request
 from bs4 import BeautifulSoup
 from datetime import datetime
 from functools import reduce
-from shutil import rmtree
 import pytz
 
 from setup.logging import logger
