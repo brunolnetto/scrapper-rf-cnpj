@@ -10,6 +10,7 @@ import re
 from tqdm import tqdm
 import wget
 from fileinput import FileInput
+from datetime import timedelta
 
 from setup.logging import logger
 
@@ -233,9 +234,10 @@ def update_progress(index, total, message):
     stdout.write(f'\r{progress}')
     stdout.flush()
 
+
 def get_line_count(filepath):
   """
-  Counts the number of lines in a file using fileinput.
+  Counts the number of lines in a file using fileinput, attempting to detect encoding.
 
   Args:
       filepath (str): Path to the file.
@@ -244,11 +246,11 @@ def get_line_count(filepath):
       int: Number of lines in the file (or None on error).
   """
   try:
-    with FileInput(filepath) as f:
+    with FileInput(filepath, encoding='latin-1') as f:
       line_count = sum(1 for _ in f)
     return line_count
   except Exception as e:
-    logger.error(f"Error counting lines: {e}")
+    logger.error(f"Error counting lines of file {filepath}: {e}")
     return None
 
 def convert_to_bytes(size_str):
@@ -319,9 +321,6 @@ def normalize_filenames(filenames):
       normalized_dict[base_name].append(filename)
     
   return normalized_dict
-
-from datetime import timedelta
-
 
 def get_date_range(timestamps):
   """
