@@ -3,7 +3,7 @@ from typing import Union, List
 from os import path
 from uuid import uuid4
 
-from sqlalchemy import func, text
+from sqlalchemy import text
 
 from setup.logging import logger
 from database.engine import Database 
