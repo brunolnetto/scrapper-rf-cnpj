@@ -194,7 +194,15 @@ class CNPJ_ETL:
         load_RF_data_on_database(
             self.database, self.extract_folder, audit_metadata
         )
-        
+
+    def insert_audits(self, audit_metadata: AuditMetadata):
+        # Insert audit metadata
+        for audit in audit_metadata.audit_list:
+            try:
+                insert_audit(self.database, audit)
+            
+            except Exception as e:
+                logger.error(f"Error inserting audit {audit}: {e}")
 
     def load_without_download(self):
         """
@@ -208,13 +216,15 @@ class CNPJ_ETL:
         if audits:
             # Create audit metadata
             audit_metadata = create_audit_metadata(audits, self.download_folder)
-            
             for audit in audit_metadata.audit_list:
                 audit.audi_downloaded_at=datetime.now()
                 audit.audi_processed_at=datetime.now()
             
             # Load data
             self.load_data(audit_metadata)
+            
+            # Insert audit metadata
+            self.insert_audits(audit_metadata)
         else: 
             logger.warn("No data to load!")
 
@@ -235,8 +245,7 @@ class CNPJ_ETL:
             self.load_data(audit_metadata)
 
             # Insert audit metadata
-            for audit in audit_metadata.audit_list:
-                insert_audit(self.database, audit)
+            self.insert_audits(audit_metadata)
             
         else: 
             logger.warn("No data to load!")
