@@ -42,11 +42,7 @@ def get_sink_folder():
 
 def get_db_uri():
     env_path = path.join(getcwd(), '.env')
-    print(env_path)
     load_dotenv(env_path)
-    
-    from os import environ
-    print(environ)
     
     # Get the host based on the environment
     if getenv('ENVIRONMENT') == 'docker':
