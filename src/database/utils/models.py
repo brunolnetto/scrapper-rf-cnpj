@@ -53,14 +53,6 @@ def create_audit(database: Database, file_group_info: FileGroupInfo) -> Union[Au
     """
     if database.engine:
         with database.session_maker() as session:
-            # NOTE: Uncomment this if you want to use SQLAlchemy ORM
-            # # Get the latest processed_at for the filename
-            # latest_source_updated_at = func.max(AuditDB.audi_source_updated_at)
-            # is_table_name = AuditDB.audi_table_name == file_group_info.table_name
-            # query = session.query(latest_source_updated_at)
-            #
-            # latest_updated_at = query.filter(is_table_name).first()[0]
-            
             # Define raw SQL query
             sql_query = text(f"""SELECT max(audi_source_updated_at) 
                 FROM public.audit 
