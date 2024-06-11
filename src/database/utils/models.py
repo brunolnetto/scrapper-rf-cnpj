@@ -4,6 +4,7 @@ from os import path
 from uuid import uuid4
 
 from sqlalchemy import text
+import pytz
 
 from setup.logging import logger
 from database.engine import Database 
@@ -73,6 +74,12 @@ def create_audit(database: Database, file_group_info: FileGroupInfo) -> Union[Au
                 # Process results (e.g., fetchall, fetchone)
                 latest_updated_at = result.fetchone()[0]
             
+            if latest_updated_at is not None:
+                format="%Y-%m-%d %H:%M"
+                latest_updated_at = datetime.strptime(latest_updated_at.strftime(format), format)
+                sao_paulo_timezone = pytz.timezone("America/Sao_Paulo")
+                latest_updated_at = sao_paulo_timezone.localize(latest_updated_at)
+
             # First entry: no existing audit entry
             if latest_updated_at is None:
                 # Create and insert the new entry
