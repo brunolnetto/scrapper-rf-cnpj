@@ -128,7 +128,7 @@ def populate_table_with_filenames(
     logger.info(title)
     
     # Drop table (if exists)
-    with database.engine.connect() as conn:
+    with database.engine.begin() as conn:
         query=text(f"DROP TABLE IF EXISTS {table_info.table_name};")
         
         # Execute the compiled SQL string
