@@ -162,15 +162,15 @@ class CNPJ_ETL:
         # Scrap data
         audits = self.fetch_data()
     
-        # # Test purpose only
-        # from os import getenv
-        # if getenv("ENVIRONMENT") == "development": 
-        #     audits = list(
-        #         filter(
-        #             lambda x: x.audi_file_size_bytes < 5000, 
-        #             sorted(audits, key=lambda x: x.audi_file_size_bytes)
-        #         )
-        #     )
+        # Test purpose only
+        from os import getenv
+        if getenv("ENVIRONMENT") == "development": 
+            audits = list(
+                filter(
+                    lambda x: x.audi_file_size_bytes < 50000, 
+                    sorted(audits, key=lambda x: x.audi_file_size_bytes)
+                )
+            )
         
         # Get data
         if audits:
