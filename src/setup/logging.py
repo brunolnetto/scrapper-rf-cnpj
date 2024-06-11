@@ -65,7 +65,7 @@ time_str = datetime.now().strftime("%H_%M")
 log_root_path = f'logs/{date_str}'
 
 # Clear the latest 5 files (adjust 'n' as needed)
-LOG_FILES_HORIZON = int(getenv('LOG_FILES_HORIZON', 5))
+LOG_FILES_HORIZON = 5
 if path.exists(log_root_path):
     clear_latest_items(log_root_path, LOG_FILES_HORIZON)
 
