@@ -3,15 +3,16 @@
   - Objetivo        : Baixar, transformar e carregar dados da Receita Federal do Brasil
 """
 
+from sqlalchemy import text
+
 from setup.base import get_sink_folder, init_database
 from core.etl import CNPJ_ETL
-from core.utils.schemas import create_file_groups
-from database.utils.models import create_audits
-from core.schemas import TableIndexInfo
+from setup.base import get_db_uri
 
 # Folders and database setup
 download_folder, extract_folder = get_sink_folder()
 database = init_database()
+
 
 # Source and target
 data_url = 'http://200.152.38.155/CNPJ'
@@ -19,17 +20,27 @@ filename = 'LAYOUT_DADOS_ABERTOS_CNPJ.pdf'
 
 # Você também pode acessar por: https://dados.rfb.gov.br/CNPJ/
 layout_url = f'{data_url}/{filename}'
+print(get_db_uri())
+with database.engine.begin() as connection:
+    # Create the table if it does not exist
+    result = connection.execute(
+      text('select * from public.audit')
+    )
+    result = result.fetchall()
 
-scrapper = CNPJ_ETL(
-    database,
-    data_url,
-    layout_url,
-    download_folder,
-    extract_folder,
-    is_parallel=False,
-    delete_zips=False
-)
+print(result)
 
-# # Scrap data
-scrapper.run()
-
+# scrapper = CNPJ_ETL(
+#     database,
+#     data_url,
+#     layout_url,
+#     download_folder,
+#     extract_folder,
+#     is_parallel=False,
+#     delete_zips=False
+# )
+# 
+# # # Scrap data
+# scrapper.run()
+# 
+# 

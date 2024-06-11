@@ -2,9 +2,7 @@ from os import path, getcwd
 import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
-from alive_progress import alive_bar
 
-from utils.dataframe import to_sql
 from utils.misc import delete_var, update_progress, get_line_count
 from core.constants import TABLES_INFO_DICT
 
@@ -130,7 +128,7 @@ def populate_table_with_filenames(
     logger.info(title)
     
     # Drop table (if exists)
-    with database.engine.connect() as conn:
+    with database.engine.begin() as conn:
         query=text(f"DROP TABLE IF EXISTS {table_info.table_name};")
         
         # Execute the compiled SQL string

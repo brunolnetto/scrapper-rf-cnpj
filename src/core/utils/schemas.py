@@ -1,4 +1,4 @@
-from typing import List, Dict
+from typing import List
 
 from utils.misc import normalize_filenames, get_date_range
 from core.schemas import FileInfo, FileGroupInfo
