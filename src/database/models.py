@@ -1,10 +1,12 @@
 from sqlalchemy import (
-  Column, Integer, String, TIMESTAMP, JSON
+    Column, Integer, String, TIMESTAMP, JSON
 )
 from sqlalchemy.dialects.postgresql import UUID
 from typing import Optional, Generic, TypeVar
 from pydantic import BaseModel, Field
 from datetime import datetime
+from uuid import uuid4
+
 
 from functools import reduce
 from sqlalchemy.ext.declarative import declarative_base
@@ -14,7 +16,7 @@ Base = declarative_base()
 T = TypeVar('T')
 
 class AuditDBSchema(BaseModel, Generic[T]):
-    audi_id: int = Field(..., description="Unique identifier for the audit entry.")
+    audi_id: str = Field(default_factory=uuid4, description="Unique identifier for the audit entry.")
     audi_table_name: str = Field(..., description="Table name associated with the audit entry.")
     audi_source_updated_at: Optional[datetime] = Field(
         None, description="Timestamp of the last source update."
