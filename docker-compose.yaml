@@ -1,25 +1,22 @@
 version: "3.8"
 
 services:
-  crawler-db:
-    container_name: crawler-db
-    image: postgres:14
-    restart: always
-    env_file: .env
-    networks:
-      - CNPJ_net
-    expose:
-      - "$POSTGRES_PORT"
-    ports:
-      - "$POSTGRES_PORT:$POSTGRES_PORT"
-    command: postgres -c listen_addresses='*' -p $POSTGRES_PORT
-    volumes:
-      - ./data:/var/lib/postgresql/data_ 
+  # crawler-db:
+  #   container_name: crawler-db
+  #   image: postgres:14
+  #   restart: always
+  #   env_file: .env
+  #   expose:
+  #     - "$POSTGRES_PORT"
+  #   ports:
+  #     - "$POSTGRES_PORT:$POSTGRES_PORT"
+  #   volumes:
+  #     - ./data:/var/lib/postgresql/data_ 
 
   crawler:
     container_name: crawler
-    depends_on:
-      - crawler-db
+    # depends_on:
+    #   - crawler-db
     build: 
       context: .
       dockerfile: Dockerfile
@@ -33,7 +30,8 @@ services:
 
 networks:
   CNPJ_net:
+    driver: bridge
 
-volumes:
-  postgres_data:
+# volumes:
+#   postgres_data:
   
