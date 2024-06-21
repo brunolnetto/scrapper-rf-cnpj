@@ -214,7 +214,7 @@ def generate_tables_indices(engine, tables):
 
     # Index metadata
     fields_tables = [(f'{table}_cnpj', table) for table in tables]
-    mask="create index {field} on {table}(cnpj_basico) using btree(\"cnpj_basico\"); commit;"
+    mask="create index {field} on {table} using btree(\"cnpj_basico\"); commit;"
     queries = [ 
         text(mask.format(field=field_, table=table_))
         for field_, table_ in fields_tables 
