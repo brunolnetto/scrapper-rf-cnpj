@@ -4,6 +4,7 @@ from urllib import request
 from bs4 import BeautifulSoup
 from datetime import datetime
 from functools import reduce
+from os import getenv
 import pytz
 
 from setup.logging import logger
@@ -24,8 +25,7 @@ from utils.misc import convert_to_bytes, remove_folder
 class CNPJ_ETL:
 
     def __init__(
-        self, database, data_url, layout_url,
-        download_folder, extract_folder,
+        self, database, data_url, layout_url, download_folder, extract_folder,
         is_parallel=True, delete_zips=True
     ) -> None:
         self.database = database
@@ -161,9 +161,8 @@ class CNPJ_ETL:
         """
         # Scrap data
         audits = self.fetch_data()
-    
+        
         # Test purpose only
-        from os import getenv
         if getenv("ENVIRONMENT") == "development": 
             audits = list(
                 filter(
