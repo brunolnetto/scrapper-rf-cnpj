@@ -56,8 +56,6 @@ def get_db_uri():
     passw = getenv('POSTGRES_PASSWORD', 'postgres')
     database_name = getenv('POSTGRES_DBNAME')
     
-    # setup_database(host, port, sudo_user, sudo_pwd, user, passw, database_name )
-    
     # Connect to the database
     return f'postgresql://{user}:{passw}@{host}:{port}/{database_name}'
 
