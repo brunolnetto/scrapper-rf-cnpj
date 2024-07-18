@@ -18,7 +18,8 @@ from database.utils.models import (
 )
 from core.utils.etl import (
     get_RF_data, 
-    load_RF_data_on_database
+    load_RF_data_on_database,
+    generate_tables_indices,
 )
 from utils.misc import convert_to_bytes, remove_folder
 
@@ -189,9 +190,7 @@ class CNPJ_ETL:
             None
         """
         # Load database
-        load_RF_data_on_database(
-            self.database, self.extract_folder, audit_metadata
-        )
+        load_RF_data_on_database(self.database, self.extract_folder, audit_metadata)
 
     def insert_audits(self, audit_metadata: AuditMetadata):
         # Insert audit metadata
@@ -221,10 +220,65 @@ class CNPJ_ETL:
             # Load data
             self.load_data(audit_metadata)
             
+            # Create indices
+            self.create_indices(self, audit_metadata)
+            
             # Insert audit metadata
             self.insert_audits(audit_metadata)
         else: 
             logger.warn("No data to load!")
+            
+    def only_create_indices(self):
+        audits = self.fetch_data()
+
+        if audits:
+            # Create audit metadata
+            audit_metadata = create_audit_metadata(audits, self.download_folder)
+            for audit in audit_metadata.audit_list:
+                audit.audi_downloaded_at=datetime.now()
+                audit.audi_processed_at=datetime.now()
+                audit.audi_inserted_at=datetime.now()
+            
+            # Create indices
+            self.create_indices(audit_metadata)
+            
+            # Insert audit metadata
+            self.insert_audits(audit_metadata)
+        else: 
+            logger.warn("No data to load!")
+        
+            
+    def create_indices(self, audit_metadata):
+        table_to_filenames = audit_metadata.tablename_to_zipfile_to_files
+        zip_tablenames_set = set(table_to_filenames.keys())
+        
+        table_to_filenames = audit_metadata.tablename_to_zipfile_to_files
+        zip_tablenames_set = set(table_to_filenames.keys())
+
+        # Generate tables indices
+        tables_with_indices = {
+            "estabelecimento": {
+                "cnpj_basico", "cnpj_ordem", "cnpj_dv", "cnae_principal", "cnae_secundaria", "cep", "uf"
+            },
+            "empresa": {
+                "cnpj_basico"
+            },
+            "simples": {
+                "cnpj_basico"
+            }, 
+            "socios": {"cnpj_basico"}
+        }
+        tables_renew_indices = list(zip_tablenames_set.intersection(tables_with_indices))
+
+        has_new_tables = len(tables_renew_indices) != 0
+        renew_table_indices = {
+            table_name: columns
+            for table_name, columns in tables_with_indices.items()
+            if table_name in tables_renew_indices
+        }
+        
+        if(has_new_tables):
+            generate_tables_indices(self.database.engine, renew_table_indices)
 
     def run(self):
         """
@@ -241,6 +295,9 @@ class CNPJ_ETL:
 
             # Load data
             self.load_data(audit_metadata)
+            
+            # Create indices
+            self.create_indices(self, audit_metadata)
 
             # Insert audit metadata
             self.insert_audits(audit_metadata)

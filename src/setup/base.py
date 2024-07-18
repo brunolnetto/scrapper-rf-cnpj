@@ -11,6 +11,7 @@ from setup.logging import logger
 from utils.misc import makedir 
 from database.models import Base
 from database.schemas import Database
+from database.engine import create_database
 from utils.docker import get_postgres_host
 
 def get_sink_folder():
@@ -69,18 +70,9 @@ def init_database() -> Union[Database, None]:
     
     """
     db_uri=get_db_uri()
-    
-    # Create the database engine and session maker
-    engine = create_engine(
-        db_uri,
-        poolclass=pool.QueuePool,   # Use connection pooling
-        pool_size=20,               # Adjust pool size based on your workload
-        max_overflow=10,            # Adjust maximum overflow connections
-        pool_recycle=3600           # Periodically recycle connections (optional)
-    )
-    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-    database_obj=Database(engine=engine, session_maker=SessionLocal)
+    # Create the database engine and session maker
+    database_obj=create_database(db_uri)
 
     # Create the database if it does not exist
     try:
@@ -93,7 +85,7 @@ def init_database() -> Union[Database, None]:
         return None
     
     try: 
-        with engine.connect() as conn:
+        with database_obj.engine.connect() as conn:
             query = text("SELECT 1")
 
             # Test the connection

@@ -1,5 +1,5 @@
 from sqlalchemy import (
-    Column, Integer, String, TIMESTAMP, JSON
+    Column, BigInteger, String, TIMESTAMP, JSON
 )
 from sqlalchemy.dialects.postgresql import UUID
 from typing import Optional, Generic, TypeVar
@@ -44,7 +44,7 @@ class AuditDB(Base):
     audi_created_at = Column(TIMESTAMP, nullable=True)
     audi_table_name = Column(String(255), nullable=False)
     audi_filenames = Column(JSON, nullable=False)
-    audi_file_size_bytes = Column(Integer, nullable=True)
+    audi_file_size_bytes = Column(BigInteger, nullable=True)
     audi_source_updated_at = Column(TIMESTAMP, nullable=True)
     audi_downloaded_at = Column(TIMESTAMP, nullable=True)
     audi_processed_at = Column(TIMESTAMP, nullable=True)
