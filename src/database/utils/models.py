@@ -211,8 +211,7 @@ def create_audit_metadata(audits: List[AuditDB], to_path: str):
     }
 
     return AuditMetadata(
-        audit_list=audits,
-        tablename_to_zipfile_to_files=tablename_to_zipfile_to_files,
+        audit_list=audits, tablename_to_zipfile_to_files=tablename_to_zipfile_to_files,
     )
 
 def delete_filename_on_audit(database: Database, table_name: str):

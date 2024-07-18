@@ -23,12 +23,10 @@ filename = 'LAYOUT_DADOS_ABERTOS_CNPJ.pdf'
 layout_url = f'{data_url}/{filename}'
 
 scrapper = CNPJ_ETL(
-    database, data_url, layout_url,
-    download_folder, extract_folder,
+    database, data_url, layout_url, download_folder, extract_folder,
     is_parallel=False, delete_zips=False
 )
 
-# # Scrap data
-scrapper.run()
-
+# Scrap data
+scrapper.only_create_indices()
 

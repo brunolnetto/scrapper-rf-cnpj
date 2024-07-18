@@ -48,11 +48,11 @@ def download_this_zipfile(
     """
 
     full_path = path.join(download_path, zip_filename)
-    
+
     try:
         logger.info(f"Downloading file {zip_filename}.")
         file_url = url + '/' + zip_filename
-        
+
         # Assuming download updates progress bar itself
         if(has_progress_bar):
             download(file_url, out=download_path)
@@ -92,22 +92,22 @@ def extract_this_zipfile(
     Raises:
         OSError: If an error occurs during the extraction process.
     """
-    
+
     full_path = path.join(download_path, zip_filename)
 
     try:
         logger.info(f"Extracting file {zip_filename}...")
         # Assuming extraction updates progress bar itself
         extract_zip_file(full_path, extracted_path)
-    
+
     except Exception as e:
         summary=f"Error extracting file {zip_filename}"
         message=f"{summary}: {e}"
         logger.error(message)
-    
+
     finally:
         logger.info(f"Finished file extraction of file {zip_filename}.")
-        
+
         audit.audi_processed_at = datetime.now()
         return audit
 
@@ -158,11 +158,7 @@ def download_and_extract_files(
         
         
 def get_rf_filenames_parallel(
-    url: str,
-    audits: list,
-    output_path: str, 
-    extracted_path: str,
-    max_workers = get_max_workers()
+    url: str, audits: list, output_path: str, extracted_path: str, max_workers = get_max_workers()
 ):
     """
     Downloads and extracts the files from the Receita Federal base URLs in parallel.
@@ -197,10 +193,7 @@ def get_rf_filenames_parallel(
         return results
 
 def get_rf_filenames_serial(
-    url: str,
-    audits: list,
-    output_path: str, 
-    extracted_path: str, 
+    url: str, audits: list, output_path: str, extracted_path: str, 
 ):
     """
     Downloads and extracts the files from the Receita Federal base URLs serially.
@@ -307,7 +300,6 @@ def load_RF_data_on_database(database, source_folder, audit_metadata):
         None
     """
     table_to_filenames = audit_metadata.tablename_to_zipfile_to_files
-    zip_tablenames_set = set(table_to_filenames.keys())
     
     # Load data
     for index, (table_name, zipfile_content_dict) in enumerate(table_to_filenames.items()):
@@ -327,15 +319,8 @@ def load_RF_data_on_database(database, source_folder, audit_metadata):
             map(lambda x: x.keys(), table_to_filenames.values())
         )
     )
+
     logger.info(f"Carga dos arquivos zip {zip_filenames} finalizado!")
-
-    # Generate tables indices
-    tables_with_indices = {'empresa', 'estabelecimento', 'socios', 'simples'}
-    tables_renew_indices = list(zip_tablenames_set.intersection(tables_with_indices))
-
-    has_new_tables = len(tables_renew_indices) != 0
-    if(has_new_tables):
-        generate_tables_indices(database.engine, tables_renew_indices)
 
     return audit_metadata
 
@@ -352,8 +337,7 @@ def get_zip_to_tablename(zip_file_dict):
     """
     # Separar arquivos:
     zip_to_tablename = {
-        zipped_file: []
-        for zipped_file in zip_file_dict.keys()
+        zipped_file: [] for zipped_file in zip_file_dict.keys()
     }
 
     # Filtrar arquivos
