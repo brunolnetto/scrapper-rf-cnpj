@@ -28,6 +28,10 @@ clean-cache: # remove test and coverage artifacts
 
 clean: clean-logs clean-test clean-cache ## Add a rule to remove unnecessary assets. Usage: make clean
 
+sanitize: # Remove dangling images and volumes
+	docker system prune --volumes -f
+	docker images --filter 'dangling=true' -q --no-trunc | xargs -r docker rmi
+
 env: ## Creates a virtual environment. Usage: make env
 	pip install virtualenv
 	virtualenv .venv
