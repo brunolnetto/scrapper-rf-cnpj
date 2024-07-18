@@ -57,3 +57,5 @@ ip-db: ## Get the database IP. Usage: make db-ip
 lint: ## perform inplace lint fixes
 	ruff check --fix .
 
+run: ## Run the application. Usage: make run
+	python ./src/main.py
