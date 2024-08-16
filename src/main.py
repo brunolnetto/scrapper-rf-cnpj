@@ -14,8 +14,11 @@ download_folder, extract_folder = get_sink_folder()
 # Database setup
 database = init_database()
 
-# Data source: You can also access by url: https://dados.rfb.gov.br/CNPJ/
-data_url = 'http://200.152.38.155/CNPJ'
+# Data source: You can also access by url: https://dados.rfb.gov.br/CNPJ/dados_abertos_cnpj
+ano = str(2024)
+mes = str(8).zfill(2)
+
+data_url = f'http://200.152.38.155/CNPJ/dados_abertos_cnpj/{ano}-{mes}'
 
 # Layout
 filename = 'LAYOUT_DADOS_ABERTOS_CNPJ.pdf'
