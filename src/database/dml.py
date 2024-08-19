@@ -50,6 +50,7 @@ def populate_table_with_filename(
         "low_memory": False,
         "memory_map": True,
         "on_bad_lines": 'warn',
+        "keep_default_na": False, # Do not convert empty strings to NaN
         "encoding_errors": 'replace'
     }
     
