@@ -20,9 +20,9 @@ mes = str(8).zfill(2)
 
 data_url = f'http://200.152.38.155/CNPJ/dados_abertos_cnpj/{ano}-{mes}'
 
+
 # Layout
-filename = 'LAYOUT_DADOS_ABERTOS_CNPJ.pdf'
-layout_url = f'{data_url}/{filename}'
+layout_url='http://200.152.38.155/CNPJ/LAYOUT_DADOS_ABERTOS_CNPJ.pdf'
 
 # ETL setup
 scrapper = CNPJ_ETL(

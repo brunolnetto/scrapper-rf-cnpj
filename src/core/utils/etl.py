@@ -281,6 +281,7 @@ def get_RF_data(
         from_folder (str): The path to the directory where the extracted files will be stored.
         is_parallel (bool, optional): Whether to download and extract the files in parallel. Defaults to True.
     """
+    print(f'<<<<<<<<<<<<<<<<<<<<<<<<<<<<{data_url}>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>')
     return download_and_extract_RF_data(
         data_url, layout_url, audits, 
         from_folder, to_folder, is_parallel
