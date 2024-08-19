@@ -117,10 +117,6 @@ class CNPJ_ETL:
                 self.is_parallel
             )
 
-            # Delete download folder content
-            if self.delete_zips:
-                remove_folder(self.download_folder)
-
     def audit_scrapped_files(self, files_info: List[FileInfo]):
         condition_map = lambda info: \
             info.filename.endswith('.zip') or \
@@ -219,10 +215,10 @@ class CNPJ_ETL:
             
             # Load data
             self.load_data(audit_metadata)
-            
+
             # Create indices
             self.create_indices(self, audit_metadata)
-            
+
             # Insert audit metadata
             self.insert_audits(audit_metadata)
         else: 
@@ -297,10 +293,14 @@ class CNPJ_ETL:
             self.load_data(audit_metadata)
             
             # Create indices
-            self.create_indices(self, audit_metadata)
+            self.create_indices(audit_metadata)
 
             # Insert audit metadata
             self.insert_audits(audit_metadata)
+            
+            # Delete download folder content
+            if self.delete_zips:
+                remove_folder(self.download_folder)
             
         else: 
             logger.warn("No data to load!")
