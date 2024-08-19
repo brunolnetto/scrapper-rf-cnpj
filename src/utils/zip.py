@@ -1,18 +1,18 @@
 from zipfile import ZipFile
 
 def create_sample_zip(filename, content):
-  """
-  This function creates a sample ZIP file with the specified name and content.
+    """
+    This function creates a sample ZIP file with the specified name and content.
 
-  Args:
-      filename (str): The name of the ZIP file to create.
-      content (str): The content to add to the ZIP file (e.g., some text).
-  """
-  if not filename.endswith('.zip'):
-    filename += '.zip'
+    Args:
+        filename (str): The name of the ZIP file to create.
+        content (str): The content to add to the ZIP file (e.g., some text).
+    """
+    if not filename.endswith('.zip'):
+        filename += '.zip'
 
-  with ZipFile(filename, 'w') as zip_file:
-    zip_file.writestr('data.txt', content)
+    with ZipFile(filename, 'w') as zip_file:
+        zip_file.writestr('data.txt', content)
 
 
 def extract_zip_file(file_path, extracted_files_path):
