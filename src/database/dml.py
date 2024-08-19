@@ -2,14 +2,13 @@ from os import path, getcwd
 import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
+import numpy as np
 
 from utils.misc import delete_var, update_progress, get_line_count
 from core.constants import TABLES_INFO_DICT
-
 from core.schemas import TableInfo
 from database.schemas import Database
 from setup.logging import logger
-import numpy as np
 
 MAX_RETRIES=3
 
@@ -19,10 +18,7 @@ MAX_RETRIES=3
 # Chunk size for download and extraction 
 READ_CHUNK_SIZE = 10000
 def populate_table_with_filename(
-    database: Database, 
-    table_info: TableInfo,
-    source_folder: str,
-    filename: str
+    database: Database, table_info: TableInfo, source_folder: str, filename: str
 ): 
     """
     Populates a table in the database with data from a file.
@@ -108,10 +104,7 @@ def populate_table_with_filename(
     delete_var(df_chunk)
 
 def populate_table_with_filenames(
-    database: Database, 
-    table_info: TableInfo, 
-    source_folder: str,
-    filenames: list
+    database: Database, table_info: TableInfo, source_folder: str, filenames: list
 ):
     """
     Populates a table in the database with data from multiple files.
@@ -173,16 +166,11 @@ def table_name_to_table_info(table_name: str) -> TableInfo:
     expression = table_info_dict['expression']
 
     # Create table info object
-    return TableInfo(
-        label, zip_group, table_name, columns, encoding, transform_map, expression
-    )
+    return TableInfo(label, zip_group, table_name, columns, encoding, transform_map, expression)
 
 
 def populate_table(
-    database: Database, 
-    table_name: str, 
-    from_folder: str, 
-    table_files: list
+    database: Database, table_name: str, from_folder: str, table_files: list
 ):
     """
     Populates a table in the database with data from multiple files.
@@ -200,7 +188,7 @@ def populate_table(
     populate_table_with_filenames(database, table_info, from_folder, table_files)
 
 
-def generate_tables_indices(engine, tables):
+def generate_tables_indices(engine, tables_to_indices):
     """
     Generates indices for the database tables.
 
@@ -211,35 +199,50 @@ def generate_tables_indices(engine, tables):
         None
     """
     # Criar índices na base de dados:
-    logger.info(f"Generating indices on database tables {tables}")
+    logger.info(f"Generating indices on database tables {list(tables_to_indices.keys())}")
 
     # Index metadata
-    fields_tables = [(f'{table}_cnpj', table) for table in tables]
-    mask="create index {field} on {table}(cnpj_basico) using btree(\"cnpj_basico\"); commit;"
+    fields_list = [
+        (table_name, column_name, f'{table_name}_{column_name}') 
+        for table_name, columns  in tables_to_indices.items()
+        for column_name in columns
+    ]
+    mask="create index {index_name} on {table_name} using btree(\"{column_name}\"); commit;"
     queries = [ 
-        text(mask.format(field=field_, table=table_))
-        for field_, table_ in fields_tables 
+        text(
+            mask.format(
+                table_name=table_name_, column_name=column_name_, index_name=index_name_, 
+            )
+            ) 
+        for table_name_, column_name_, index_name_ in fields_list 
     ]
     
     # Execute index queries
     try:
         with engine.connect() as conn:
-            for field_, table_ in fields_tables:
+            for table_name_, column_name_, index_name_ in fields_list:
                 # Compile a SQL string
-                query=text(mask.format(field=field_, table=table_))
+                query=text(
+                    mask.format(
+                        table_name=table_name_, 
+                        column_name=column_name_, 
+                        index_name=index_name_, 
+                    )
+                )
 
                 # Execute the compiled SQL string
                 try:
                     conn.execute(query)
                 except Exception as e:
-                    logger.error(f"Error generating indices for table {table_}: {e}")
-                
-                message = f"Index {field_} generated on table {table_}, for column `cnpj_basico`"
+                    msg=f"Error generating index {index_name_} on column `{column_name_}` for table {table_name_}"
+                    logger.error(f"{msg}: {e}")
+
+                message = f"Index {index_name_} generated on column `{column_name_}` for table {table_name_}"
                 logger.info(message)
-        
-        message = f"Index {field_} created on tables {tables}"
+
+        message = f"Index created on tables {list(tables_to_indices.keys())}"
         logger.info(message)
-    
+
     except Exception as e:
         logger.error(f"Failed to generate indices: {e}") 
 

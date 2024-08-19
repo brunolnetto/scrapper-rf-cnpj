@@ -10,3 +10,14 @@ class Database(NamedTuple):
   """
   engine: callable
   session_maker: callable
+  
+class TableIndex:
+  """
+  This class represents a table index object.
+  It contains two attributes:
+  
+  - table_name: A string that represents the table name.
+  - index_name: A string that represents the index name.
+  """
+  table_name: str
+  index_name: str

@@ -199,7 +199,7 @@ def check_diff(url, file_name):
 
     Returns:
         bool: True if the file has not been downloaded yet or if the sizes are different,
-              False if the files are the same.
+            False if the files are the same.
     """
     if not path.isfile(file_name):
         return True # not downloaded yet
@@ -232,46 +232,46 @@ def update_progress(index, total, message):
 
 
 def get_line_count(filepath):
-  """
-  Counts the number of lines in a file using fileinput, attempting to detect encoding.
+    """
+    Counts the number of lines in a file using fileinput, attempting to detect encoding.
 
-  Args:
-      filepath (str): Path to the file.
+    Args:
+        filepath (str): Path to the file.
 
-  Returns:
-      int: Number of lines in the file (or None on error).
-  """
-  try:
-    with FileInput(filepath, encoding='latin-1') as f:
-      line_count = sum(1 for _ in f)
-    return line_count
-  except Exception as e:
-    logger.error(f"Error counting lines of file {filepath}: {e}")
-    return None
+    Returns:
+        int: Number of lines in the file (or None on error).
+    """
+    try:
+        with FileInput(filepath, encoding='latin-1') as f:
+            line_count = sum(1 for _ in f)
+        return line_count
+    except Exception as e:
+        logger.error(f"Error counting lines of file {filepath}: {e}")
+        return None
 
 def convert_to_bytes(size_str):
-  """
-  This function converts a size string (e.g., "22K", "321M") into bytes.
+    """
+    This function converts a size string (e.g., "22K", "321M") into bytes.
 
-  Args:
-      size_str (str): The size string to convert.
+    Args:
+        size_str (str): The size string to convert.
 
-  Returns:
-      int: The size in bytes, or None if the format is invalid.
-  """
-  size_value = float(size_str[:-1])  # Extract numerical value
-  size_unit = size_str[-1].upper()  # Get the unit (K, M, G)
+    Returns:
+        int: The size in bytes, or None if the format is invalid.
+    """
+    size_value = float(size_str[:-1])  # Extract numerical value
+    size_unit = size_str[-1].upper()  # Get the unit (K, M, G)
 
-  unit_multiplier = {
-      'K': 1024,
-      'M': 1024 * 1024,
-      'G': 1024 * 1024 * 1024
-  }
+    unit_multiplier = {
+        'K': 1024,
+        'M': 1024 * 1024,
+        'G': 1024 * 1024 * 1024
+    }
 
-  if size_unit in unit_multiplier:
-    return int(size_value * unit_multiplier[size_unit])
-  else:
-    return None  # Handle invalid units
+    if size_unit in unit_multiplier:
+        return int(size_value * unit_multiplier[size_unit])
+    else:
+        return None  # Handle invalid units
 
 def normalize_filename(filename):
     """
@@ -297,46 +297,47 @@ def normalize_filename(filename):
     return base_name
 
 def normalize_filenames(filenames):
-  """
-  This function normalizes a list of filenames and creates a dictionary with key as normalized filename and value as original zip filename.
+    """
+    This function normalizes a list of filenames and creates a dictionary 
+    with key as normalized filename and value as original zip filename.
 
-  Args:
-      filenames (list): A list of filenames to normalize.
+    Args:
+        filenames (list): A list of filenames to normalize.
 
-  Returns:
-      dict: A dictionary with normalized filenames as keys and original filenames as values.
-  """
-  normalized_dict = {}
-  for filename in filenames:
-    base_name = normalize_filename(filename)
+    Returns:
+        dict: A dictionary with normalized filenames as keys and original filenames as values.
+    """
+    normalized_dict = {}
+    for filename in filenames:
+        base_name = normalize_filename(filename)
 
-    # Create dictionary entry
-    if base_name not in normalized_dict:
-      normalized_dict[base_name] = [filename]
-    else: 
-      normalized_dict[base_name].append(filename)
-    
-  return normalized_dict
+        # Create dictionary entry
+        if base_name not in normalized_dict:
+            normalized_dict[base_name] = [filename]
+        else: 
+            normalized_dict[base_name].append(filename)
+        
+    return normalized_dict
 
 def get_date_range(timestamps):
-  """
-  This function finds the minimum and maximum date in a list of datetime timestamps.
-  If there's only one element, it returns the same date and a timedelta of 0 days.
+    """
+    This function finds the minimum and maximum date in a list of datetime timestamps.
+    If there's only one element, it returns the same date and a timedelta of 0 days.
 
-  Args:
-      timestamps (list): A list of datetime timestamps.
+    Args:
+        timestamps (list): A list of datetime timestamps.
+    
+    Returns:
+        tuple: A tuple containing the minimum date and maximum date (or the same date 
+                and a timedelta of 0 days if there's only one element).
+    """
+    if not timestamps:
+        return None  # Handle empty list case
 
-  Returns:
-      tuple: A tuple containing the minimum date and maximum date (or the same date 
-              and a timedelta of 0 days if there's only one element).
-  """
-  if not timestamps:
-    return None  # Handle empty list case
-
-  if len(timestamps) == 1:
-      return timestamps[0], timestamps[0] + timedelta(days=0)
-  else:
-      return min(timestamps), max(timestamps)
+    if len(timestamps) == 1:
+        return timestamps[0], timestamps[0] + timedelta(days=0)
+    else:
+        return min(timestamps), max(timestamps)
 
 def remove_folder(folder: str):
     try:
