@@ -27,9 +27,9 @@ layout_url='http://200.152.38.155/CNPJ/LAYOUT_DADOS_ABERTOS_CNPJ.pdf'
 # ETL setup
 scrapper = CNPJ_ETL(
     database, data_url, layout_url, download_folder, extract_folder, 
-    is_parallel=False, delete_zips=True
+    is_parallel=False, delete_zips=False
 )
 
 # Scrap data
-scrapper.run()
+scrapper.load_without_download()
 

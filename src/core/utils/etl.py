@@ -307,7 +307,7 @@ def load_RF_data_on_database(database, source_folder, audit_metadata):
         table_files_list = list(zipfile_content_dict.values())
         
         table_filenames = sum(table_files_list, [])
-
+        print(table_filenames)
         # Populate this table
         populate_table(database, table_name, source_folder, table_filenames)
 
