@@ -301,13 +301,13 @@ def load_RF_data_on_database(database, source_folder, audit_metadata):
         None
     """
     table_to_filenames = audit_metadata.tablename_to_zipfile_to_files
-    
+
     # Load data
     for index, (table_name, zipfile_content_dict) in enumerate(table_to_filenames.items()):
         table_files_list = list(zipfile_content_dict.values())
-        
+
         table_filenames = sum(table_files_list, [])
-        print(table_filenames)
+
         # Populate this table
         populate_table(database, table_name, source_folder, table_filenames)
 

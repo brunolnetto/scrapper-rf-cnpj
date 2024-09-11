@@ -131,7 +131,7 @@ class CNPJ_ETL:
 
         # Create audits
         audits = create_audits(self.database, file_groups_info)
-        print(audits)
+
         return audits
 
     def fetch_data(self):
@@ -205,7 +205,7 @@ class CNPJ_ETL:
             None
         """
         audits = self.fetch_data()
-        print(audits)
+
         if audits:
             # Create audit metadata
             audit_metadata = create_audit_metadata(audits, self.download_folder)
