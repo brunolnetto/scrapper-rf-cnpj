@@ -131,7 +131,7 @@ class CNPJ_ETL:
 
         # Create audits
         audits = create_audits(self.database, file_groups_info)
-        
+
         return audits
 
     def fetch_data(self):
@@ -146,7 +146,7 @@ class CNPJ_ETL:
 
         # Audit scrapped files
         audits = self.audit_scrapped_files(files_info)
-        
+
         return audits
 
     def retrieve_data(self):
@@ -212,18 +212,18 @@ class CNPJ_ETL:
             for audit in audit_metadata.audit_list:
                 audit.audi_downloaded_at=datetime.now()
                 audit.audi_processed_at=datetime.now()
-            
+
             # Load data
             self.load_data(audit_metadata)
 
             # Create indices
-            self.create_indices(self, audit_metadata)
+            self.create_indices(audit_metadata)
 
             # Insert audit metadata
             self.insert_audits(audit_metadata)
         else: 
             logger.warn("No data to load!")
-            
+
     def only_create_indices(self):
         audits = self.fetch_data()
 
