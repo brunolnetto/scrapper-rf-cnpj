@@ -65,7 +65,7 @@ def create_audit(database: Database, file_group_info: FileGroupInfo) -> Union[Au
             
                 # Process results (e.g., fetchall, fetchone)
                 latest_updated_at = result.fetchone()[0]
-            
+            print(latest_updated_at)
             if latest_updated_at is not None:
                 format="%Y-%m-%d %H:%M"
                 latest_updated_at = datetime.strptime(latest_updated_at.strftime(format), format)

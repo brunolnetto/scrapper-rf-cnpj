@@ -46,22 +46,21 @@ def populate_table_with_filename(
         "low_memory": False,
         "memory_map": True,
         "on_bad_lines": 'warn',
-        "keep_default_na": False, # Do not convert empty strings to NaN
+        "keep_default_na": False,
         "encoding_errors": 'replace'
     }
-    
+
     row_count = get_line_count(extracted_file_path)
     chunk_count = np.ceil(row_count/READ_CHUNK_SIZE)
-    
     for index, df_chunk in enumerate(pd.read_csv(**csv_read_props)):
         for retry_count in range(MAX_RETRIES):
             try:
                 # Transform chunk
                 df_chunk = df_chunk.reset_index()
-                
+
                 # Remove index column
                 del df_chunk['index']
-                
+
                 # Cast for string
                 for column in df_chunk.columns:
                     df_chunk[column] = df_chunk[column].astype(str)
@@ -185,6 +184,7 @@ def populate_table(
         None
     """
     table_info = table_name_to_table_info(table_name)
+
     populate_table_with_filenames(database, table_info, from_folder, table_files)
 
 

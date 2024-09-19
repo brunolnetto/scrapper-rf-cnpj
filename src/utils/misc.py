@@ -5,7 +5,7 @@ from shutil import rmtree
 from unicodedata import normalize
 from os import makedirs
 import re
-from fileinput import FileInput
+import fileinput
 from datetime import timedelta
 
 from setup.logging import logger
@@ -230,10 +230,9 @@ def update_progress(index, total, message):
     stdout.write(f'\r{progress}')
     stdout.flush()
 
-
 def get_line_count(filepath):
     """
-    Counts the number of lines in a file using fileinput, attempting to detect encoding.
+    Counts the number of lines in a large file efficiently.
 
     Args:
         filepath (str): Path to the file.
@@ -242,8 +241,9 @@ def get_line_count(filepath):
         int: Number of lines in the file (or None on error).
     """
     try:
-        with FileInput(filepath, encoding='latin-1') as f:
-            line_count = sum(1 for _ in f)
+        # Open the file in read mode with specified encoding
+        with open(filepath, 'r', encoding='latin-1') as file:
+            line_count = sum(1 for _ in file)
         return line_count
     except Exception as e:
         logger.error(f"Error counting lines of file {filepath}: {e}")
