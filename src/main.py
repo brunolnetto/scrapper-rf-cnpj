@@ -31,5 +31,5 @@ scrapper = CNPJ_ETL(
 )
 
 # Scrap data
-scrapper.load_without_download()
+scrapper.run()
 

@@ -208,14 +208,6 @@ def generate_tables_indices(engine, tables_to_indices):
         for column_name in columns
     ]
     mask="create index {index_name} on {table_name} using btree(\"{column_name}\"); commit;"
-    queries = [ 
-        text(
-            mask.format(
-                table_name=table_name_, column_name=column_name_, index_name=index_name_, 
-            )
-            ) 
-        for table_name_, column_name_, index_name_ in fields_list 
-    ]
     
     # Execute index queries
     try:
@@ -233,6 +225,8 @@ def generate_tables_indices(engine, tables_to_indices):
                 # Execute the compiled SQL string
                 try:
                     conn.execute(query)
+                    print(f"Index {index_name_} created on column {column_name_} of table {table_name_}.")
+
                 except Exception as e:
                     msg=f"Error generating index {index_name_} on column `{column_name_}` for table {table_name_}"
                     logger.error(f"{msg}: {e}")

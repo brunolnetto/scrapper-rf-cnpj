@@ -254,15 +254,21 @@ class CNPJ_ETL:
         # Generate tables indices
         tables_with_indices = {
             "estabelecimento": {
-                "cnpj_basico", "cnpj_ordem", "cnpj_dv", "cnae_principal", "cnae_secundaria", "cep", "uf"
+                "cnpj_basico", 
+                "cnpj_ordem", 
+                "cnpj_dv", 
+                "cnae_principal", 
+                "cnae_secundaria", 
+                "cep", 
+                "municipio",
+                "uf"
             },
-            "empresa": {
-                "cnpj_basico"
-            },
-            "simples": {
-                "cnpj_basico"
-            }, 
-            "socios": {"cnpj_basico"}
+            "empresa": { "cnpj_basico" },
+            "simples": { "cnpj_basico" }, 
+            "socios": { "cnpj_basico" },
+            "cnae": { "codigo" },
+            "moti": { "codigo" },
+            "munic": { "codigo" }
         }
         tables_renew_indices = list(zip_tablenames_set.intersection(tables_with_indices))
 
