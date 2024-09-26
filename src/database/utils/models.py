@@ -15,16 +15,17 @@ from core.utils.etl import get_zip_to_tablename
 from core.schemas import FileGroupInfo, AuditMetadata
 
 def create_new_audit(
-    table_name:str, 
+    table_name: str, 
     filenames: List[str], 
-    size_bytes:int, 
-    update_at:datetime
+    size_bytes: int, 
+    update_at: datetime
 ) -> AuditDB:
     """
     Creates a new audit entry.
 
     Args:
-        name (str): The name of the file.
+        table_name (str): The name of the table.
+        filenames (List[str]): List of filenames.
         size_bytes (int): The size of the file in bytes.
         update_at (datetime): The datetime when the source was last updated.
 
@@ -43,13 +44,43 @@ def create_new_audit(
         audi_inserted_at=None,
     )
 
+def get_latest_updated_at(database: Database, table_name: str) -> Union[datetime, None]:
+    """
+    Retrieves the latest updated_at timestamp for a given table.
+
+    Args:
+        database (Database): The database object.
+        table_name (str): The name of the table.
+
+    Returns:
+        Union[datetime, None]: The latest updated_at timestamp or None if not found.
+    """
+    sql_query = text(f"""
+        SELECT max(audi_source_updated_at) 
+        FROM public.audit 
+        WHERE audi_table_name = :table_name;
+    """)
+    
+    with database.engine.connect() as connection:
+        result = connection.execute(sql_query, {'table_name': table_name})
+        latest_updated_at = result.fetchone()[0]
+    
+    if latest_updated_at:
+        sao_paulo_timezone = pytz.timezone("America/Sao_Paulo")
+        latest_updated_at = sao_paulo_timezone.localize(latest_updated_at)
+    
+    return latest_updated_at
+
 def create_audit(database: Database, file_group_info: FileGroupInfo) -> Union[AuditDB, None]:
     """
     Inserts a new audit entry if the provided processed_at is later than the latest existing entry for the filename.
 
     Args:
-        filename: The filename for the audit entry.
-        new_processed_at: The new processed datetime value.
+        database (Database): The database object.
+        file_group_info (FileGroupInfo): Information about the file group.
+
+    Returns:
+        Union[AuditDB, None]: The created audit entry or None if not created.
     """
     if database.engine:
         with database.session_maker() as session:
@@ -104,91 +135,87 @@ def create_audit(database: Database, file_group_info: FileGroupInfo) -> Union[Au
                 
                 return None
 
+    if latest_updated_at is None or file_group_info.date_range[1] > latest_updated_at:
+        return create_new_audit(
+            file_group_info.table_name,
+            file_group_info.elements,
+            file_group_info.size_bytes, 
+            file_group_info.date_range[1]
+        )
+    elif file_group_info.date_diff() > 7:
+        return None
     else:
-        logger.error("Error connecting to the database!")
+        logger.warn(
+            f"Skipping create entry for file group {file_group_info.name}. "
+            "Existing processed_at is later or equal."
+        )
+        return None
 
-def create_audits(database: Database, files_info: List[FileGroupInfo]) -> List:
+def create_audits(database: Database, files_info: List[FileGroupInfo]) -> List[AuditDB]:
     """
     Creates a list of audit entries based on the provided database and files information.
 
     Args:
         database (Database): The database object.
-        files_info (List): A list of file information objects.
+        files_info (List[FileGroupInfo]): A list of file information objects.
 
     Returns:
-        List: A list of audit entries.
+        List[AuditDB]: A list of audit entries.
     """
-    
-    audits = []
-    for file_info in files_info:    
-        audit = create_audit(database, file_info)
-
-        if audit:
-            audits.append(audit)
-            
-    return audits
+    return [create_audit(database, file_info) for file_info in files_info if create_audit(database, file_info)]
 
 def insert_audit(database: Database, new_audit: AuditDB) -> Union[AuditDB, None]:
     """
     Inserts a new audit entry if the provided processed_at is later than the latest existing entry for the filename.
 
     Args:
-        filename: The filename for the audit entry.
-        new_processed_at: The new processed datetime value.
+        database (Database): The database object.
+        new_audit (AuditDB): The new audit entry.
+
+    Returns:
+        Union[AuditDB, None]: The inserted audit entry or None if not inserted.
     """
-    table_name = new_audit.audi_table_name
     if database.engine:
         with database.session_maker() as session:
-            # Check if the new processed_at is greater
-            
             if new_audit.is_precedence_met:
                 session.add(new_audit)
-                
-                # Commit the changes to the database
                 session.commit()
+                return new_audit
             else:
-                error_message=f"Skipping insert audit for table name {table_name}. "
-                logger.warn(error_message)
-
+                logger.warn(f"Skipping insert audit for table name {new_audit.audi_table_name}.")
                 return None
-
     else:
         logger.error("Error connecting to the database!")
+        return None
 
-def insert_audits(database, new_audits: List[AuditDB]) -> None:
+def insert_audits(database: Database, new_audits: List[AuditDB]) -> None:
     """
     Inserts a list of new audits into the database.
 
     Args:
         database (Database): The database object.
-        new_audits (List): A list of new audit entries.
+        new_audits (List[AuditDB]): A list of new audit entries.
 
     Returns:
         None
     """
-
     for new_audit in new_audits:
         try:
             insert_audit(database, new_audit)
-        
         except Exception as e:
-            summary=f"Error inserting audit for table {new_audit.audi_table_name}"
-            logger.error(f"{summary}: {e}")
+            logger.error(f"Error inserting audit for table {new_audit.audi_table_name}: {e}")
 
-def create_audit_metadata(audits: List[AuditDB], to_path: str):  
+def create_audit_metadata(audits: List[AuditDB], to_path: str) -> AuditMetadata:  
     """
     Creates audit metadata based on the provided database, files information, and destination path.
 
     Args:
-        database (Database): The database object used for creating audits.
-        files_info (List): A list of file information objects.
+        audits (List[AuditDB]): A list of audit entries.
         to_path (str): The destination path for the files.
 
     Returns:
-        AuditMetadata: An object containing the audit list, zip file dictionary, unzipped files list,
-        zipped files list, and zipped file to tablename dictionary.
+        AuditMetadata: An object containing the audit list and related metadata.
     """    
-    # Traduzir arquivos zipados e seus conteúdos
     zip_file_dict = {
         zip_filename: [
             content.filename 
@@ -198,7 +225,6 @@ def create_audit_metadata(audits: List[AuditDB], to_path: str):
         for zip_filename in audit.audi_filenames
     }
 
-    # Arquivos
     zipfiles_to_tablenames = get_zip_to_tablename(zip_file_dict)
     tablename_to_zipfile_dict = invert_dict_list(zipfiles_to_tablenames)
 
@@ -211,31 +237,25 @@ def create_audit_metadata(audits: List[AuditDB], to_path: str):
     }
 
     return AuditMetadata(
-        audit_list=audits, tablename_to_zipfile_to_files=tablename_to_zipfile_to_files,
+        audit_list=audits, 
+        tablename_to_zipfile_to_files=tablename_to_zipfile_to_files,
     )
 
-def delete_filename_on_audit(database: Database, table_name: str):
+def delete_filename_on_audit(database: Database, table_name: str) -> None:
     """
-    Delete entries from the database with a specific filename.
+    Delete entries from the database with a specific table name.
 
     Args:
         database (Database): The database object.
-        filename (str): The filename to be deleted.
+        table_name (str): The table name to be deleted.
 
     Returns:
         None
     """
     if database.engine:
-        # Use the context manager to create a session
         with database.session_maker() as session:
-            # Delete entries (adjust filter as needed)
-            is_table_name = AuditDB.audi_table_name == table_name
-            session.query(AuditDB).filter(is_table_name).delete()
-
-            # Commit the changes
+            session.query(AuditDB).filter(AuditDB.audi_table_name == table_name).delete()
             session.commit()
-            
             logger.info(f"Deleted entries for table name {table_name}.")
-            
     else:
         logger.error("Error connecting to the database!")
