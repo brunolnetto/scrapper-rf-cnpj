@@ -1,64 +1,58 @@
-from os import getenv, path, getcwd
+import os
 from dotenv import load_dotenv
-from typing import Union
+from typing import Tuple, Union
 from psycopg2 import OperationalError
 from sqlalchemy_utils import database_exists, create_database
-from sqlalchemy import pool, text
-from sqlalchemy import create_engine
+from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
 from setup.logging import logger
-from utils.misc import makedir 
+from utils.misc import makedir
 from database.models import Base
 from database.schemas import Database
-from database.engine import create_database
+from database.engine import create_database as create_db_engine
 from utils.docker import get_postgres_host
 
-def get_sink_folder():
+def load_environment_variables(env_file: str = '.env') -> None:
+    """Load environment variables from a file."""
+    env_path = os.path.join(os.getcwd(), env_file)
+    load_dotenv(env_path)
+
+def get_sink_folder() -> Tuple[str, str]:
     """
     Get the output and extracted file paths based on the environment variables or default paths.
 
     Returns:
         Tuple[str, str]: A tuple containing the output file path and the extracted file path.
     """
-    env_path = path.join(getcwd(), '.env')
-    load_dotenv(env_path)
+    load_environment_variables()
     
-    root_path = path.join(getcwd(), 'data') 
-    default_output_file_path = path.join(root_path, 'DOWNLOAD_FILES')
-    default_input_file_path = path.join(root_path, 'EXTRACTED_FILES')
+    root_path = os.path.join(os.getcwd(), 'data')
+    default_output_file_path = os.path.join(root_path, 'DOWNLOAD_FILES')
+    default_input_file_path = os.path.join(root_path, 'EXTRACTED_FILES')
     
-    # Read details from ".env" file:
-    output_route = getenv('DOWNLOAD_PATH', default_output_file_path)
-    extract_route = getenv('EXTRACT_PATH', default_input_file_path)
+    output_route = os.getenv('DOWNLOAD_PATH', default_output_file_path)
+    extract_route = os.getenv('EXTRACT_PATH', default_input_file_path)
     
-    # Create the output and extracted folders if they do not exist
-    output_folder = path.join(root_path, output_route)
-    extract_folder = path.join(root_path, extract_route)
+    output_folder = os.path.join(root_path, output_route)
+    extract_folder = os.path.join(root_path, extract_route)
         
     makedir(output_folder)
     makedir(extract_folder)
     
     return output_folder, extract_folder
 
-def get_db_uri():
-    env_path = path.join(getcwd(), '.env')
-    load_dotenv(env_path)
+def get_db_uri() -> str:
+    """Construct the database URI from environment variables."""
+    load_environment_variables()
     
-    # Get the host based on the environment
-    if getenv('ENVIRONMENT') == 'docker':
-        host = get_postgres_host()
-    else: 
-        host = getenv('POSTGRES_HOST', 'localhost')
+    host = get_postgres_host() if os.getenv('ENVIRONMENT') == 'docker' else os.getenv('POSTGRES_HOST', 'localhost')
+    port = int(os.getenv('POSTGRES_PORT', '5432'))
+    user = os.getenv('POSTGRES_USER', 'postgres')
+    password = os.getenv('POSTGRES_PASSWORD', 'postgres')
+    database_name = os.getenv('POSTGRES_DBNAME')
     
-    # Get environment variables
-    port = int(getenv('POSTGRES_PORT', '5432'))
-    user = getenv('POSTGRES_USER', 'postgres')
-    passw = getenv('POSTGRES_PASSWORD', 'postgres')
-    database_name = getenv('POSTGRES_DBNAME')
-    
-    # Connect to the database
-    return f'postgresql://{user}:{passw}@{host}:{port}/{database_name}'
+    return f'postgresql://{user}:{password}@{host}:{port}/{database_name}'
 
 def init_database() -> Union[Database, None]:
     """
@@ -67,40 +61,29 @@ def init_database() -> Union[Database, None]:
     Returns:
         Database: A NamedTuple with engine and conn attributes for the database connection.
         None: If there was an error connecting to the database.
-    
     """
-    db_uri=get_db_uri()
+    db_uri = get_db_uri()
+    database_obj = create_db_engine(db_uri)
 
-    # Create the database engine and session maker
-    database_obj=create_database(db_uri)
-
-    # Create the database if it does not exist
     try:
-        if not database_exists(db_uri): 
-            # Create the database engine and session maker
+        if not database_exists(db_uri):
             create_database(db_uri)
-        
     except OperationalError as e:
-        logger.error(f"Error creating to database: {e}")
+        logger.error(f"Error creating database: {e}")
         return None
     
-    try: 
+    try:
         with database_obj.engine.connect() as conn:
-            query = text("SELECT 1")
-
-            # Test the connection
-            conn.execute(query)
-
+            conn.execute(text("SELECT 1"))
             logger.info('Connection to the database established!')
-            
     except OperationalError as e:
-        logger.error(f"Error connecting to the database: {e}")        
+        logger.error(f"Error connecting to the database: {e}")
+        return None
     
     try:
-        # Create all tables defined using the Base class (if not already created)
         Base.metadata.create_all(database_obj.engine)
-
-    except:
-        logger.error("Error creating tables in the database")
+    except Exception as e:
+        logger.error(f"Error creating tables in the database: {e}")
+        return None
         
     return database_obj

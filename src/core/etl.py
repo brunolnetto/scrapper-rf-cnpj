@@ -16,10 +16,10 @@ from database.utils.models import (
     create_audit_metadata, 
     insert_audit
 )
+from database.dml import generate_tables_indices
 from core.utils.etl import (
     get_RF_data, 
-    load_RF_data_on_database,
-    generate_tables_indices,
+    load_RF_data_on_database
 )
 from utils.misc import convert_to_bytes, remove_folder
 
@@ -37,79 +37,49 @@ class CNPJ_ETL:
         self.is_parallel = is_parallel
         self.delete_zips = delete_zips
         
-    def scrap_data(self):
+    def scrap_data(self) -> List[FileInfo]:
         """
         Scrapes the RF (Receita Federal) website to extract file information.
 
         Returns:
-            list: A list of tuples containing the updated date and filename of the files found on the RF website.
+            list: A list of FileInfo objects containing the updated date and filename of the files found on the RF website.
         """
-        raw_html = request.urlopen(self.data_url)
-        raw_html = raw_html.read()
-
-        # Formatar página e converter em string
+        raw_html = request.urlopen(self.data_url).read()
         page_items = BeautifulSoup(raw_html, 'lxml')
-
-        # Find all table rows
         table_rows = page_items.find_all('tr')
         
-        # Extract data from each row
         files_info = []
         for row in table_rows:
-            # Find cells containing filename (anchor tag) and date
             filename_cell = row.find('a')
-            regex_pattern=r'\d{4}-\d{2}-\d{2}'
-            collect_date=lambda text: text and re.search(regex_pattern, text)
-            date_cell = row.find('td', text=collect_date)
+            date_cell = row.find('td', text=lambda text: text and re.search(r'\d{4}-\d{2}-\d{2}', text))
+            size_cell = row.find('td', text=lambda text: text and any(text.endswith(size_type) for size_type in ['K', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y']))
             
-            size_types=['K', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y']
-            or_map = lambda a, b: a or b
-            is_size_type = lambda text: reduce(
-                or_map, 
-                [text.endswith(size_type) for size_type in size_types]
-            )
-            size_cell = row.find('td', text=lambda text: text and is_size_type(text))
-            
-            has_data = filename_cell and date_cell and size_cell
-            if has_data:
+            if filename_cell and date_cell and size_cell:
                 filename = filename_cell.text.strip()
-
                 if filename.endswith('.zip'):
-                    # Extract date and format it
-                    date_text = date_cell.text.strip()
-
-                    # Try converting date text to datetime object (adjust format if needed)
                     try:
-                        updated_at = datetime.strptime(date_text, "%Y-%m-%d %H:%M")
-                        sao_paulo_timezone = pytz.timezone("America/Sao_Paulo")
-                        updated_at = sao_paulo_timezone.localize(updated_at)
-                        
-                        updated_at = updated_at.replace(hour=0, minute=0, second=0, microsecond=0)
-                    
+                        updated_at = datetime.strptime(date_cell.text.strip(), "%Y-%m-%d %H:%M")
+                        updated_at = pytz.timezone("America/Sao_Paulo").localize(updated_at).replace(hour=0, minute=0, second=0, microsecond=0)
                     except ValueError:
-                        # Handle cases where date format doesn't match
                         logger.error(f"Error parsing date for file: {filename}")
+                        continue
 
-                    size_value_str = size_cell.text.strip()
-                    
                     file_info = FileInfo(
                         filename=filename, 
                         updated_at=updated_at,
-                        file_size=convert_to_bytes(size_value_str)
+                        file_size=convert_to_bytes(size_cell.text.strip())
                     )
                     files_info.append(file_info)
         
         return files_info
     
-    def get_data(self, audits: List[AuditDB]):
+    def get_data(self, audits: List[AuditDB]) -> None:
         """
         Downloads the files from the RF (Receita Federal) website.
 
-        Returns:
-            None
+        Args:
+            audits (List[AuditDB]): List of audit objects.
         """
-        
-        # Get data
         if audits:
             get_RF_data(
                 self.data_url, self.layout_url, 
@@ -117,17 +87,19 @@ class CNPJ_ETL:
                 self.is_parallel
             )
 
-    def audit_scrapped_files(self, files_info: List[FileInfo]):
-        condition_map = lambda info: \
-            info.filename.endswith('.zip') or \
-            (
-                info.filename.endswith('.pdf') and 
-                re.match(r'layout', info.filename, re.IGNORECASE)
-            )
-        files_info=list(filter(condition_map, files_info))
-    
-        # Create file groups
+    def audit_scrapped_files(self, files_info: List[FileInfo]) -> List[AuditDB]:
+        """
+        Audits the scrapped files.
+
+        Args:
+            files_info (List[FileInfo]): List of file information.
+
+        Returns:
+            List[AuditDB]: List of audit objects.
+        """
+        files_info = [info for info in files_info if info.filename.endswith('.zip') or (info.filename.endswith('.pdf') and re.match(r'layout', info.filename, re.IGNORECASE))]
         file_groups_info = create_file_groups(files_info)
+        return create_audits(self.database, file_groups_info)
 
         # Create audits
         audits = create_audits(self.database, file_groups_info)
@@ -139,10 +111,10 @@ class CNPJ_ETL:
         Filters the data to be loaded into the database.
 
         Returns:
-            None
+            List[AuditDB]: List of audit objects.
         """
-        # Scrap data
         files_info = self.scrap_data()
+        return self.audit_scrapped_files(files_info)
 
         # Audit scrapped files
         audits = self.audit_scrapped_files(files_info)
@@ -154,12 +126,10 @@ class CNPJ_ETL:
         Retrieves the data from the database.
 
         Returns:
-            None
+            List[AuditDB]: List of audit objects.
         """
-        # Scrap data
         audits = self.fetch_data()
         
-        # Test purpose only
         if getenv("ENVIRONMENT") == "development": 
             audits = list(
                 filter(
@@ -168,46 +138,40 @@ class CNPJ_ETL:
                 )
             )
         
-        # Get data
         if audits:
-            # Get data
             self.get_data(audits)
             return audits
+        return []
 
-        else:
-            return []
-            
-
-    def load_data(self, audit_metadata: AuditMetadata):
+    def load_data(self, audit_metadata: AuditMetadata) -> None:
         """
         Loads the data into the database.
 
-        Returns:
-            None
+        Args:
+            audit_metadata (AuditMetadata): Metadata for the audit.
         """
-        # Load database
         load_RF_data_on_database(self.database, self.extract_folder, audit_metadata)
 
-    def insert_audits(self, audit_metadata: AuditMetadata):
-        # Insert audit metadata
+    def insert_audits(self, audit_metadata: AuditMetadata) -> None:
+        """
+        Inserts audit metadata into the database.
+
+        Args:
+            audit_metadata (AuditMetadata): Metadata for the audit.
+        """
         for audit in audit_metadata.audit_list:
             try:
                 insert_audit(self.database, audit)
-            
             except Exception as e:
                 logger.error(f"Error inserting audit {audit}: {e}")
 
-    def load_without_download(self):
+    def load_without_download(self) -> None:
         """
         Uploads the data to the database without downloading it.
-
-        Returns:
-            None
         """
         audits = self.fetch_data()
 
         if audits:
-            # Create audit metadata
             audit_metadata = create_audit_metadata(audits, self.download_folder)
             for audit in audit_metadata.audit_list:
                 audit.audi_downloaded_at=datetime.now()
@@ -228,30 +192,27 @@ class CNPJ_ETL:
         audits = self.fetch_data()
 
         if audits:
-            # Create audit metadata
             audit_metadata = create_audit_metadata(audits, self.download_folder)
             for audit in audit_metadata.audit_list:
-                audit.audi_downloaded_at=datetime.now()
-                audit.audi_processed_at=datetime.now()
-                audit.audi_inserted_at=datetime.now()
+                audit.audi_downloaded_at = datetime.now()
+                audit.audi_processed_at = datetime.now()
+                audit.audi_inserted_at = datetime.now()
             
-            # Create indices
             self.create_indices(audit_metadata)
-            
-            # Insert audit metadata
             self.insert_audits(audit_metadata)
         else: 
             logger.warn("No data to load!")
         
-            
-    def create_indices(self, audit_metadata):
-        table_to_filenames = audit_metadata.tablename_to_zipfile_to_files
-        zip_tablenames_set = set(table_to_filenames.keys())
-        
+    def create_indices(self, audit_metadata: AuditMetadata) -> None:
+        """
+        Generates indices for the tables.
+
+        Args:
+            audit_metadata (AuditMetadata): Metadata for the audit.
+        """
         table_to_filenames = audit_metadata.tablename_to_zipfile_to_files
         zip_tablenames_set = set(table_to_filenames.keys())
 
-        # Generate tables indices
         tables_with_indices = {
             "estabelecimento": {
                 "cnpj_basico", 
@@ -272,41 +233,23 @@ class CNPJ_ETL:
         }
         tables_renew_indices = list(zip_tablenames_set.intersection(tables_with_indices))
 
-        has_new_tables = len(tables_renew_indices) != 0
-        renew_table_indices = {
-            table_name: columns
-            for table_name, columns in tables_with_indices.items()
-            if table_name in tables_renew_indices
-        }
-        
-        if(has_new_tables):
+        if tables_renew_indices:
+            renew_table_indices = {table_name: columns for table_name, columns in tables_with_indices.items() if table_name in tables_renew_indices}
             generate_tables_indices(self.database.engine, renew_table_indices)
 
-    def run(self):
+    def run(self) -> None:
         """
         Runs the ETL process.
-
-        Returns:
-            None
         """
         audits = self.retrieve_data()
 
         if audits:
-            # Create audit metadata
             audit_metadata = create_audit_metadata(audits, self.download_folder)
-
-            # Load data
             self.load_data(audit_metadata)
-            
-            # Create indices
             self.create_indices(audit_metadata)
-
-            # Insert audit metadata
             self.insert_audits(audit_metadata)
             
-            # Delete download folder content
             if self.delete_zips:
                 remove_folder(self.download_folder)
-            
         else: 
             logger.warn("No data to load!")

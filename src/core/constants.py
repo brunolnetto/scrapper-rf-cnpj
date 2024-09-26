@@ -1,77 +1,86 @@
-# Description: Core constants for the project
+"""
+Core constants for the project.
+"""
 
+from typing import Callable, Dict, List, Any
 from utils.misc import repeat_token
 
-# Miscelaneous
+# Constants
 FENCE_LENGTH = 35
 FENCE_CHARACTER = '#'
-FENCE=repeat_token(FENCE_CHARACTER, FENCE_LENGTH)
+FENCE = repeat_token(FENCE_CHARACTER, FENCE_LENGTH)
+ENCODING_LATIN1 = 'latin-1'
 
-# Arquivos de empresa:
-def empresa_transform_map(artifact):
-    # Replace "," por "."
-    comma_to_period=lambda x: x.replace(',','.')
+def empresa_transform_map(artifact: Any) -> Any:
+    """
+    Transform map for 'empresa' artifact.
+    
+    Args:
+        artifact: The artifact to transform.
+        
+    Returns:
+        The transformed artifact.
+    """
+    comma_to_period = lambda x: x.replace(',', '.')
     artifact['capital_social'] = artifact['capital_social'].apply(comma_to_period)
     artifact['capital_social'] = artifact['capital_social'].astype(float)
-
     return artifact
 
-# Tabelas
-TABLES_INFO_DICT = {
+TABLES_INFO_DICT: Dict[str, Dict[str, Any]] = {
     'empresa': {
         'label': 'Empresa',
         'group': 'empresas',
-        'columns': [ 
-            'cnpj_basico', 
-            'razao_social', 
-            'natureza_juridica', 
-            'qualificacao_responsavel', 
-            'capital_social', 
-            'porte_empresa', 
+        'columns': [
+            'cnpj_basico',
+            'razao_social',
+            'natureza_juridica',
+            'qualificacao_responsavel',
+            'capital_social',
+            'porte_empresa',
             'ente_federativo_responsavel'
         ],
         'expression': 'EMPRE',
         'transform_map': empresa_transform_map,
-        'encoding': 'latin-1',
+        'encoding': ENCODING_LATIN1,
         'index_columns': ['cnpj_basico']
     },
     'estabelecimento': {
         'label': 'Estabelecimento',
         'group': 'estabelecimentos',
         'columns': [
-            'cnpj_basico', 
-            'cnpj_ordem', 
-            'cnpj_dv', 
-            'identificador_matriz_filial', 
-            'nome_fantasia', 
+            'cnpj_basico',
+            'cnpj_ordem',
+            'cnpj_dv',
+            'identificador_matriz_filial',
+            'nome_fantasia',
             'situacao_cadastral',
-            'data_situacao_cadastral', 
-            'motivo_situacao_cadastral', 
-            'nome_cidade_exterior', 
-            'pais', 
+            'data_situacao_cadastral',
+            'motivo_situacao_cadastral',
+            'nome_cidade_exterior',
+            'pais',
             'data_inicio_atividade',
-            'cnae_fiscal_principal', 
-            'cnae_fiscal_secundaria', 
-            'tipo_logradouro', 
-            'logradouro', 
+            'cnae_fiscal_principal',
+            'cnae_fiscal_secundaria',
+            'tipo_logradouro',
+            'logradouro',
             'numero',
-            'complemento', 
-            'bairro', 
-            'cep', 
-            'uf', 
-            'municipio', 
-            'ddd_1', 
-            'telefone_1', 
+            'complemento',
+            'bairro',
+            'cep',
+            'uf',
+            'municipio',
+            'ddd_1',
+            'telefone_1',
             'ddd_2',
-            'telefone_2', 
-            'ddd_fax', 
-            'fax', 
-            'correio_eletronico', 
-            'situacao_especial', 
+            'telefone_2',
+            'ddd_fax',
+            'fax',
+            'correio_eletronico',
+            'situacao_especial',
             'data_situacao_especial'
         ],
         'expression': 'ESTABELE',
-	    'encoding': 'latin-1',
+        'encoding': ENCODING_LATIN1,
         'index_columns': ['cnpj_basico', 'cnpj_ordem', 'cnpj_dv']
     },
     'socios': {
@@ -91,7 +100,7 @@ TABLES_INFO_DICT = {
             'faixa_etaria'
         ],
         'expression': 'SOCIO',
-        'encoding': 'latin-1',
+        'encoding': ENCODING_LATIN1,
         'index_columns': ['cnpj_basico']
     },
     'simples': {
@@ -107,50 +116,48 @@ TABLES_INFO_DICT = {
             'data_exclusao_mei'
         ],
         'expression': 'SIMPLES',
-        'encoding': 'latin-1'
+        'encoding': ENCODING_LATIN1
     },
     'cnae': {
         'label': 'CNAEs',
         'group': 'cnaes',
         'columns': ['codigo', 'descricao'],
         'expression': 'CNAE',
-        'encoding': 'latin-1'
+        'encoding': ENCODING_LATIN1
     },
     'moti': {
-        'label': 'motivos',
+        'label': 'Motivos',
         'group': 'motivos',
         'columns': ['codigo', 'descricao'],
         'expression': 'MOTI',
-        'encoding': 'latin-1'
+        'encoding': ENCODING_LATIN1
     },
     'munic': {
-        'label': 'municipios',
+        'label': 'Municipios',
         'group': 'municipios',
         'columns': ['codigo', 'descricao'],
         'expression': 'MUNIC',
-        'encoding': 'latin-1'
+        'encoding': ENCODING_LATIN1
     },
     'natju': {
         'label': 'Naturezas',
         'group': 'naturezas',
         'columns': ['codigo', 'descricao'],
         'expression': 'NATJU',
-        'encoding': 'latin-1'
+        'encoding': ENCODING_LATIN1
     },
     'pais': {
         'label': 'Paises',
         'group': 'paises',
         'columns': ['codigo', 'descricao'],
         'expression': 'PAIS',
-        'encoding': 'latin-1'
+        'encoding': ENCODING_LATIN1
     },
     'quals': {
         'label': 'Qualificacoes',
         'group': 'qualificacoes',
         'columns': ['codigo', 'descricao'],
         'expression': 'QUALS',
-        'encoding': 'latin-1'
+        'encoding': ENCODING_LATIN1
     }
 }
-
-
