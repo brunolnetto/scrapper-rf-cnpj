@@ -2,6 +2,7 @@ from typing import List, Dict
 from utils.misc import normalize_filenames, get_date_range
 from core.schemas import FileInfo, FileGroupInfo
 from core.constants import TABLES_INFO_DICT
+from setup.logging import logger
 
 def file_group_name_to_table_name(file_group_name: str) -> str:
     """
@@ -32,33 +33,34 @@ def create_file_groups(files_info: List[FileInfo]) -> List[FileGroupInfo]:
     Returns:
         List[FileGroupInfo]: A list of FileGroupInfo objects.
     """
-    filename_to_update_at: Dict[str, str] = {
-        file_info.filename: file_info.updated_at for file_info in files_info
-    }
-    filename_to_size: Dict[str, int] = {
-        file_info.filename: file_info.file_size for file_info in files_info
-    }
-    filenames: List[str] = [file_info.filename for file_info in files_info]
-    normalized_filenames: Dict[str, List[str]] = normalize_filenames(filenames)
+    # Build dictionaries from files_info for size and update_at lookup
+    filename_to_update_at = {file_info.filename: file_info.updated_at for file_info in files_info}
+    filename_to_size = {file_info.filename: file_info.file_size for file_info in files_info}
+    
+    # Normalize filenames and group them
+    filenames = [file_info.filename for file_info in files_info]
+    normalized_filenames = normalize_filenames(filenames)  # Returns a dict
 
-    file_groups = [
-        {
-            "name": normalized_name,
-            "elements": original_filenames,
-            "size_bytes": sum(filename_to_size[filename] for filename in original_filenames),
-            "date_range": get_date_range([filename_to_update_at[filename] for filename in original_filenames]),
-            "table_name": file_group_name_to_table_name(normalized_name)
-        }
-        for normalized_name, original_filenames in normalized_filenames.items()
-    ]
+    # Create file groups with accumulated size and date range
+    file_groups = []
+    for normalized_name, original_filenames in normalized_filenames.items():
+        group_size_bytes = sum(filename_to_size[filename] for filename in original_filenames)
+        group_date_range = get_date_range([filename_to_update_at[filename] for filename in original_filenames])
 
-    return [
-        FileGroupInfo(
-            name=group['name'], 
-            elements=group['elements'], 
-            date_range=group['date_range'],
-            table_name=group['table_name'],
-            size_bytes=group['size_bytes']
+        try:
+            table_name = file_group_name_to_table_name(normalized_name)
+        except ValueError as e:
+            logger.error(f"Error mapping file group {normalized_name}: {e}")
+            continue
+
+        file_groups.append(
+            FileGroupInfo(
+                name=normalized_name,
+                elements=original_filenames,
+                date_range=group_date_range,
+                table_name=table_name,
+                size_bytes=group_size_bytes
+            )
         )
-        for group in file_groups
-    ]
+
+    return file_groups

@@ -12,7 +12,7 @@ from database.models import AuditDB
 from utils.misc import invert_dict_list
 from utils.zip import list_zip_contents
 from core.utils.etl import get_zip_to_tablename
-from core.schemas import FileGroupInfo, AuditMetadata
+from core.schemas import FileGroupInfo, AuditMetadata, AuditDBSchema
 
 def create_new_audit(
     table_name: str, 
@@ -33,7 +33,7 @@ def create_new_audit(
         AuditDB: An audit entry object.
     """
     return AuditDB(
-        audi_id=uuid4(),
+        audi_id=str(uuid4()),
         audi_created_at=datetime.now(),
         audi_table_name=table_name,
         audi_filenames=filenames,
@@ -96,7 +96,7 @@ def create_audit(database: Database, file_group_info: FileGroupInfo) -> Union[Au
             
                 # Process results (e.g., fetchall, fetchone)
                 latest_updated_at = result.fetchone()[0]
-            print(latest_updated_at)
+
             if latest_updated_at is not None:
                 format="%Y-%m-%d %H:%M"
                 latest_updated_at = datetime.strptime(latest_updated_at.strftime(format), format)
@@ -131,7 +131,7 @@ def create_audit(database: Database, file_group_info: FileGroupInfo) -> Union[Au
                 summary=f'Skipping create entry for file group {file_group_info.name}.'
                 explanation='Existing processed_at is later or equal.'
                 error_message=f"{summary} {explanation}"
-                logger.warn(error_message)
+                logger.warning(error_message)
                 
                 return None
 
@@ -145,7 +145,7 @@ def create_audit(database: Database, file_group_info: FileGroupInfo) -> Union[Au
     elif file_group_info.date_diff() > 7:
         return None
     else:
-        logger.warn(
+        logger.warning(
             f"Skipping create entry for file group {file_group_info.name}. "
             "Existing processed_at is later or equal."
         )
@@ -162,7 +162,10 @@ def create_audits(database: Database, files_info: List[FileGroupInfo]) -> List[A
     Returns:
         List[AuditDB]: A list of audit entries.
     """
-    return [create_audit(database, file_info) for file_info in files_info if create_audit(database, file_info)]
+    return [
+        create_audit(database, file_info) 
+        for file_info in files_info if create_audit(database, file_info)
+    ]
 
 def insert_audit(database: Database, new_audit: AuditDB) -> Union[AuditDB, None]:
     """
@@ -182,7 +185,7 @@ def insert_audit(database: Database, new_audit: AuditDB) -> Union[AuditDB, None]
                 session.commit()
                 return new_audit
             else:
-                logger.warn(f"Skipping insert audit for table name {new_audit.audi_table_name}.")
+                logger.warning(f"Skipping insert audit for table name {new_audit.audi_table_name}.")
                 return None
     else:
         logger.error("Error connecting to the database!")
@@ -235,9 +238,11 @@ def create_audit_metadata(audits: List[AuditDB], to_path: str) -> AuditMetadata:
         }
         for tablename, zipfiles in tablename_to_zipfile_dict.items()
     }
-
     return AuditMetadata(
-        audit_list=audits, 
+        audit_list=[ 
+            AuditDBSchema.model_validate(audit, from_attributes=True) 
+            for audit in audits 
+        ], 
         tablename_to_zipfile_to_files=tablename_to_zipfile_to_files,
     )
 

@@ -1,9 +1,11 @@
 from wget import download 
+import requests
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from os import path
 from functools import reduce
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from database.models import AuditDB
 from database.dml import populate_table
@@ -17,22 +19,43 @@ tablename_list = list(TABLES_INFO_DICT.keys())
 trimmed_tablename_list = [name[:5] for name in TABLES_INFO_DICT.keys()]
 tablename_tuples = list(zip(tablename_list, trimmed_tablename_list))
 
-def download_zipfile(audit, url, zip_filename, download_path, has_progress_bar):
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+def download_zipfile(
+    audit: AuditDB, url: str, zip_filename: str, download_path: str, has_progress_bar: bool
+):
     """Downloads a zip file from the given URL to the specified output path."""
     full_path = path.join(download_path, zip_filename)
     file_url = f"{url}/{zip_filename}"
+    local_filename = path.join(download_path, zip_filename)
 
     try:
         logger.info(f"Downloading file {zip_filename}.")
-        download(file_url, out=download_path, bar=None if not has_progress_bar else 'default')
-    except Exception as e:
-        logger.error(f"Error downloading {url}: {e}")
-        return None
-    finally:
-        logger.info(f"Finished file download of file {zip_filename}...")
+        with requests.get(file_url, stream=True) as r:
+            r.raise_for_status()
+            total_size = int(r.headers.get('Content-Length', 0))  # Get total file size
+            
+            # Initialize tqdm progress bar if enabled
+            progress = tqdm(total=total_size, unit='B', unit_scale=True, desc=zip_filename) if has_progress_bar else None
+            
+            with open(local_filename, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+
+                        if has_progress_bar:
+                                progress.update(len(chunk))  # Update the progress bar
+
+        # Close progress bar if it was enabled
+        if has_progress_bar:
+            progress.close()
+
+        logger.info(f"Finished downloading {zip_filename}.")
         audit.audi_downloaded_at = datetime.now()
-        audit.audi_file_size_bytes = get_file_size(full_path)
-        return audit
+        audit.audi_file_size_bytes = get_file_size(local_filename)
+    except Exception as e:
+        logger.error(f"Error downloading {zip_filename}: {e}")
+        raise
+    return audit
 
 def extract_zipfile(audit, zip_filename, download_path, extracted_path):
     """Extracts a zip file to the specified directory."""
@@ -49,11 +72,14 @@ def extract_zipfile(audit, zip_filename, download_path, extracted_path):
         return audit
 
 def download_and_extract_file(audit, url, zip_filename, download_path, extracted_path, has_progress_bar):
-    """Downloads and extracts a single file."""
-    audit = download_zipfile(audit, url, zip_filename, download_path, has_progress_bar)
-    if audit:
-        audit = extract_zipfile(audit, zip_filename, download_path, extracted_path)
-    return audit
+    try:
+        audit = download_zipfile(audit, url, zip_filename, download_path, has_progress_bar)
+        if audit:
+            audit = extract_zipfile(audit, zip_filename, download_path, extracted_path)
+        return audit
+    except Exception as e:
+        logger.error(f"Error processing file {zip_filename}: {e}")
+        return None
 
 def download_and_extract_files(audit, url, download_path, extracted_path, has_progress_bar):
     """Downloads and extracts multiple files."""
@@ -64,13 +90,19 @@ def download_and_extract_files(audit, url, download_path, extracted_path, has_pr
 def process_files_parallel(url, audits, output_path, extracted_path, max_workers):
     """Downloads and extracts files in parallel."""
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(download_and_extract_files, audit, url, output_path, extracted_path, False) for audit in audits]
+        futures = [
+            executor.submit(
+                download_and_extract_files, 
+                audit, url, output_path, extracted_path, False
+            ) for audit in audits
+        ]
         results = []
-        for future in tqdm(as_completed(futures), total=len(audits)):
+        for future in tqdm(as_completed(futures), total=len(audits), desc="Processing Files", unit="file"):
             try:
                 results.append(future.result())
             except Exception as e:
-                logger.error(f"An error occurred on parallelization: {e}")
+                logger.error(f"Error during parallel execution: {e}")
+
         return results
 
 def process_files_serial(url, audits, output_path, extracted_path):
@@ -128,13 +160,10 @@ def load_RF_data_on_database(database, source_folder, audit_metadata):
 
 def get_zip_to_tablename(zip_file_dict):
     """Retrieves the filenames of the extracted files from the Receita Federal."""
-    zip_to_tablename = {zipped_file: [] for zipped_file in zip_file_dict.keys()}
+    return {
+        zipped_file: [
+            tuple_[0] for item in unzipped_files for tuple_ in tablename_tuples
+            if tuple_[1].lower() in item.lower()
+        ] for zipped_file, unzipped_files in zip_file_dict.items()
+    }
 
-    for zipfile_filename, unzipped_files in zip_file_dict.items():
-        for item in unzipped_files:
-            has_label_map = lambda label: item.lower().find(label[1].lower()) > -1
-            this_tablename_tuple = list(filter(has_label_map, tablename_tuples))
-            if this_tablename_tuple:
-                zip_to_tablename[zipfile_filename].append(this_tablename_tuple[0][0])
-
-    return zip_to_tablename
