@@ -3,7 +3,7 @@ from sqlalchemy import (
 )
 
 from sqlalchemy.dialects.postgresql import UUID
-from typing import Optional, Generic, TypeVar
+from typing import Optional, Generic, TypeVar, List, Any
 from pydantic import BaseModel, Field
 from datetime import datetime
 from uuid import uuid4
@@ -19,6 +19,12 @@ T = TypeVar('T')
 class AuditDBSchema(BaseModel, Generic[T]):
     audi_id: str = Field(default_factory=uuid4, description="Unique identifier for the audit entry.")
     audi_table_name: str = Field(..., description="Table name associated with the audit entry.")
+    audi_filenames: Optional[List[str]] = Field(
+        None, description="List of files associated to given table."
+    )
+    audi_file_size_bytes: Optional[float] = Field(
+        None, description="Total size of files respective to given table."
+    )
     audi_source_updated_at: Optional[datetime] = Field(
         None, description="Timestamp of the last source update."
     )
@@ -31,22 +37,36 @@ class AuditDBSchema(BaseModel, Generic[T]):
     audi_processed_at: Optional[datetime] = Field(
         None, description="Timestamp of the audit entry processing."
     )
-    audi_inserted_at: datetime = Field(
+    audi_inserted_at: Optional[datetime] = Field(
         ..., description="Timestamp of the audit entry insertion."
     )
 
-class AuditDB(Base):
+    def to_audit_db(self) -> Any:
+        """Convert AuditDBSchema to AuditDB model."""
+        return AuditDB(
+            audi_id=self.audi_id,
+            audi_table_name=self.audi_table_name,
+            audi_filenames=self.audi_filenames,
+            audi_file_size_bytes=self.audi_file_size_bytes,
+            audi_source_updated_at=self.audi_source_updated_at,
+            audi_created_at=self.audi_created_at,
+            audi_downloaded_at=self.audi_downloaded_at,
+            audi_processed_at=self.audi_processed_at,
+            audi_inserted_at=self.audi_inserted_at,
+        )
+
+class AuditDB(Base, Generic[T]):
     """
     SQLAlchemy model for the audit table.
     """
     __tablename__ = 'audit'
 
     audi_id = Column(UUID(as_uuid=True), primary_key=True)
-    audi_created_at = Column(TIMESTAMP, nullable=True)
     audi_table_name = Column(String(255), nullable=False)
     audi_filenames = Column(JSON, nullable=False)
     audi_file_size_bytes = Column(BigInteger, nullable=True)
     audi_source_updated_at = Column(TIMESTAMP, nullable=True)
+    audi_created_at = Column(TIMESTAMP, nullable=True)
     audi_downloaded_at = Column(TIMESTAMP, nullable=True)
     audi_processed_at = Column(TIMESTAMP, nullable=True)
     audi_inserted_at = Column(TIMESTAMP, nullable=True)
@@ -73,12 +93,12 @@ class AuditDB(Base):
             previous_t = previous_timestamps[0:index]
 
             if index > 0:
-                greater_than_map = lambda a: a < current_timestamp
-                are_greater = map(greater_than_map, previous_t)
-                this_is_met = reduce(and_map, are_greater)
+                greater_than_map = lambda a: a <= current_timestamp
+
+                this_is_met = reduce(and_map, map(greater_than_map, previous_t))
 
                 is_met = is_met and this_is_met
-            
+        
         return is_met
     
     def __get_pydantic_core_schema__(self):

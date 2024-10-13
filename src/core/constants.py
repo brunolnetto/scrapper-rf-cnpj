@@ -4,6 +4,7 @@ Core constants for the project.
 
 from typing import Callable, Dict, List, Any
 from utils.misc import repeat_token
+from setup.logging import logger
 
 # Constants
 FENCE_LENGTH = 35
@@ -21,10 +22,21 @@ def empresa_transform_map(artifact: Any) -> Any:
     Returns:
         The transformed artifact.
     """
-    comma_to_period = lambda x: x.replace(',', '.')
-    artifact['capital_social'] = artifact['capital_social'].apply(comma_to_period)
-    artifact['capital_social'] = artifact['capital_social'].astype(float)
+    try:
+        comma_to_period = lambda x: x.replace(',', '.')
+        artifact['capital_social'] = artifact['capital_social'].apply(comma_to_period)
+        artifact['capital_social'] = artifact['capital_social'].astype(float)
+    except Exception as e:
+        logger.error(f"Error transforming 'empresa' artifact: {e}")
+        raise ValueError(f"Error transforming 'empresa' artifact: {e}")
     return artifact
+
+# Default transform function (no-op)
+def default_transform_map(artifact: Any) -> Any:
+    return artifact
+
+# Common table encoding
+DEFAULT_ENCODING = ENCODING_LATIN1
 
 TABLES_INFO_DICT: Dict[str, Dict[str, Any]] = {
     'empresa': {
@@ -41,7 +53,7 @@ TABLES_INFO_DICT: Dict[str, Dict[str, Any]] = {
         ],
         'expression': 'EMPRE',
         'transform_map': empresa_transform_map,
-        'encoding': ENCODING_LATIN1,
+        'encoding': DEFAULT_ENCODING,
         'index_columns': ['cnpj_basico']
     },
     'estabelecimento': {
@@ -80,7 +92,8 @@ TABLES_INFO_DICT: Dict[str, Dict[str, Any]] = {
             'data_situacao_especial'
         ],
         'expression': 'ESTABELE',
-        'encoding': ENCODING_LATIN1,
+        'transform_map': default_transform_map,
+        'encoding': DEFAULT_ENCODING,
         'index_columns': ['cnpj_basico', 'cnpj_ordem', 'cnpj_dv']
     },
     'socios': {
@@ -100,7 +113,8 @@ TABLES_INFO_DICT: Dict[str, Dict[str, Any]] = {
             'faixa_etaria'
         ],
         'expression': 'SOCIO',
-        'encoding': ENCODING_LATIN1,
+        'transform_map': default_transform_map,
+        'encoding': DEFAULT_ENCODING,
         'index_columns': ['cnpj_basico']
     },
     'simples': {
@@ -116,48 +130,54 @@ TABLES_INFO_DICT: Dict[str, Dict[str, Any]] = {
             'data_exclusao_mei'
         ],
         'expression': 'SIMPLES',
-        'encoding': ENCODING_LATIN1
+        'transform_map': default_transform_map,
+        'encoding': DEFAULT_ENCODING
     },
     'cnae': {
         'label': 'CNAEs',
         'group': 'cnaes',
         'columns': ['codigo', 'descricao'],
         'expression': 'CNAE',
-        'encoding': ENCODING_LATIN1
+        'transform_map': default_transform_map,
+        'encoding': DEFAULT_ENCODING
     },
     'moti': {
         'label': 'Motivos',
         'group': 'motivos',
         'columns': ['codigo', 'descricao'],
         'expression': 'MOTI',
-        'encoding': ENCODING_LATIN1
+        'encoding': DEFAULT_ENCODING
     },
     'munic': {
         'label': 'Municipios',
         'group': 'municipios',
         'columns': ['codigo', 'descricao'],
         'expression': 'MUNIC',
-        'encoding': ENCODING_LATIN1
+        'transform_map': default_transform_map,
+        'encoding': DEFAULT_ENCODING
     },
     'natju': {
         'label': 'Naturezas',
         'group': 'naturezas',
         'columns': ['codigo', 'descricao'],
         'expression': 'NATJU',
-        'encoding': ENCODING_LATIN1
+        'transform_map': default_transform_map,
+        'encoding': DEFAULT_ENCODING
     },
     'pais': {
         'label': 'Paises',
         'group': 'paises',
         'columns': ['codigo', 'descricao'],
         'expression': 'PAIS',
-        'encoding': ENCODING_LATIN1
+        'transform_map': default_transform_map,
+        'encoding': DEFAULT_ENCODING
     },
     'quals': {
         'label': 'Qualificacoes',
         'group': 'qualificacoes',
         'columns': ['codigo', 'descricao'],
         'expression': 'QUALS',
-        'encoding': ENCODING_LATIN1
+        'transform_map': default_transform_map,
+        'encoding': DEFAULT_ENCODING
     }
 }

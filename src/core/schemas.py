@@ -1,20 +1,9 @@
 from typing import NamedTuple, List, Dict, Tuple, Callable
 from datetime import datetime
 from pydantic import BaseModel
-from utils.misc import normalize_filename
 
-class Audit(BaseModel):
-  """
-  Pydantic model representing an audit entry.
-  """
-  audi_id: int
-  audi_table_name: str
-  audi_file_size_bytes: int
-  audi_source_updated_at: datetime
-  audi_created_at: datetime
-  audi_downloaded_at: datetime
-  audi_processed_at: datetime
-  audi_inserted_at: datetime
+from utils.misc import normalize_filename
+from database.models import AuditDBSchema
 
 class FileInfo(BaseModel):
   """
@@ -45,7 +34,7 @@ class AuditMetadata(BaseModel):
   """
   Represents the metadata for auditing purposes.
   """
-  audit_list: List[Audit]
+  audit_list: List[AuditDBSchema]
   tablename_to_zipfile_to_files: Dict[str, Dict[str, List[str]]]
 
   def __repr__(self) -> str:
