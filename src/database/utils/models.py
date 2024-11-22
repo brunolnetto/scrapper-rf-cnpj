@@ -218,7 +218,7 @@ def create_audit_metadata(audits: List[AuditDB], to_path: str) -> AuditMetadata:
 
     Returns:
         AuditMetadata: An object containing the audit list and related metadata.
-    """    
+    """
     zip_file_dict = {
         zip_filename: [
             content.filename 
