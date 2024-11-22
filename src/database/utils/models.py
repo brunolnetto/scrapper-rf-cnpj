@@ -208,7 +208,7 @@ def insert_audits(database: Database, new_audits: List[AuditDB]) -> None:
         except Exception as e:
             logger.error(f"Error inserting audit for table {new_audit.audi_table_name}: {e}")
 
-def create_audit_metadata(audits: List[AuditDB], to_path: str) -> AuditMetadata:  
+def create_new_audit_metadata(audits: List[AuditDB]) -> AuditMetadata:  
     """
     Creates audit metadata based on the provided database, files information, and destination path.
 
@@ -220,12 +220,7 @@ def create_audit_metadata(audits: List[AuditDB], to_path: str) -> AuditMetadata:
         AuditMetadata: An object containing the audit list and related metadata.
     """
     zip_file_dict = {
-        zip_filename: [
-            content.filename 
-            for content in list_zip_contents(path.join(to_path, zip_filename))
-        ]
-        for audit in audits
-        for zip_filename in audit.audi_filenames
+        zip_filename: [] for audit in audits for zip_filename in audit.audi_filenames
     }
 
     zipfiles_to_tablenames = get_zip_to_tablename(zip_file_dict)
@@ -245,6 +240,41 @@ def create_audit_metadata(audits: List[AuditDB], to_path: str) -> AuditMetadata:
         ], 
         tablename_to_zipfile_to_files=tablename_to_zipfile_to_files,
     )
+
+def create_audit_metadata(audits: List[AuditDB], to_path: str) -> AuditMetadata:  
+    """
+    Creates audit metadata based on the provided database, files information, and destination path.
+
+    Args:
+        audits (List[AuditDB]): A list of audit entries.
+        to_path (str): The destination path for the files.
+
+    Returns:
+        AuditMetadata: An object containing the audit list and related metadata.
+    """
+    zip_file_dict = {
+        zip_filename: [] for audit in audits for zip_filename in audit.audi_filenames
+    }
+
+    zipfiles_to_tablenames = get_zip_to_tablename(zip_file_dict)
+    tablename_to_zipfile_dict = invert_dict_list(zipfiles_to_tablenames)
+
+    tablename_to_zipfile_to_files = {
+        tablename: {
+            zipfile: zip_file_dict[zipfile]
+            for zipfile in zipfiles
+        }
+        for tablename, zipfiles in tablename_to_zipfile_dict.items()
+    }
+    return AuditMetadata(
+        audit_list=[ 
+            AuditDBSchema.model_validate(audit, from_attributes=True) 
+            for audit in audits 
+        ], 
+        tablename_to_zipfile_to_files=tablename_to_zipfile_to_files,
+    )
+
+
 
 def delete_filename_on_audit(database: Database, table_name: str) -> None:
     """
