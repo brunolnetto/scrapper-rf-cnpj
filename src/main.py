@@ -13,7 +13,7 @@ database = init_database()
 
 # Data source: You can also access by url: https://dados.rfb.gov.br/CNPJ/dados_abertos_cnpj
 ano = str(2024)
-mes = str(11).zfill(2)
+mes = str(10).zfill(2)
 
 host_url='https://arquivos.receitafederal.gov.br/dados/cnpj'
 data_url = f'{host_url}/dados_abertos_cnpj/{ano}-{mes}'

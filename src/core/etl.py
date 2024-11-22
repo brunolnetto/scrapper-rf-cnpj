@@ -103,6 +103,7 @@ class CNPJ_ETL:
         Args:
             audits (List[AuditDB]): List of audit objects to download data for.
         """
+
         if audits:
             get_RF_data(
                 self.data_url, self.layout_url, 
@@ -252,3 +253,5 @@ class CNPJ_ETL:
 
             if self.delete_zips:
                 remove_folder(self.download_folder)
+        else:
+            logger.warning("No data to load!")
