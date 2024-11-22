@@ -1,12 +1,14 @@
 from wget import download 
 import requests
 from tqdm import tqdm
+from typing import Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from os import path
 from functools import reduce
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from core.schemas import AuditMetadata
 from database.models import AuditDB
 from database.dml import populate_table
 from utils.misc import get_file_size, get_max_workers
@@ -19,6 +21,12 @@ tablename_list = list(TABLES_INFO_DICT.keys())
 trimmed_tablename_list = [name[:5] for name in TABLES_INFO_DICT.keys()]
 tablename_tuples = list(zip(tablename_list, trimmed_tablename_list))
 
+import requests
+from tqdm import tqdm
+from os import path
+from datetime import datetime
+from tenacity import retry, stop_after_attempt, wait_exponential
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def download_zipfile(
     audit: AuditDB, url: str, zip_filename: str, download_path: str, has_progress_bar: bool
@@ -29,33 +37,40 @@ def download_zipfile(
     local_filename = path.join(download_path, zip_filename)
 
     try:
-        logger.info(f"Downloading file {zip_filename}.")
+        logger.info(f"Starting download for file: {zip_filename}")
+        
         with requests.get(file_url, stream=True) as r:
             r.raise_for_status()
             total_size = int(r.headers.get('Content-Length', 0))  # Get total file size
             
             # Initialize tqdm progress bar if enabled
-            progress = tqdm(total=total_size, unit='B', unit_scale=True, desc=zip_filename) if has_progress_bar else None
+            progress = tqdm(
+                total=total_size, unit='B', unit_scale=True, desc=zip_filename
+            ) if has_progress_bar else None
             
             with open(local_filename, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=8192):
+                for chunk in r.iter_content(chunk_size=131072):
                     if chunk:
                         f.write(chunk)
-
                         if has_progress_bar:
-                                progress.update(len(chunk))  # Update the progress bar
+                            progress.update(len(chunk))  # Update the progress bar
+            
+            # Close the progress bar if enabled
+            if has_progress_bar and progress is not None:
+                progress.close()
 
-        # Close progress bar if it was enabled
-        if has_progress_bar:
-            progress.close()
-
-        logger.info(f"Finished downloading {zip_filename}.")
+        logger.info(f"Successfully downloaded file: {zip_filename}")
         audit.audi_downloaded_at = datetime.now()
         audit.audi_file_size_bytes = get_file_size(local_filename)
+
     except Exception as e:
         logger.error(f"Error downloading {zip_filename}: {e}")
+        if has_progress_bar and progress is not None:
+            progress.close()  # Close the progress bar in case of failure
         raise
+
     return audit
+
 
 def extract_zipfile(audit, zip_filename, download_path, extracted_path):
     """Extracts a zip file to the specified directory."""
@@ -140,7 +155,7 @@ def get_RF_data(data_url, layout_url, audits, from_folder, to_folder, is_paralle
     """Retrieves and extracts the data from the Receita Federal."""
     return download_and_extract_RF_data(data_url, layout_url, audits, from_folder, to_folder, is_parallel)
 
-def load_RF_data_on_database(database, source_folder, audit_metadata):
+def load_RF_data_on_database(database, source_folder, audit_metadata: AuditMetadata):
     """Populates the database with data from multiple tables."""
     table_to_filenames = audit_metadata.tablename_to_zipfile_to_files
 
@@ -154,16 +169,18 @@ def load_RF_data_on_database(database, source_folder, audit_metadata):
         populate_table(database, table_name, source_folder, table_filenames)
         audit_metadata.audit_list[index].audi_inserted_at = datetime.now()
 
-    zip_filenames = list(reduce(lambda x, y: list(x) + list(y), map(lambda x: x.keys(), table_to_filenames.values())))
+    sum_lists_map=lambda x, y: list(x) + list(y)
+    filenames_map=map(lambda x: x.keys(), table_to_filenames.values())
+    zip_filenames = list(reduce(sum_lists_map, filenames_map))
     logger.info(f"Carga dos arquivos zip {zip_filenames} finalizado!")
     return audit_metadata
 
-def get_zip_to_tablename(zip_file_dict):
+def get_zip_to_tablename(zip_file_dict: Dict[str, List[str]]) -> Dict[str, str]:
     """Retrieves the filenames of the extracted files from the Receita Federal."""
     return {
         zipped_file: [
-            tuple_[0] for item in unzipped_files for tuple_ in tablename_tuples
-            if tuple_[1].lower() in item.lower()
-        ] for zipped_file, unzipped_files in zip_file_dict.items()
+            tablename for tablename, prefix in tablename_tuples
+            if prefix.lower() in zipped_file.lower()
+        ][0] for zipped_file in zip_file_dict.keys()
     }
 
