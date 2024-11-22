@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Dict, List, Optional, Any
 import re
 from urllib import request
 from bs4 import BeautifulSoup
@@ -124,7 +124,9 @@ class CNPJ_ETL:
             info for info in files_info if info.filename.endswith('.zip') or
             (info.filename.endswith('.pdf') and re.match(r'layout', info.filename, re.IGNORECASE))
         ]
+
         file_groups_info = create_file_groups(filtered_files)
+        
         return create_audits(self.database, file_groups_info)
 
     def fetch_data(self) -> List[AuditDB]:
@@ -135,6 +137,7 @@ class CNPJ_ETL:
             List[AuditDB]: List of audit objects.
         """
         files_info = self.scrap_data()
+
         return self.audit_scrapped_files(files_info)
 
     def retrieve_data(self) -> List[AuditDB]:
@@ -206,28 +209,19 @@ class CNPJ_ETL:
         """
         Generates and inserts table indices.
         """
-        audits = self.fetch_data()
-        if audits:
-            audit_metadata = self._prepare_audit_metadata(audits)
-            self.create_indices(audit_metadata)
-            self.insert_audits(audit_metadata)
-        else:
-            logger.warning("No data to process for indices!")
+        self.create_indices()
 
-    def create_indices(self, audit_metadata: AuditMetadata) -> None:
+    def create_indices(self) -> None:
         """
         Generates indices for specific tables based on audit metadata.
         
         Args:
             audit_metadata (AuditMetadata): Metadata for the audit.
         """
-        table_to_filenames = audit_metadata.tablename_to_zipfile_to_files
-        zip_tablenames_set = set(table_to_filenames.keys())
-
         tables_with_indices = {
             "estabelecimento": {
                 "cnpj_basico", "cnpj_ordem", "cnpj_dv", 
-                "cnae_principal", "cnae_secundaria", 
+                "cnae_fiscal_principal", "cnae_fiscal_secundaria", 
                 "cep", "municipio", "uf"
             },
             "empresa": {"cnpj_basico"},
@@ -241,7 +235,6 @@ class CNPJ_ETL:
         renew_table_indices = {
             table_name: columns 
             for table_name, columns in tables_with_indices.items() 
-            if table_name in zip_tablenames_set
         }
 
         if renew_table_indices:

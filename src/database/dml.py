@@ -16,7 +16,7 @@ MAX_RETRIES=3
 ## LOAD AND TRANSFORM
 ##########################################################################
 # Chunk size for download and extraction 
-READ_CHUNK_SIZE = 10000
+READ_CHUNK_SIZE = 50000
 def populate_table_with_filename(
     database: Database, table_info: TableInfo, source_folder: str, filename: str
 ): 
@@ -208,20 +208,19 @@ def generate_tables_indices(engine, tables_to_indices):
         for column_name in columns
     ]
     mask="create index {index_name} on {table_name} using btree(\"{column_name}\"); commit;"
-    
+
     # Execute index queries
     try:
         with engine.connect() as conn:
             for table_name_, column_name_, index_name_ in fields_list:
                 # Compile a SQL string
-                query=text(
-                    mask.format(
-                        table_name=table_name_, 
-                        column_name=column_name_, 
-                        index_name=index_name_, 
-                    )
+                query_str=mask.format(
+                    table_name=table_name_, 
+                    column_name=column_name_, 
+                    index_name=index_name_, 
                 )
-
+                query=text(query_str)
+                print(query_str)
                 # Execute the compiled SQL string
                 try:
                     conn.execute(query)
