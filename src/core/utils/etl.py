@@ -181,6 +181,7 @@ def get_zip_to_tablename(zip_file_dict: Dict[str, List[str]]) -> Dict[str, str]:
         zipped_file: [
             tablename for tablename, prefix in tablename_tuples
             if prefix.lower() in zipped_file.lower()
-        ][0] for zipped_file in zip_file_dict.keys()
+        ] for zipped_file in zip_file_dict.keys()
     }
+
 

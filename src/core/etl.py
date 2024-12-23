@@ -203,7 +203,7 @@ class CNPJ_ETL:
 
     def _process_and_load(self, audit_metadata: AuditMetadata) -> None:
         self.load_data(audit_metadata)
-        self.create_indices(audit_metadata)
+        self.create_indices()
         self.insert_audits(audit_metadata)
 
     def only_create_indices(self) -> None:
