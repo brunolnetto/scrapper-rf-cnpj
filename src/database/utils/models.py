@@ -253,7 +253,12 @@ def create_audit_metadata(audits: List[AuditDB], to_path: str) -> AuditMetadata:
         AuditMetadata: An object containing the audit list and related metadata.
     """
     zip_file_dict = {
-        zip_filename: [] for audit in audits for zip_filename in audit.audi_filenames
+        zip_filename: [
+            content.filename 
+            for content in list_zip_contents(path.join(to_path, zip_filename))
+        ]
+        for audit in audits
+        for zip_filename in audit.audi_filenames
     }
 
     zipfiles_to_tablenames = get_zip_to_tablename(zip_file_dict)
