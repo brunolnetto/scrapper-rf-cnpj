@@ -17,7 +17,7 @@ download_folder, extract_folder = get_sink_folder()
 # Database setup
 database = init_database()
 
-# Data source: You can also access by url: https://dados.rfb.gov.br/CNPJ/dados_abertos_cnpj
+# Data source
 ano = str(2024)
 mes = str(11).zfill(2)
 
@@ -32,7 +32,7 @@ scrapper = CNPJ_ETL(
 )
 
 # Scrap data
-scrapper.only_create_indices()
+scrapper.run()
 
 # Stop the timer and calculate the elapsed time
 end_time = time.time()
