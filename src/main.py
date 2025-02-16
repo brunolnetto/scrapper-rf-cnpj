@@ -23,7 +23,7 @@ mes = str(11).zfill(2)
 
 host_url='https://arquivos.receitafederal.gov.br/dados/cnpj'
 data_url = f'{host_url}/dados_abertos_cnpj/{ano}-{mes}'
-layout_url=f'{host_url}/LAYOUT_DADOS_ABERTOS_CNPJ.pdf'
+layout_url=f'https://www.gov.br/receitafederal/dados/cnpj-metadados.pdf'
 
 # ETL setup
 scrapper = CNPJ_ETL(
