@@ -14,21 +14,22 @@ start_time = time.time()
 # Data folders
 download_folder, extract_folder = get_sink_folder()
 
-# Database setup
-database = init_database()
+ano = str(2025)
+mes = str(4).zfill(2)
 
-# Data source
-ano = str(2024)
-mes = str(11).zfill(2)
+database_name = f"dadosrfb_{ano}{mes}"
+
+# Database setup
+database = init_database(database_name)
 
 host_url='https://arquivos.receitafederal.gov.br/dados/cnpj'
 data_url = f'{host_url}/dados_abertos_cnpj/{ano}-{mes}'
-layout_url=f'{host_url}/LAYOUT_DADOS_ABERTOS_CNPJ.pdf'
+layout_url=f'https://www.gov.br/receitafederal/dados/cnpj-metadados.pdf'
 
 # ETL setup
 scrapper = CNPJ_ETL(
     database, data_url, layout_url, download_folder, extract_folder, 
-    is_parallel=True, delete_zips=False
+    is_parallel=True, delete_zips=True
 )
 
 # Scrap data
