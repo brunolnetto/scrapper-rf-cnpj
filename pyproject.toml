@@ -1,33 +1,27 @@
-[tool.poetry]
-name = "poetry add -lock -d -path=\"requirements-txt\""
+[project]
+name = "scrapper-rf-cnpj"
 version = "0.1.0"
-description = "Receita Federal do Brasil - Dados Públicos CNPJ"
-authors = ["Aphonso Henrique do Amaral Rafael, @aphonsoar", "Bruno Peixoto <brunolnetto@gmail.com>"]
+description = "Add your description here"
 readme = "README.md"
-packages = [{include = "poetry add _lock _d _path=\"requirements"}]
-
-[tool.poetry.dependencies]
-python = "^3.8"
-beautifulsoup4 = "^4.9.3"
-bs4 = "^0.0.2"
-importlib-metadata = "^7.1.0"
-python-json-logger = "^2.0.7"
-python-dotenv = "^1.0.0"
-lxml = "^5.2.2"
-pandas = "^2.2.2"
-psycopg2-binary = "^2.9.9"
-pydantic = "^2.7.1"
-PyYAML = "^6.0.1"
-requests = "2.30.0"
-ruff = "0.4.5"
-SQLAlchemy = "^1.4.18"
-SQLAlchemy-Utils = "0.41.2"
-typing-extensions = "^3.10.0.0"
-tzdata = "2023.3"
-wget = "^3.2"
-timy = "0.4.2"
-tqdm = "4.66.2"
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires-python = ">=3.13"
+dependencies = [
+    "beautifulsoup4>=4.13.4",
+    "bs4>=0.0.2",
+    "importlib-metadata>=8.7.0",
+    "lxml>=5.4.0",
+    "pandas>=2.2.3",
+    "psycopg2-binary>=2.9.10",
+    "pydantic>=2.11.5",
+    "python-dotenv>=1.1.0",
+    "python-json-logger>=3.3.0",
+    "pyyaml>=6.0.2",
+    "requests>=2.32.3",
+    "ruff>=0.11.11",
+    "sqlalchemy>=2.0.41",
+    "sqlalchemy-utils>=0.41.2",
+    "timy>=0.4.2",
+    "tqdm>=4.67.1",
+    "typing-extensions>=4.13.2",
+    "tzdata>=2025.2",
+    "wget>=3.2",
+]
