@@ -42,7 +42,7 @@ def get_sink_folder() -> Tuple[str, str]:
     
     return output_folder, extract_folder
 
-def get_db_uri() -> str:
+def get_db_uri(db_name: str) -> str:
     """Construct the database URI from environment variables."""
     load_environment_variables()
     
@@ -50,11 +50,10 @@ def get_db_uri() -> str:
     port = int(os.getenv('POSTGRES_PORT', '5432'))
     user = os.getenv('POSTGRES_USER', 'postgres')
     password = os.getenv('POSTGRES_PASSWORD', 'postgres')
-    database_name = os.getenv('POSTGRES_DBNAME')
     
-    return f'postgresql://{user}:{password}@{host}:{port}/{database_name}'
+    return f'postgresql://{user}:{password}@{host}:{port}/{db_name}'
 
-def init_database() -> Union[Database, None]:
+def init_database(db_name: str) -> Union[Database, None]:
     """
     Connects to a PostgreSQL database using environment variables for connection details.
 
@@ -62,7 +61,7 @@ def init_database() -> Union[Database, None]:
         Database: A NamedTuple with engine and conn attributes for the database connection.
         None: If there was an error connecting to the database.
     """
-    db_uri = get_db_uri()
+    db_uri = get_db_uri(db_name)
     database_obj = create_db_engine(db_uri)
 
     try:
