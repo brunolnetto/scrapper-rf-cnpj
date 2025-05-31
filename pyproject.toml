@@ -3,14 +3,14 @@ name = "scrapper-rf-cnpj"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.9"
 dependencies = [
     "beautifulsoup4>=4.13.4",
     "bs4>=0.0.2",
     "importlib-metadata>=8.7.0",
+    "jupyter>=1.1.1",
     "lxml>=5.4.0",
     "pandas>=2.2.3",
-    "psycopg2-binary>=2.9.10",
     "pydantic>=2.11.5",
     "python-dotenv>=1.1.0",
     "python-json-logger>=3.3.0",
@@ -25,3 +25,6 @@ dependencies = [
     "tzdata>=2025.2",
     "wget>=3.2",
 ]
+
+[tool.uv]
+environments = ["platform_system == 'Windows'"]
