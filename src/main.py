@@ -54,28 +54,6 @@ def main():
     elapsed = time.time() - start_time
     log.info(f"ETL complete in {elapsed:.2f}s — DB at {DB_FILE}")
 
-<<<<<<< HEAD
-host_url='https://arquivos.receitafederal.gov.br/dados/cnpj'
-data_url = f'{host_url}/dados_abertos_cnpj/{ano}-{mes}'
-layout_url=f'https://www.gov.br/receitafederal/dados/cnpj-metadados.pdf'
-
-# ETL setup
-scrapper = CNPJ_ETL(
-    database, data_url, layout_url, download_folder, extract_folder, 
-    is_parallel=True, delete_zips=False
-)
-
-# Scrap data
-scrapper.run()
-
-# Stop the timer and calculate the elapsed time
-end_time = time.time()
-execution_time = end_time - start_time
-
-# Print the time it took to execute the script
-print(f"Execution time: {execution_time:.2f} seconds")
-=======
->>>>>>> 8bee80d0184d936d4ae360a781af111efa103498
 
 if __name__ == "__main__":
     main()
