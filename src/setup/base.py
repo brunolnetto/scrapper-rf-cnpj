@@ -10,7 +10,11 @@ from setup.logging import logger
 from utils.misc import makedir
 from database.models import Base
 from database.schemas import Database
+<<<<<<< HEAD
 from database.engine import create_database as create_db_engine
+=======
+from database.engine import create_database_instance
+>>>>>>> ace4e8e (refactor: review names and fix methods)
 from utils.docker import get_postgres_host
 
 def load_environment_variables(env_file: str = '.env') -> None:
