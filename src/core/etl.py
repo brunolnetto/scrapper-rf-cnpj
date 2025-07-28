@@ -195,11 +195,16 @@ class CNPJ_ETL:
         else:
             logger.warning("No data to load!")
 
+<<<<<<< HEAD
     def _prepare_audit_metadata(self, audits: List[AuditDB]) -> AuditMetadata:
         audit_metadata = create_audit_metadata(audits, self.download_folder)
         for audit in audit_metadata.audit_list:
             audit.audi_downloaded_at = audit.audi_processed_at = datetime.now()
         return audit_metadata
+=======
+            # Create indices
+            self.create_indices(audit_metadata)
+>>>>>>> ace4e8e (refactor: review names and fix methods)
 
     def _process_and_load(self, audit_metadata: AuditMetadata) -> None:
         self.load_data(audit_metadata)

@@ -5,7 +5,7 @@ from sqlalchemy import pool
 from .schemas import Database
 
 # Create the database engine and session maker
-def create_database(uri):
+def create_database_instance(uri):
     engine = create_engine(
         uri,
         poolclass=pool.QueuePool,   # Use connection pooling
