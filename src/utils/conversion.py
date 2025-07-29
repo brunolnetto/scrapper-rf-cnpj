@@ -1,12 +1,10 @@
 import polars as pl
-from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from os import getcwd, path
+
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 
 from core.constants import TABLES_INFO_DICT
-from setup.base import get_sink_folder, init_database
-from core.etl import CNPJ_ETL
 
 def convert_table_csvs_to_parquet(table_name, csv_paths, output_dir):
     try:
@@ -61,23 +59,3 @@ def convert_csvs_to_parquet(audit_map: dict, unzip_dir: Path, output_dir: Path, 
                 result = future.result()
                 print(result)
                 progress.advance(task)
-
-YEAR = 2025
-MONTH = str(5).zfill(2)
-FILES_URL = f"https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/{YEAR}-{MONTH}"
-LAYOUT_URL = "https://www.gov.br/receitafederal/dados/cnpj-metadados.pdf"
-
-download_folder = Path(path.join(getcwd(), "../data/DOWNLOAD_FILES"))
-extract_folder = Path(path.join(getcwd(), "../data/EXTRACTED_FILES"))
-parquet_folder = Path(path.join(getcwd(), "../data/PARQUET_FILES"))
-
-database = init_database(f"dadosrfb_{YEAR}{MONTH}")
-
-scraper = CNPJ_ETL(
-    database, FILES_URL, LAYOUT_URL,
-    download_folder, extract_folder,
-    is_parallel=True, delete_zips=True
-)
-audits = scraper._prepare_audit_metadata(scraper.fetch_data()).tablename_to_zipfile_to_files
-
-csvs_to_parquet(audits, extract_folder, parquet_folder, max_workers=6)

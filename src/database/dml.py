@@ -51,6 +51,10 @@ def populate_table_with_filename(
     }
 
     row_count = get_line_count(extracted_file_path)
+    if row_count is None or row_count == 0:
+        logger.warning(f"File {extracted_file_path} is empty or could not be read. Skipping.")
+        return
+    
     chunk_count = np.ceil(row_count/READ_CHUNK_SIZE)
     for index, df_chunk in enumerate(pd.read_csv(**csv_read_props)):
         for retry_count in range(MAX_RETRIES):
@@ -134,9 +138,15 @@ def populate_table_with_filenames(
     for filename in filenames:
         logger.info('Current file: ' + filename + '')
         try:
+            file_path=path.join(getcwd(), source_folder, filename)
+            
+            # Check if file exists and has content
+            if not path.exists(file_path):
+                logger.warning(f"File {file_path} does not exist. Skipping.")
+                continue
+                
             for retry_count in range(MAX_RETRIES):
                 try:
-                    file_path=path.join(getcwd(), source_folder, filename)
                     populate_table_with_filename(database, table_info, source_folder, filename)
                     break
 
@@ -207,7 +217,7 @@ def generate_tables_indices(engine, tables_to_indices):
         for table_name, columns  in tables_to_indices.items()
         for column_name in columns
     ]
-    mask="create index {index_name} on {table_name} using btree(\"{column_name}\"); commit;"
+    mask="create index if not exists {index_name} on {table_name} using btree(\"{column_name}\");"
 
     # Execute index queries
     try:
@@ -233,6 +243,8 @@ def generate_tables_indices(engine, tables_to_indices):
                 message = f"Index {index_name_} generated on column `{column_name_}` for table {table_name_}"
                 logger.info(message)
 
+        # Commit all index creations at once
+        conn.commit()
         message = f"Index created on tables {list(tables_to_indices.keys())}"
         logger.info(message)
 

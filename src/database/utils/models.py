@@ -135,7 +135,16 @@ def create_audit(database: Database, file_group_info: FileGroupInfo) -> Union[Au
                 
                 return None
 
-    if latest_updated_at is None or file_group_info.date_range[1] > latest_updated_at:
+    if latest_updated_at is None:
+        # First entry: no existing audit entry
+        return create_new_audit(
+            file_group_info.table_name,
+            file_group_info.elements,
+            file_group_info.size_bytes, 
+            file_group_info.date_range[1]
+        )
+    elif file_group_info.date_range[1] > latest_updated_at:
+        # New entry: source updated_at is greater 
         return create_new_audit(
             file_group_info.table_name,
             file_group_info.elements,
