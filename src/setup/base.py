@@ -4,18 +4,12 @@ from typing import Tuple, Union
 from psycopg2 import OperationalError
 from sqlalchemy_utils import database_exists, create_database
 from sqlalchemy import text
-from sqlalchemy.orm import sessionmaker
 
 from setup.logging import logger
 from utils.misc import makedir
-from database.models import Base
+from setup.config import DatabaseConfig
 from database.schemas import Database
-<<<<<<< HEAD
-from database.engine import create_database as create_db_engine
-=======
-from database.engine import create_database_instance
->>>>>>> ace4e8e (refactor: review names and fix methods)
-from utils.docker import get_postgres_host
+from database.engine import create_database_instance as create_db_engine
 
 def load_environment_variables(env_file: str = '.env') -> None:
     """Load environment variables from a file."""
@@ -46,27 +40,22 @@ def get_sink_folder() -> Tuple[str, str]:
     
     return output_folder, extract_folder
 
-def get_db_uri(db_name: str) -> str:
-    """Construct the database URI from environment variables."""
-    load_environment_variables()
-    
-    host = get_postgres_host() if os.getenv('ENVIRONMENT') == 'docker' else os.getenv('POSTGRES_HOST', 'localhost')
-    port = int(os.getenv('POSTGRES_PORT', '5432'))
-    user = os.getenv('POSTGRES_USER', 'postgres')
-    password = os.getenv('POSTGRES_PASSWORD', 'postgres')
-    
-    return f'postgresql://{user}:{password}@{host}:{port}/{db_name}'
-
-def init_database(db_name: str) -> Union[Database, None]:
+def init_database(database_config: DatabaseConfig, base) -> Union[Database, None]:
     """
     Connects to a PostgreSQL database using environment variables for connection details.
+    Returns a Database object with engine, session_maker, and base.
+    Table creation should be done via Database.create_tables().
+
+    Args:
+        database_config: Database configuration object.
+        base: The SQLAlchemy declarative base (e.g., MainBase or AuditBase).
 
     Returns:
-        Database: A NamedTuple with engine and conn attributes for the database connection.
+        Database: A Database object for the connection.
         None: If there was an error connecting to the database.
     """
-    db_uri = get_db_uri(db_name)
-    database_obj = create_db_engine(db_uri)
+    db_uri = database_config.get_connection_string()
+    database_obj = create_db_engine(db_uri, base)
 
     try:
         if not database_exists(db_uri):
@@ -74,19 +63,12 @@ def init_database(db_name: str) -> Union[Database, None]:
     except OperationalError as e:
         logger.error(f"Error creating database: {e}")
         return None
-    
     try:
         with database_obj.engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-            logger.info('Connection to the database established!')
+            logger.info(f'Connection to database "{database_config.database}" established!')
     except OperationalError as e:
         logger.error(f"Error connecting to the database: {e}")
         return None
-    
-    try:
-        Base.metadata.create_all(database_obj.engine)
-    except Exception as e:
-        logger.error(f"Error creating tables in the database: {e}")
-        return None
-        
-    return database_obj
+    # Do not create tables here; use Database.create_tables() after instantiation
+    return Database(database_obj.engine, database_obj.session_maker, base)

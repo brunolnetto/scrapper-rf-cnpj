@@ -1,4 +1,3 @@
-from wget import download 
 import requests
 from tqdm import tqdm
 from typing import Dict, List
@@ -21,11 +20,6 @@ tablename_list = list(TABLES_INFO_DICT.keys())
 trimmed_tablename_list = [name[:5] for name in TABLES_INFO_DICT.keys()]
 tablename_tuples = list(zip(tablename_list, trimmed_tablename_list))
 
-import requests
-from tqdm import tqdm
-from os import path
-from datetime import datetime
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def download_zipfile(
@@ -137,7 +131,7 @@ def process_files_serial(url, audits, output_path, extracted_path):
         finally:
             logger.info(f"({index}/{total_count}) arquivos baixados. {error_count} erros: {error_basefiles}")
 
-def download_and_extract_RF_data(zips_url, layout_url, audits, output_path, extracted_path, is_parallel=True):
+def download_and_extract_RF_data(zips_url, audits, output_path, extracted_path, is_parallel=True):
     """Downloads and extracts Receita Federal data."""
     max_workers = get_max_workers()
     is_parallel = max_workers > 1 and is_parallel
@@ -147,17 +141,21 @@ def download_and_extract_RF_data(zips_url, layout_url, audits, output_path, extr
     else:
         process_files_serial(zips_url, audits, output_path, extracted_path)
 
-    download(layout_url, out=output_path, bar=None)
-    logger.info("Layout baixado com sucesso!")
     return audits
 
-def get_RF_data(data_url, layout_url, audits, from_folder, to_folder, is_parallel=True):
+def get_RF_data(data_url, audits, from_folder, to_folder, is_parallel=True):
     """Retrieves and extracts the data from the Receita Federal."""
-    return download_and_extract_RF_data(data_url, layout_url, audits, from_folder, to_folder, is_parallel)
+    return download_and_extract_RF_data(data_url, audits, from_folder, to_folder, is_parallel)
 
 def load_RF_data_on_database(database, source_folder, audit_metadata: AuditMetadata):
-    """Populates the database with data from multiple tables."""
+    """
+    DEPRECATED: Use DataLoadingService and strategy pattern instead.
+    Populates the database with data from multiple tables."""
     table_to_filenames = audit_metadata.tablename_to_zipfile_to_files
+
+    # Debug: Log what tables are being processed
+    logger.info(f"Processing tables: {list(table_to_filenames.keys())}")
+    logger.info(f"Audit records: {[audit.audi_table_name for audit in audit_metadata.audit_list]}")
 
     # Load data
     for index, (table_name, zipfile_content_dict) in enumerate(table_to_filenames.items()):
@@ -167,12 +165,46 @@ def load_RF_data_on_database(database, source_folder, audit_metadata: AuditMetad
 
         # Populate this table
         populate_table(database, table_name, source_folder, table_filenames)
-        audit_metadata.audit_list[index].audi_inserted_at = datetime.now()
+        
+        # Update audit metadata - find the correct audit record by table name
+        audit_found = False
+        for audit in audit_metadata.audit_list:
+            if audit.audi_table_name == table_name:
+                audit.audi_inserted_at = datetime.now()
+                audit_found = True
+                logger.info(f"Set audi_inserted_at for table: {table_name}")
+                break
+        
+        if not audit_found:
+            logger.warning(f"No audit record found for table: {table_name}")
+
+    # Ensure all audit records have audi_inserted_at set
+    processed_tables = set(table_to_filenames.keys())
+    for audit in audit_metadata.audit_list:
+        if audit.audi_inserted_at is None:
+            if audit.audi_table_name not in processed_tables:
+                logger.info(f"Setting audi_inserted_at for table '{audit.audi_table_name}' (no files to process)")
+            else:
+                logger.warning(f"Setting audi_inserted_at for table '{audit.audi_table_name}' (was not set during processing)")
+            audit.audi_inserted_at = datetime.now()
+    
+    # Log final status
+    tables_with_inserted_at = [
+        audit.audi_table_name 
+        for audit in audit_metadata.audit_list if audit.audi_inserted_at is not None
+    ]
+    logger.info(f"All audit records have audi_inserted_at set: {tables_with_inserted_at}")
 
     sum_lists_map=lambda x, y: list(x) + list(y)
     filenames_map=map(lambda x: x.keys(), table_to_filenames.values())
     zip_filenames = list(reduce(sum_lists_map, filenames_map))
     logger.info(f"Carga dos arquivos zip {zip_filenames} finalizado!")
+    
+    # Final summary
+    processed_count = len([audit for audit in audit_metadata.audit_list if audit.audi_inserted_at is not None])
+    total_count = len(audit_metadata.audit_list)
+    logger.info(f"Database loading complete: {processed_count}/{total_count} audit records processed")
+    
     return audit_metadata
 
 def get_zip_to_tablename(zip_file_dict: Dict[str, List[str]]) -> Dict[str, str]:

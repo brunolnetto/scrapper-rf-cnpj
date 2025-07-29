@@ -1,18 +1,17 @@
 from sqlalchemy import (
     Column, BigInteger, String, TIMESTAMP, JSON, Text, Float, Index
 )
-
 from sqlalchemy.dialects.postgresql import UUID
 from typing import Optional, Generic, TypeVar, List, Any
 from pydantic import BaseModel, Field
 from datetime import datetime
 from uuid import uuid4
-
-
 from functools import reduce
 from sqlalchemy.ext.declarative import declarative_base
 
-Base = declarative_base()
+# Separate bases for audit and main tables
+AuditBase = declarative_base()
+MainBase = declarative_base()
 
 T = TypeVar('T')
 
@@ -55,7 +54,7 @@ class AuditDBSchema(BaseModel, Generic[T]):
             audi_inserted_at=self.audi_inserted_at,
         )
 
-class AuditDB(Base, Generic[T]):
+class AuditDB(AuditBase, Generic[T]):
     """
     SQLAlchemy model for the audit table.
     """
@@ -73,40 +72,25 @@ class AuditDB(Base, Generic[T]):
 
     @property
     def is_precedence_met(self) -> bool:
-        """
-        Checks if the current timestamp (audi_evaluated_at) is greater than the previous timestamps in order.
-        
-        Returns:
-            bool: True if the precedence is met, False otherwise.
-        """
         previous_timestamps = [
             self.audi_created_at,
             self.audi_downloaded_at,
             self.audi_processed_at,
             self.audi_inserted_at,
         ]
-        
         is_met = True
         and_map = lambda a, b: a and b
-
         for index, current_timestamp in enumerate(previous_timestamps):
             previous_t = previous_timestamps[0:index]
-
             if index > 0:
                 greater_than_map = lambda a: a <= current_timestamp
-
                 this_is_met = reduce(and_map, map(greater_than_map, previous_t))
-
                 is_met = is_met and this_is_met
-        
         return is_met
-    
+
     def __get_pydantic_core_schema__(self):
-        """
-        Defines the Pydantic schema for AuditDB.
-        """
         return AuditDBSchema
-    
+
     def __repr__(self):
         source_updated_at=f"audi_source_updated_at={self.audi_source_updated_at}"
         created_at=f"audi_created_at={self.audi_created_at}"
@@ -114,18 +98,16 @@ class AuditDB(Base, Generic[T]):
         processed_at=f"audi_processed_at={self.audi_processed_at}"
         inserted_at=f"audi_inserted_at={self.audi_inserted_at}"
         timestamps=f"{source_updated_at}, {created_at}, {downloaded_at}, {processed_at}, {inserted_at}"
-        
         table_name=f"audi_table_name={self.audi_table_name}"
         file_size=f"audi_file_size_bytes={self.audi_file_size_bytes}"
         filenames=f"audi_filenames={self.audi_filenames}"
         file_info = f"{table_name}, {filenames}, {file_size}"
         args=f"audi_id={self.audi_id}, {file_info}, {timestamps}"
-        
         return f"AuditDB({args})"
-    
-class Empresa(Base):
+
+# Main CNPJ/source tables use MainBase
+class Empresa(MainBase):
     __tablename__ = 'empresa'
-    
     cnpj_basico = Column(Text, nullable=False, primary_key=True)
     razao_social = Column(Text, nullable=True)
     natureza_juridica = Column(Text, nullable=True)
@@ -133,15 +115,12 @@ class Empresa(Base):
     capital_social = Column(Float(53), nullable=True)
     porte_empresa = Column(Text, nullable=True)
     ente_federativo_responsavel = Column(Text, nullable=True)
-    
     __table_args__ = (
         Index('empresa_cnpj_basico', 'cnpj_basico'),
     )
 
-
-class SimplesNacional(Base):
+class SimplesNacional(MainBase):
     __tablename__ = 'simples'
-    
     cnpj_basico = Column(Text, nullable=True, primary_key=True)
     opcao_pelo_simples = Column(Text, nullable=True)
     data_opcao_simples = Column(Text, nullable=True)
@@ -149,14 +128,12 @@ class SimplesNacional(Base):
     opcao_mei = Column(Text, nullable=True)
     data_opcao_mei = Column(Text, nullable=True)
     data_exclusao_mei = Column(Text, nullable=True)
-    
     __table_args__ = (
         Index('simples_cnpj_basico', 'cnpj_basico'),
     )
 
-class Socios(Base):
+class Socios(MainBase):
     __tablename__ = 'socios'
-    
     cnpj_basico = Column(Text, nullable=False, primary_key=True)
     identificador_socio = Column(Text, nullable=True)
     nome_socio_razao_social = Column(Text, nullable=True)
@@ -168,14 +145,12 @@ class Socios(Base):
     nome_do_representante = Column(Text, nullable=True)
     qualificacao_representante_legal = Column(Text, nullable=True)
     faixa_etaria = Column(Text, nullable=True)
-    
     __table_args__ = (
         Index('socios_cnpj_basico', 'cnpj_basico'),
     )
 
-class Estabelecimento(Base):
+class Estabelecimento(MainBase):
     __tablename__ = 'estabelecimento'
-    
     cnpj_basico = Column(Text, nullable=False, primary_key=True)
     cnpj_ordem = Column(Text, nullable=True, primary_key=True)
     cnpj_dv = Column(Text, nullable=True, primary_key=True)
@@ -206,7 +181,6 @@ class Estabelecimento(Base):
     correio_eletronico = Column(Text, nullable=True)
     situacao_especial = Column(Text, nullable=True)
     data_situacao_especial = Column(Text, nullable=True)
-    
     __table_args__ = (
         Index('estabelecimento_cnpj_basico', 'cnpj_basico'),
         Index('estabelecimento_cnpj_ordem', 'cnpj_ordem'),
@@ -217,38 +191,32 @@ class Estabelecimento(Base):
         Index('estabelecimento_uf', 'uf'),
     )
 
-class Qualificacoes(Base):
+class Qualificacoes(MainBase):
     __tablename__ = 'quals'
-    
     codigo = Column(Text, nullable=True, primary_key=True)
     descricao = Column(Text, nullable=True)
 
-class MotivoCadastral(Base):
+class MotivoCadastral(MainBase):
     __tablename__ = 'moti'
-    
     codigo = Column(Text, nullable=True, primary_key=True)
     descricao = Column(Text, nullable=True)
 
-class NaturezaJuridica(Base):
+class NaturezaJuridica(MainBase):
     __tablename__ = 'natju'
-    
     codigo = Column(Text, nullable=True, primary_key=True)
     descricao = Column(Text, nullable=True)
 
-class Municipio(Base):
+class Municipio(MainBase):
     __tablename__ = 'munic'
-    
     codigo = Column(Text, nullable=True, primary_key=True)
     descricao = Column(Text, nullable=True)
 
-class Cnae(Base):
+class Cnae(MainBase):
     __tablename__ = 'cnae'
-    
     codigo = Column(Text, nullable=True, primary_key=True)
     descricao = Column(Text, nullable=True)
 
-class Pais(Base):
+class Pais(MainBase):
     __tablename__ = 'pais'
-    
     codigo = Column(Text, nullable=True, primary_key=True)
     descricao = Column(Text, nullable=True)
