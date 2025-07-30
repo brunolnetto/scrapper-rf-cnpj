@@ -49,15 +49,8 @@ def rename_database(user, password, host, port, dbname, old_name, new_name):
     engine = create_engine(f'postgresql://{user}:{password}@{host}:{port}/{dbname}')
     with engine.connect() as conn:
         try:
-            # Close current connection and create new one with autocommit
-            conn.close()
-            autocommit_engine = create_engine(
-                f'postgresql://{user}:{password}@{host}:{port}/{dbname}',
-                isolation_level="AUTOCOMMIT"
-            )
-            with autocommit_engine.connect() as autocommit_conn:
-                autocommit_conn.execute(text(f'ALTER DATABASE "{old_name}" RENAME TO "{new_name}";'))
-            autocommit_engine.dispose()
+            conn.execute(text(f'ALTER DATABASE "{old_name}" RENAME TO "{new_name}";'))
+            conn.commit()
         except SQLAlchemyError as e:
             print(f"Error renaming database {old_name} to {new_name}: {e}")
         finally:
