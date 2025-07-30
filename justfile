@@ -59,9 +59,8 @@ install:
 # Searchs for a token in the code
 search token:
     grep -rnw . \
-    --exclude-dir=venv \
+    --exclude-dir=.venv \
     --exclude-dir=.git \
-    --exclude=poetry.lock \
     -e "{{token}}"
 
 # Replaces a token in the code
