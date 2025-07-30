@@ -231,6 +231,7 @@ def create_new_audit_metadata(audits: List[AuditDB]) -> AuditMetadata:
     zip_file_dict = {
         zip_filename: [] for audit in audits for zip_filename in audit.audi_filenames
     }
+    import pdb; pdb.set_trace()
 
     zipfiles_to_tablenames = get_zip_to_tablename(zip_file_dict)
     tablename_to_zipfile_dict = invert_dict_list(zipfiles_to_tablenames)
@@ -261,17 +262,37 @@ def create_audit_metadata(audits: List[AuditDB], to_path: str) -> AuditMetadata:
     Returns:
         AuditMetadata: An object containing the audit list and related metadata.
     """
-    zip_file_dict = {
-        zip_filename: [
-            content.filename 
-            for content in list_zip_contents(path.join(to_path, zip_filename))
-        ]
-        for audit in audits
-        for zip_filename in audit.audi_filenames
-    }
+    # Debug: Log what we're processing
+    logger.info(f"Creating audit metadata for {len(audits)} audits")
+    for audit in audits:
+        logger.info(f"Audit: {audit.audi_table_name} -> {audit.audi_filenames}")
+    
+    zip_file_dict = {}
+    for audit in audits:
+        for zip_filename in audit.audi_filenames:
+            zip_path = path.join(to_path, zip_filename)
+            logger.info(f"Processing zip file: {zip_path}")
+            
+            if path.exists(zip_path):
+                try:
+                    contents = list_zip_contents(zip_path)
+                    csv_files = [content.filename for content in contents]
+                    logger.info(f"Found CSV files in {zip_filename}: {csv_files}")
+                    zip_file_dict[zip_filename] = csv_files
+                except Exception as e:
+                    logger.error(f"Error reading zip file {zip_path}: {e}")
+                    zip_file_dict[zip_filename] = []
+            else:
+                logger.warning(f"Zip file not found: {zip_path}")
+                zip_file_dict[zip_filename] = []
 
+    logger.info(f"Zip file dict: {zip_file_dict}")
+    
     zipfiles_to_tablenames = get_zip_to_tablename(zip_file_dict)
+    logger.info(f"Zip files to table names: {zipfiles_to_tablenames}")
+    
     tablename_to_zipfile_dict = invert_dict_list(zipfiles_to_tablenames)
+    logger.info(f"Table names to zip files: {tablename_to_zipfile_dict}")
 
     tablename_to_zipfile_to_files = {
         tablename: {
@@ -280,6 +301,9 @@ def create_audit_metadata(audits: List[AuditDB], to_path: str) -> AuditMetadata:
         }
         for tablename, zipfiles in tablename_to_zipfile_dict.items()
     }
+    
+    logger.info(f"Final table mapping: {tablename_to_zipfile_to_files}")
+    
     return AuditMetadata(
         audit_list=[ 
             AuditDBSchema.model_validate(audit, from_attributes=True) 

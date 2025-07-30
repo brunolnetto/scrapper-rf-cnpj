@@ -41,6 +41,12 @@ class DataLoadingService:
         table_to_files = audit_metadata.tablename_to_zipfile_to_files
         source_path = Path(source_folder)
         
+        # Log what tables we have in audit list vs what we can load
+        audit_table_names = [audit.audi_table_name for audit in audit_metadata.audit_list]
+        available_table_names = list(table_to_files.keys())
+        logger.info(f"Audit tables: {audit_table_names}")
+        logger.info(f"Available tables for loading: {available_table_names}")
+        
         # Prepare mapping: table_name -> list of files (for CSV) or just table_name (for Parquet)
         results = self.strategy.load_multiple_tables(
             database=database,
@@ -53,9 +59,17 @@ class DataLoadingService:
         now = datetime.now()
         for audit in audit_metadata.audit_list:
             result = results.get(audit.audi_table_name)
-            if result and result[0]:  # success
-                audit.audi_inserted_at = now
+            if result:
+                if result[0]:  # success
+                    audit.audi_inserted_at = now
+                elif result[1] == "No files found":  # no files but not an error
+                    logger.info(f"No files found for table {audit.audi_table_name} - this is normal for small reference tables")
+                    audit.audi_inserted_at = now  # Still mark as processed
+                else:  # actual error
+                    logger.error(f"Failed to load table {audit.audi_table_name}: {result[1]}")
             else:
-                logger.error(f"Failed to load table {audit.audi_table_name}: {result[1] if result else 'No result'}")
+                # Table not in results - this happens for small reference tables without files
+                logger.info(f"Table {audit.audi_table_name} not in loading results - marking as processed (no files to load)")
+                audit.audi_inserted_at = now
         
         return audit_metadata

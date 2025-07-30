@@ -31,9 +31,6 @@ def setup_stream_handlers():
     stdout_handler = logging.StreamHandler(sys.stdout)
     stderr_handler = logging.StreamHandler(sys.stderr)
     
-    stdout_handler.setFormatter(formatter)
-    stderr_handler.setFormatter(formatter)
-    
     stdout_handler.setLevel(logging.INFO)
     stderr_handler.setLevel(logging.WARN)
     

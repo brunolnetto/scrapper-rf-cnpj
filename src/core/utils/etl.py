@@ -17,8 +17,8 @@ from setup.logging import logger
 
 # Tabelas
 tablename_list = list(TABLES_INFO_DICT.keys())
-trimmed_tablename_list = [name[:5] for name in TABLES_INFO_DICT.keys()]
-tablename_tuples = list(zip(tablename_list, trimmed_tablename_list))
+expression_list = [TABLES_INFO_DICT[name]['expression'] for name in TABLES_INFO_DICT.keys()]
+tablename_tuples = list(zip(tablename_list, expression_list))
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
@@ -207,13 +207,15 @@ def load_RF_data_on_database(database, source_folder, audit_metadata: AuditMetad
     
     return audit_metadata
 
-def get_zip_to_tablename(zip_file_dict: Dict[str, List[str]]) -> Dict[str, str]:
+def get_zip_to_tablename(zip_file_dict: Dict[str, List[str]]) -> Dict[str, List[str]]:
     """Retrieves the filenames of the extracted files from the Receita Federal."""
-    return {
-        zipped_file: [
-            tablename for tablename, prefix in tablename_tuples
-            if prefix.lower() in zipped_file.lower()
-        ] for zipped_file in zip_file_dict.keys()
-    }
+    result = {}
+    for zipped_file in zip_file_dict.keys():
+        matching_tables = []
+        for tablename, expression in tablename_tuples:
+            if expression.lower() in zipped_file.lower():
+                matching_tables.append(tablename)
+        result[zipped_file] = matching_tables
+    return result
 
 

@@ -51,8 +51,11 @@ def rename_database(user, password, host, port, dbname, old_name, new_name):
         try:
             conn.execute(text(f'ALTER DATABASE "{old_name}" RENAME TO "{new_name}";'))
             conn.commit()
+            logger.info(f"Successfully renamed database '{old_name}' to '{new_name}'")
         except SQLAlchemyError as e:
-            print(f"Error renaming database {old_name} to {new_name}: {e}")
+            error_msg = f"Error renaming database {old_name} to {new_name}: {e}"
+            logger.error(error_msg)
+            raise Exception(error_msg) from e
         finally:
             conn.close()
     engine.dispose()
@@ -104,16 +107,16 @@ def validate_database(database_name):
     return True
 
 def promote_new_database(user, password, host, port, maintenance_db, prod_db, old_db, new_db):
-    logger.info("[PROMOTION] Terminating sessions on all DBs...")
-    terminate_db_sessions(user, password, host, port, maintenance_db, prod_db)
-    terminate_db_sessions(user, password, host, port, maintenance_db, old_db)
-    terminate_db_sessions(user, password, host, port, maintenance_db, new_db)
-
     # Check if production database exists
     prod_db_exists = database_exists(user, password, host, port, maintenance_db, prod_db)
 
     if prod_db_exists:
         logger.info("[PROMOTION] Production database exists. Performing blue-green deployment...")
+        
+        # Terminate sessions on production and new databases
+        logger.info("[PROMOTION] Terminating sessions on production and new databases...")
+        terminate_db_sessions(user, password, host, port, maintenance_db, prod_db)
+        terminate_db_sessions(user, password, host, port, maintenance_db, new_db)
         
         # Drop old database if it exists
         logger.info("[PROMOTION] Dropping old database if it exists...")
@@ -132,6 +135,10 @@ def promote_new_database(user, password, host, port, maintenance_db, prod_db, ol
         drop_database_if_exists(user, password, host, port, maintenance_db, old_db)
     else:
         logger.info("[PROMOTION] Production database does not exist. Direct promotion...")
+        
+        # Terminate sessions on new database only
+        logger.info("[PROMOTION] Terminating sessions on new database...")
+        terminate_db_sessions(user, password, host, port, maintenance_db, new_db)
         
         # Simply rename new database to production database
         logger.info("[PROMOTION] Renaming new database to production database...")

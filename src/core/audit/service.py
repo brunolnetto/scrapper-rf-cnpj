@@ -4,8 +4,7 @@ Unified audit management service for the CNPJ ETL project.
 This service centralizes audit creation, validation, and insertion logic for use by ETL and data loading components.
 """
 
-from typing import List, Optional
-from datetime import datetime
+from typing import List
 from database.schemas import Database
 from database.models import AuditDB
 from core.schemas import AuditMetadata, FileInfo, FileGroupInfo

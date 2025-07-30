@@ -24,16 +24,27 @@ from core.loading.service import DataLoadingService
 from core.loading.strategies import AutoLoadingStrategy
 from core.download.service import FileDownloadService
 
+
+class ETLDataRetrievalError(Exception):
+    """Custom exception for ETL data retrieval failures."""
+    pass
+
+
+class ETLNoDataAvailableError(Exception):
+    """Custom exception when no data is available for the specified period."""
+    pass
+
+
 class CNPJ_ETL:
     def __init__(
-        self,
-        config_service: Optional[ConfigurationService] = None
+        self, config_service: Optional[ConfigurationService] = None
     ) -> None:
         self.config = config_service or ConfigurationService()
         
-        # Initialize main database for ETL tables
-        logger.info(f"Initializing main database: {self.config.database.database}")
-        self.database = init_database(self.config.database, MainBase)
+        # Initialize main database for ETL tables (targets new_db for blue-green deployment)
+        etl_db_config = self.config.get_etl_database_config()
+        logger.info(f"Initializing ETL target database: {etl_db_config.database}")
+        self.database = init_database(etl_db_config, MainBase)
         self.database.create_tables()
         
         # Initialize audit database for audit records
@@ -50,12 +61,14 @@ class CNPJ_ETL:
         Scrapes the Receita Federal website to extract file information.
         Returns:
             List[FileInfo]: A list of FileInfo objects with updated date, filename, and size.
+        Raises:
+            ETLDataRetrievalError: If data retrieval fails.
         """
+        url = self.config.urls.get_files_url(self.config.etl.year, self.config.etl.month)
         try:
-            raw_html = request.urlopen(self.config.urls.get_files_url(self.config.etl.year, self.config.etl.month)).read()
+            raw_html = request.urlopen(url).read()
         except Exception as e:
-            logger.error(f"Failed to fetch URL: {self.config.urls.get_files_url(self.config.etl.year, self.config.etl.month)}, error: {e}")
-            return []
+            raise ETLDataRetrievalError(f"Failed to retrieve data from {url}: {e}")
 
         page_items = BeautifulSoup(raw_html, 'lxml')
         table_rows = page_items.find_all('tr')
@@ -102,6 +115,14 @@ class CNPJ_ETL:
         return self.audit_service.create_audits_from_files(files_info)
 
     def retrieve_data(self) -> List[AuditDB]:
+        """
+        Retrieves data from the Receita Federal website.
+        Returns:
+            List[AuditDB]: A list of audit entries.
+        Raises:
+            ETLDataRetrievalError: If data retrieval fails.
+            ETLNoDataAvailableError: If no data is available to retrieve.
+        """
         audits = self.fetch_data()
 
         # Development mode filtering
@@ -111,16 +132,16 @@ class CNPJ_ETL:
                 if audit.audi_file_size_bytes < self.config.get_file_size_limit()
             ]
 
-        if audits:
-            self.file_downloader.download_and_extract(
-                audits,
-                self.config.urls.get_files_url(self.config.etl.year, self.config.etl.month),
-                str(self.config.paths.download_path),
-                str(self.config.paths.extract_path),
-                parallel=self.config.etl.is_parallel
-            )
-        else:
-            logger.warning("No audits to retrieve.")
+        if not audits:
+            raise ETLNoDataAvailableError(f"No data available for year={self.config.etl.year}, month={self.config.etl.month:02d}")
+
+        self.file_downloader.download_and_extract(
+            audits,
+            self.config.urls.get_files_url(self.config.etl.year, self.config.etl.month),
+            str(self.config.paths.download_path),
+            str(self.config.paths.extract_path),
+            parallel=self.config.etl.is_parallel
+        )
 
         return audits
 
@@ -134,8 +155,10 @@ class CNPJ_ETL:
                 audit_map[table_name] = {}
             for zip_filename, csv_files in zipfile_to_files.items():
                 audit_map[table_name][zip_filename] = csv_files
+
         logger.info(f"Converting CSV files to Parquet format...")
         logger.info(f"Output directory: {output_dir}")
+
         logger.info(f"Processing {len(audit_map)} tables with {max_workers} workers")
         convert_csvs_to_parquet(audit_map, Path(self.config.paths.extract_path), output_dir, max_workers)
         logger.info(f"Parquet conversion completed. Files saved to: {output_dir}")
@@ -153,31 +176,36 @@ class CNPJ_ETL:
 
 
     def run(self) -> None:
+        """
+        Runs the complete ETL pipeline.
+        Raises:
+            ETLDataRetrievalError: If data retrieval fails.
+            ETLNoDataAvailableError: If no data is available for the specified period.
+        """
         audits = self.retrieve_data()
-        if audits:
-            audit_metadata = self.audit_service.create_audit_metadata(
-                audits, str(self.config.paths.download_path)
-            )
+        
+        audit_metadata = self.audit_service.create_audit_metadata(
+            audits, str(self.config.paths.download_path)
+        )
 
-            if self.config.etl.delete_files:
-                remove_folder(str(self.config.paths.download_path))
+        if self.config.etl.delete_files:
+            remove_folder(str(self.config.paths.download_path))
 
-            # Convert to Parquet if requested
-            if self.config.etl.prefer_parquet:
-                self.convert_to_parquet(audit_metadata)
+        # Convert to Parquet if requested
+        if self.config.etl.prefer_parquet:
+            self.convert_to_parquet(audit_metadata)
 
-            # Load data using the new DataLoadingService
-            self.data_loader.load_data(
-                self.database, 
-                str(self.config.paths.extract_path), 
-                audit_metadata
-            )
+        # Load data using the new DataLoadingService
+        self.data_loader.load_data(
+            self.database, 
+            str(self.config.paths.extract_path), 
+            audit_metadata
+        )
 
-            self.create_indices()
+        self.create_indices()
 
-            self.audit_service.insert_audits(audit_metadata)
-        else:
-            logger.warning("No data to load!")
+        self.audit_service.insert_audits(audit_metadata)
+        
         if self.config.etl.delete_files:
             remove_folder(str(self.config.paths.extract_path))
 

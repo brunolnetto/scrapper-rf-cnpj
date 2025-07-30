@@ -163,6 +163,22 @@ class ConfigurationService:
             'new_db': f"{self.database.database}_new"
         }
     
+    def get_etl_target_database(self) -> str:
+        """Get the target database name for ETL operations (new_db for blue-green deployment)."""
+        return self.get_database_names()['new_db']
+    
+    def get_etl_database_config(self) -> DatabaseConfig:
+        """Get database configuration for ETL operations (targets new_db)."""
+        db_names = self.get_database_names()
+        return DatabaseConfig(
+            host=self.database.host,
+            port=self.database.port,
+            user=self.database.user,
+            password=self.database.password,
+            database=db_names['new_db'],  # ETL should target new_db
+            maintenance_db=self.database.maintenance_db
+        )
+    
     def is_development_mode(self) -> bool:
         """Check if running in development mode."""
         return self.etl.development_mode
