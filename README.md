@@ -1,85 +1,316 @@
-# Dados Públicos CNPJ
+# Pipeline ETL - Dados Públicos CNPJ
 
-### Modelo de Entidade Relacionamento:
+## 📊 Visão Geral
 
-![alt text](https://github.com/brunolnetto/RF_CNPJ/blob/master/images/Dados_RFB_ERD.png)
+Este projeto implementa um pipeline ETL robusto e escalável para processamento de dados públicos do CNPJ da Receita Federal do Brasil. O sistema é capaz de processar grandes volumes de dados (~17GB descompactados) com auditoria completa e carregamento incremental.
 
+### 🏗️ Modelo de Entidade Relacionamento
 
-   A Receita Federal do Brasil disponibiliza bases com os dados públicos do cadastro nacional de pessoas jurídicas (CNPJ). De forma geral, nelas constam as mesmas informações que conseguimos ver no cartão do CNPJ, quando fazemos uma consulta individual, acrescidas de outros dados de Simples Nacional, sócios e etc. Análises muito ricas podem sair desses dados, desde econômicas, mercadológicas até investigações.
+![Modelo ERD](https://github.com/brunolnetto/RF_CNPJ/blob/master/images/Dados_RFB_ERD.png)
 
-Nesse repositório consta um processo de ETL para: 
+### ✨ Características Principais
 
-  1. baixar os arquivos; 
-  
-  2. descompactar; 
-  
-  3. ler e tratar
-  
-  4. inserir num banco de dados relacional PostgreSQL.
+- **Pipeline ETL Automatizado**: Download, extração, transformação e carregamento de dados
+- **Processamento Incremental**: Suporte a carregamento por ano/mês específico
+- **Auditoria Completa**: Rastreamento de todas as operações e metadados
+- **Formato Otimizado**: Conversão automática CSV → Parquet para melhor performance
+- **Arquitetura Dual**: Bancos separados para produção e auditoria
+- **Sistema de Logs**: Logging estruturado em JSON com rotação automática
 
----------------------
+### 🔄 Fluxo do Pipeline
 
-## Base de dados:
+1. **Download** - Baixa arquivos ZIP da fonte oficial
+2. **Extração** - Descompacta arquivos CSV 
+3. **Conversão** - Transforma dados para formato Parquet otimizado
+4. **Carregamento** - Insere/atualiza dados no PostgreSQL com auditoria
 
-- Fonte de dados: https://dados.gov.br/dados/conjuntos-dados/cadastro-nacional-da-pessoa-juridica---cnpj.
-- Layout: https://www.gov.br/receitafederal/dados/cnpj-metadados.pdf.
+## 📚 Fonte de Dados
 
----------------------
+- **Dados Oficiais**: [Portal de Dados Abertos do Governo](https://dados.gov.br/dados/conjuntos-dados/cadastro-nacional-da-pessoa-juridica---cnpj)
+- **Layout dos Dados**: [Metadados CNPJ - Receita Federal](https://www.gov.br/receitafederal/dados/cnpj-metadados.pdf)
+- **Volume**: ~4.7GB compactado | ~17.1GB descompactado
+- **Atualização**: Mensal pela Receita Federal
 
-## Infraestrutura necessária:
+## 🛠️ Requisitos do Sistema
 
-- [Python 3.8](https://www.python.org/downloads/release/python-3810/)
-- [PostgreSQL 14.2](https://www.postgresqltutorial.com/postgresql-getting-started/install-postgresql-linux/)
-  
----------------------
+### Infraestrutura
+- **Python**: 3.9+ (recomendado 3.11+)
+- **PostgreSQL**: 14.2+ 
+- **Memória RAM**: Mínimo 8GB (recomendado 16GB+)
+- **Espaço em Disco**: ~50GB livres para processamento
 
-## Como usar:
+### Dependências Python
+- **Gerenciador**: [uv](https://github.com/astral-sh/uv) (recomendado) ou pip
+- **Principais**: pandas, polars, sqlalchemy, psycopg2, pyarrow
+- **Ver**: `requirements.txt` para lista completa
 
-1. Com o Postgres instalado, inicie a instância do servidor (pode ser local) e crie o banco de dados conforme o arquivo `banco_de_dados.sql`. Os comandos abaixo são executador em ambiente Linux:
+## 🚀 Instalação e Configuração
 
-   - Execute os comandos `sudo -u postgres psql`;
-   - Crie um usuário e senha de preferência. Exemplo: `ALTER USER postgres PASSWORD 'postgres';`
-   - Copie-cole o conteúdo do arquivo `banco_de_dados.sql`
- 
-2. Crie um arquivo `.env` no diretório `code`, conforme as variáveis de ambiente do seu ambiente de trabalho (localhost). Utilize como referência o arquivo `.env_template`. Você pode também, por exemplo, renomear o arquivo de `.env_template` para apenas `.env` e então utilizá-lo:
+### 1. Setup do Banco de Dados
+```bash
+# Conecte ao PostgreSQL
+sudo -u postgres psql
 
-   - `POSTGRES_USER`        : usuário do banco de dados criado pelo arquivo `banco_de_dados.sql`
-   - `POSTGRES_PASSWORD`    : senha do usuário do BD
-   - `POSTGRES_HOST`        : host da conexão com o BD 
-   - `POSTGRES_PORT`        : porta da conexão com o BD 
-   - `POSTGRES_NAME`        : nome da base de dados na instância (`Dados_RFB` - conforme arquivo `banco_de_dados.sql`)
-   - `OUTPUT_PATH`          : (Opcional) diretório de destino para o donwload dos arquivos
-   - `EXTRACT_PATH`         : (Opcional) diretório de destino para a extração dos arquivos .zip
-   - `ENVIRONMENT`          : (Opcional) ambiente "development", "staging", "production"
+# Configure usuário e senha
+ALTER USER postgres PASSWORD 'sua_senha_aqui';
 
-3. Instale as bibliotecas necessárias, disponíveis em `requirements.txt`:
+# Crie os bancos (produção e auditoria)
+CREATE DATABASE dadosrfb;
+CREATE DATABASE dadosrfb_analysis;
 ```
-pip install uv && uv pip install -r requirements.txt
+
+### 2. Configuração do Ambiente
+```bash
+# Clone o repositório
+git clone https://github.com/brunolnetto/scrapper-rf-cnpj.git
+cd scrapper-rf-cnpj
+
+# Copie e configure o arquivo de ambiente
+cp .env.template .env
+# Edite o .env com suas credenciais
 ```
 
-4. Execute o arquivo `src/main.py` e aguarde a finalização do processo.
-   - Os arquivos são grandes. Dependendo da infraestrutura isso deve levar muitas horas para conclusão.
-   - Arquivos de 08/05/2021: `4,68 GB` compactados e `17,1 GB` descompactados.
-    
----------------------
+### 3. Instalação das Dependências
+```bash
+# Opção 1: Usando uv (recomendado)
+pip install uv
+uv pip install -r requirements.txt
 
-## Tabelas geradas:
+# Opção 2: Usando pip tradicional
+pip install -r requirements.txt
+```
 
-Para maiores informações, consulte o [layout](https://www.gov.br/receitafederal/pt-br/assuntos/orientacao-tributaria/cadastros/consultas/arquivos/NOVOLAYOUTDOSDADOSABERTOSDOCNPJ.pdf).
+### 4. Configuração do `.env`
+```env
+# Ambiente
+ENVIRONMENT=development
 
-  - `empresa`: dados cadastrais da empresa em nível de matriz
-  - `estabelecimento`: dados analíticos da empresa por unidade / estabelecimento (telefones, endereço, filial, etc)
-  - `socios`: dados cadastrais dos sócios das empresas
-  - `simples`: dados de MEI e Simples Nacional
-  - `cnae`: código e descrição dos CNAEs
-  - `quals`: tabela de qualificação das pessoas físicas - sócios, responsável e representante legal.  
-  - `natju`: tabela de naturezas jurídicas - código e descrição.
-  - `moti`: tabela de motivos da situação cadastral - código e descrição.
-  - `pais`: tabela de países - código e descrição.
-  - `munic`: tabela de municípios - código e descrição.
+# Banco Principal
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=sua_senha
+POSTGRES_DBNAME=dadosrfb
 
+# Banco de Auditoria
+AUDIT_DB_HOST=localhost
+AUDIT_DB_PORT=5432
+AUDIT_DB_USER=postgres
+AUDIT_DB_PASSWORD=sua_senha
+AUDIT_DB_NAME=dadosrfb_analysis
 
-Pelo volume de dados, as tabelas  `empresa`, `estabelecimento`, `socios` e `simples` possuem índices para a coluna `cnpj_basico`, a principal chave de ligação entre elas.
+# Diretórios (opcionais)
+OUTPUT_PATH=data/DOWNLOAD_FILES
+EXTRACT_PATH=data/EXTRACTED_FILES
+```
+## ▶️ Como Executar
 
+### Comandos Principais (usando just)
+```bash
+# Executar ETL para mês/ano atual
+just run
 
+# Executar para período específico
+just run-etl 2024 12
 
+# Ver todos os comandos disponíveis
+just help
+```
+
+### Execução Manual
+```bash
+# ETL para período atual
+python -m src.main
+
+# ETL para período específico
+python -m src.main --year 2024 --month 12
+
+# ETL com refresh completo (limpa tabelas)
+python -m src.main --year 2024 --month 12 --full-refresh true
+
+# Limpar tabelas específicas
+python -m src.main --clear-tables "empresa,estabelecimento"
+```
+
+### Comandos de Desenvolvimento
+```bash
+# Instalar dependências
+just install
+
+# Executar linting
+just lint
+
+# Limpar logs e cache
+just clean
+
+# Buscar no código
+just search "termo_pesquisa"
+```
+
+### ⏱️ Tempo de Processamento
+- **Dados completos**: 4-8 horas (dependendo da infraestrutura)
+- **Processamento incremental**: 30min - 2h
+- **Download**: 1-2 horas (dependendo da conexão)
+- **Logs**: Disponíveis em `logs/YYYY-MM-DD/HH_MM/`
+
+## 🗃️ Estrutura das Tabelas
+
+Para informações detalhadas, consulte o [layout oficial](https://www.gov.br/receitafederal/pt-br/assuntos/orientacao-tributaria/cadastros/consultas/arquivos/NOVOLAYOUTDOSDADOSABERTOSDOCNPJ.pdf).
+
+### Tabelas Principais (com índices em `cnpj_basico`)
+| Tabela | Descrição | Registros Aprox. |
+|--------|-----------|------------------|
+| `empresa` | Dados cadastrais da matriz | ~50M |
+| `estabelecimento` | Dados por unidade/filial (endereços, telefones) | ~60M |
+| `socios` | Dados dos sócios das empresas | ~30M |
+| `simples` | Dados de MEI e Simples Nacional | ~40M |
+
+### Tabelas de Referência
+| Tabela | Descrição |
+|--------|-----------|
+| `cnae` | Códigos e descrições de atividades econômicas |
+| `quals` | Qualificações de pessoas físicas (sócios, responsáveis) |
+| `natju` | Naturezas jurídicas |
+| `moti` | Motivos de situação cadastral |
+| `pais` | Códigos de países |
+| `munic` | Códigos de municípios |
+
+### 🔗 Relacionamentos
+- **Chave Principal**: `cnpj_basico` (8 primeiros dígitos do CNPJ)
+- **CNPJ Completo**: `cnpj_basico` + `cnpj_ordem` + `cnpj_dv` (em `estabelecimento`)
+- **Índices**: Otimizados para consultas por CNPJ e relacionamentos
+
+## 📁 Estrutura do Projeto
+
+```
+scrapper-rf-cnpj/
+├── src/                    # Código fonte principal
+│   ├── main.py            # Ponto de entrada do ETL
+│   ├── core/              # Componentes principais do ETL
+│   ├── database/          # Modelos e conexões de banco
+│   ├── setup/             # Configurações e logging
+│   └── utils/             # Utilitários diversos
+├── data/                  # Dados processados
+│   ├── DOWNLOAD_FILES/    # Arquivos ZIP baixados
+│   ├── EXTRACTED_FILES/   # Arquivos CSV extraídos
+│   └── CONVERTED_FILES/   # Arquivos Parquet convertidos
+├── examples/              # Exemplos de uso
+├── lab/                   # Notebooks para análise
+├── logs/                  # Logs do sistema
+├── justfile              # Comandos automatizados
+├── requirements.txt      # Dependências Python
+└── .env.template         # Template de configuração
+```
+
+## 🔧 Recursos Avançados
+
+### Sistema de Auditoria
+- Rastreamento completo de operações
+- Metadados de arquivos processados
+- Tempos de execução e logs estruturados
+- Banco separado para dados de auditoria
+
+### Otimizações de Performance
+- Conversão automática para formato Parquet
+- Carregamento em lotes (chunking)
+- Índices otimizados no PostgreSQL
+- Processamento paralelo quando possível
+
+### Monitoramento
+- Logs em formato JSON estruturado
+- Contadores de registros processados
+- Métricas de tempo de execução
+- Validação de integridade dos dados
+
+## 🛠️ Desenvolvimento
+
+### Estrutura de Código
+- **Configuração Centralizada**: `src/setup/config.py`
+- **Padrão Lazy Loading**: Conexões de banco sob demanda
+- **Strategy Pattern**: Diferentes estratégias de carregamento
+- **Auditoria Integrada**: Rastreamento automático de operações
+
+### Executando Testes
+```bash
+# Usar exemplos para validação
+python examples/loading_example.py
+
+# Análise exploratória
+jupyter lab lab/main.ipynb
+```
+
+### Contribuindo
+1. Fork o projeto
+2. Crie uma branch para sua feature
+3. Execute os testes e linting
+4. Submeta um Pull Request
+
+## 📝 Exemplos de Uso
+
+### Consultas SQL Básicas
+```sql
+-- Empresas ativas por estado
+SELECT uf, COUNT(*) as total_empresas
+FROM estabelecimento 
+WHERE situacao_cadastral = '02'
+GROUP BY uf
+ORDER BY total_empresas DESC;
+
+-- CNPJs completos com razão social
+SELECT 
+    CONCAT(e.cnpj_basico, est.cnpj_ordem, est.cnpj_dv) as cnpj_completo,
+    e.razao_social,
+    est.nome_fantasia
+FROM empresa e
+JOIN estabelecimento est ON e.cnpj_basico = est.cnpj_basico
+WHERE est.identificador_matriz_filial = '1';
+```
+
+### Análise de Dados
+```python
+import pandas as pd
+from sqlalchemy import create_engine
+
+# Conectar ao banco
+engine = create_engine('postgresql://user:pass@localhost/dadosrfb')
+
+# Análise por setor
+df = pd.read_sql("""
+    SELECT c.descricao as setor, COUNT(*) as empresas
+    FROM empresa e
+    JOIN estabelecimento est ON e.cnpj_basico = est.cnpj_basico
+    JOIN cnae c ON est.cnae_fiscal_principal = c.codigo
+    GROUP BY c.descricao
+    ORDER BY empresas DESC
+    LIMIT 20
+""", engine)
+```
+
+## 🆘 Troubleshooting
+
+### Problemas Comuns
+- **Erro de conexão**: Verifique credenciais no `.env`
+- **Falta de espaço**: Monitore diretório `data/`
+- **Timeout de download**: Verifique conexão de internet
+- **Memória insuficiente**: Ajuste `chunk_size` na configuração
+
+### Logs e Debugging
+- Logs detalhados em `logs/YYYY-MM-DD/HH_MM/`
+- Use `just clean` para limpar caches
+- Verifique status das tabelas no banco de auditoria
+
+## 📄 Licença
+
+Este projeto está sob a licença MIT. Veja o arquivo [LICENSE](LICENSE) para detalhes.
+
+## 🤝 Contribuidores
+
+- [Bruno Lemos](https://github.com/brunolnetto) - Autor principal
+
+## 📧 Contato
+
+Para dúvidas ou sugestões, abra uma [issue](https://github.com/brunolnetto/scrapper-rf-cnpj/issues) no GitHub.
+
+---
+
+⭐ **Se este projeto foi útil, considere dar uma estrela no repositório!**
