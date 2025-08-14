@@ -637,7 +637,6 @@ class PerformanceTester:
                 try:
                     drop_cmd = ['psql', '-h', self.host, '-p', self.port, '-U', self.user, '-d', self.database, '-c', f'DROP TABLE IF EXISTS {table_name};']
                     result = subprocess.run(drop_cmd, check=True, env={'PGPASSWORD': self.password}, capture_output=True, text=True)
-                    logger.debug(f"Dropped table: {table_name}")
                 except subprocess.CalledProcessError as e:
                     logger.warning(f"Failed to drop table {table_name}: {e}")
             
