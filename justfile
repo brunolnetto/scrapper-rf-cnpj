@@ -75,18 +75,22 @@ replace token new_token:
 minimal-requirements:
     python3 scripts/clean_packages.py requirements.txt requirements.txt
 
+# Check lint 
+check:
+    ruff check src
+
 # Perform inplace lint fixes
 lint:
-    ruff check --fix .
+    ruff check --fix src
 
 # Run the application
 run:
-    python ./src/main.py
+    python3 ./src/main.py
 
 # Run ETL with specific year and month
 run-etl year month:
-    python ./src/main.py --year {{year}} --month {{month}}
+    python3 ./src/main.py --year {{year}} --month {{month}}
 
 # Run ETL for current date
 run-current:
-    python ./src/main.py 
+    python3 ./src/main.py 
