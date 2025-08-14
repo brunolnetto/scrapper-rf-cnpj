@@ -7,7 +7,6 @@ requires-python = ">=3.9"
 dependencies = [
     "beautifulsoup4>=4.13.4",
     "bs4>=0.0.2",
-    "duckdb>=1.3.2",
     "importlib-metadata>=8.7.0",
     "jupyter>=1.1.1",
     "lxml>=5.4.0",
@@ -29,6 +28,17 @@ dependencies = [
     "tqdm>=4.67.1",
     "typing-extensions>=4.13.2",
     "tzdata>=2025.2",
+    "vulture>=2.14",
     "wget>=3.2",
 ]
+
+[tool.ruff]
+select = [
+    "F",    # Pyflakes: unused imports, unused variables, etc.
+    "ARG",  # flake8-unused-arguments: unused function arguments
+]
+
+# Optional: if you only want warnings for unused functions/args
+ignore = []
+
 
