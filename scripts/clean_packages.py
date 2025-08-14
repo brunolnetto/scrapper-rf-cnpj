@@ -41,9 +41,8 @@ def run_pip_compile(input_file: str, output_file: str) -> int:
 
 
 def find_packages_with_comment(
-        requirements_file: str,
-        pip_compile_output_file: str,
-        requirements_output_file: str) -> int:
+    requirements_file: str, pip_compile_output_file: str, requirements_output_file: str
+) -> int:
     """
     Finds packages with a specific comment in a requirements file and writes them to a new file.
 
@@ -55,7 +54,7 @@ def find_packages_with_comment(
     Returns:
         int: The number of packages with comments in the output file.
     """
-    splitted_file = requirements_file.split('.')
+    splitted_file = requirements_file.split(".")
     name = splitted_file[0]
     extension = splitted_file[1]
     pattern = (
@@ -74,7 +73,7 @@ def find_packages_with_comment(
                 version = match.group(2)
 
                 # Write to file
-                out_file.write(package_name + '==' + version + "\n")
+                out_file.write(package_name + "==" + version + "\n")
 
     # Get package count after operation
     with open(requirements_output_file, "r") as file:
@@ -91,10 +90,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "requirements_file", type=str, help="Path to the requirements file."
     )
-    parser.add_argument(
-        "output_file",
-        type=str,
-        help="Path to the output file.")
+    parser.add_argument("output_file", type=str, help="Path to the output file.")
 
     args = parser.parse_args()
 
@@ -104,7 +100,7 @@ if __name__ == "__main__":
         package_count_before = len(lines)
 
     # Temporary file for pip-compile output
-    tmp_file = 'tmp.in'
+    tmp_file = "tmp.in"
     run_pip_compile(args.requirements_file, tmp_file)
 
     # Get package count after operation
@@ -114,4 +110,4 @@ if __name__ == "__main__":
 
     os.remove(tmp_file)
 
-    print(f"We removed {package_count_after-package_count_before} packages.")
+    print(f"We removed {package_count_after - package_count_before} packages.")
