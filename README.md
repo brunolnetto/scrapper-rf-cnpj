@@ -305,7 +305,7 @@ Este projeto está sob a licença MIT. Veja o arquivo [LICENSE](LICENSE) para de
 
 ## 🤝 Contribuidores
 
-- [Bruno Lemos](https://github.com/brunolnetto) - Autor principal
+- [Bruno Peixoto](https://github.com/brunolnetto) - Autor principal
 
 ## 📧 Contato
 
