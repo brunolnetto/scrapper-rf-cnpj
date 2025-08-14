@@ -2,9 +2,16 @@ import polars as pl
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
+from rich.progress import (
+    Progress,
+    SpinnerColumn,
+    BarColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 
-from core.constants import TABLES_INFO_DICT
+from ..core.constants import TABLES_INFO_DICT
+
 
 def convert_table_csvs_to_parquet(table_name, csv_paths, output_dir):
     try:
@@ -19,7 +26,7 @@ def convert_table_csvs_to_parquet(table_name, csv_paths, output_dir):
             out_file.unlink()
 
         dfs_lazy = [
-            pl.scan_csv(str(filepath), schema=schema, encoding='utf8-lossy')
+            pl.scan_csv(str(filepath), schema=schema, encoding="utf8-lossy")
             for filepath in csv_paths
         ]
         if not dfs_lazy:
@@ -32,7 +39,10 @@ def convert_table_csvs_to_parquet(table_name, csv_paths, output_dir):
     except Exception as e:
         return f"[ERROR] Failed '{table_name}': {e}"
 
-def convert_csvs_to_parquet(audit_map: dict, unzip_dir: Path, output_dir: Path, max_workers: int = 4):
+
+def convert_csvs_to_parquet(
+    audit_map: dict, unzip_dir: Path, output_dir: Path, max_workers: int = 4
+):
     output_dir.mkdir(exist_ok=True)
 
     tasks = []
@@ -47,13 +57,16 @@ def convert_csvs_to_parquet(audit_map: dict, unzip_dir: Path, output_dir: Path, 
             task = progress.add_task("[cyan]Processing tables", total=len(audit_map))
 
             for table_name, zip_map in audit_map.items():
-                csv_paths = [unzip_dir / fname for files in zip_map.values() for fname in files]
+                csv_paths = [
+                    unzip_dir / fname for files in zip_map.values() for fname in files
+                ]
                 if not csv_paths:
                     continue
-                tasks.append(executor.submit(
-                    convert_table_csvs_to_parquet, 
-                    table_name, csv_paths, output_dir
-                ))
+                tasks.append(
+                    executor.submit(
+                        convert_table_csvs_to_parquet, table_name, csv_paths, output_dir
+                    )
+                )
 
             for future in as_completed(tasks):
                 result = future.result()

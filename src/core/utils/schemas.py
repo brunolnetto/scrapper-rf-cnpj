@@ -1,8 +1,10 @@
-from typing import List, Dict
-from utils.misc import normalize_filenames, get_date_range
-from core.schemas import FileInfo, FileGroupInfo
-from core.constants import TABLES_INFO_DICT
-from setup.logging import logger
+from typing import List
+
+from ...utils.misc import normalize_filenames, get_date_range
+from ..schemas import FileInfo, FileGroupInfo
+from ..constants import TABLES_INFO_DICT
+from ...setup.logging import logger
+
 
 def file_group_name_to_table_name(file_group_name: str) -> str:
     """
@@ -15,13 +17,17 @@ def file_group_name_to_table_name(file_group_name: str) -> str:
         str: The corresponding table name.
     """
     matching_table = next(
-        (table_name for table_name, table_info in TABLES_INFO_DICT.items() 
-         if table_info['group'] == file_group_name), 
-        None
+        (
+            table_name
+            for table_name, table_info in TABLES_INFO_DICT.items()
+            if table_info["group"] == file_group_name
+        ),
+        None,
     )
     if matching_table is None:
         raise ValueError(f"No table found for file group name: {file_group_name}")
     return matching_table
+
 
 def create_file_groups(files_info: List[FileInfo]) -> List[FileGroupInfo]:
     """
@@ -29,14 +35,18 @@ def create_file_groups(files_info: List[FileInfo]) -> List[FileGroupInfo]:
 
     Args:
         files_info (List[FileInfo]): A list of FileInfo objects.
-    
+
     Returns:
         List[FileGroupInfo]: A list of FileGroupInfo objects.
     """
     # Build dictionaries from files_info for size and update_at lookup
-    filename_to_update_at = {file_info.filename: file_info.updated_at for file_info in files_info}
-    filename_to_size = {file_info.filename: file_info.file_size for file_info in files_info}
-    
+    filename_to_update_at = {
+        file_info.filename: file_info.updated_at for file_info in files_info
+    }
+    filename_to_size = {
+        file_info.filename: file_info.file_size for file_info in files_info
+    }
+
     # Normalize filenames and group them
     filenames = [file_info.filename for file_info in files_info]
     normalized_filenames = normalize_filenames(filenames)  # Returns a dict
@@ -44,8 +54,12 @@ def create_file_groups(files_info: List[FileInfo]) -> List[FileGroupInfo]:
     # Create file groups with accumulated size and date range
     file_groups = []
     for normalized_name, original_filenames in normalized_filenames.items():
-        group_size_bytes = sum(filename_to_size[filename] for filename in original_filenames)
-        group_date_range = get_date_range([filename_to_update_at[filename] for filename in original_filenames])
+        group_size_bytes = sum(
+            filename_to_size[filename] for filename in original_filenames
+        )
+        group_date_range = get_date_range(
+            [filename_to_update_at[filename] for filename in original_filenames]
+        )
 
         try:
             table_name = file_group_name_to_table_name(normalized_name)
@@ -59,7 +73,7 @@ def create_file_groups(files_info: List[FileInfo]) -> List[FileGroupInfo]:
                 elements=original_filenames,
                 date_range=group_date_range,
                 table_name=table_name,
-                size_bytes=group_size_bytes
+                size_bytes=group_size_bytes,
             )
         )
 

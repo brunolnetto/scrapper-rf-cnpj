@@ -1,6 +1,7 @@
 from os import remove, scandir, path
 from shutil import rmtree
 
+
 # Function to clear the latest 'n' items (files or folders)
 def clear_latest_items(path_, n):
     """
@@ -19,13 +20,13 @@ def clear_latest_items(path_, n):
 
     # Get all items sorted by modification time (newest first)
     items = sorted(scandir(path_), key=path.getmtime)
-    
+
     # Clear the latest 'n' items
     items_len = len(items)
     if items_len > n:
-        for item in items[0:items_len-n]:
+        for item in items[0 : items_len - n]:
             if path.isfile(item.path):
                 remove(item.path)
             else:
                 # Remove directory (ignore errors)
-                rmtree(item.path, ignore_errors=True)  
+                rmtree(item.path, ignore_errors=True)

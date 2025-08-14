@@ -1,10 +1,9 @@
-from typing import NamedTuple
-
 class Database:
     """
     Represents a database connection, session management, and associated SQLAlchemy Base.
     Provides a method to create all tables for its Base.
     """
+
     def __init__(self, engine, session_maker, base):
         self.engine = engine
         self.session_maker = session_maker
@@ -14,6 +13,10 @@ class Database:
         """Create all tables for the associated Base in this database."""
         self.base.metadata.create_all(self.engine)
 
+    def __repr__(self):
+        return f"Database(engine={self.engine}, session_maker={self.session_maker}, base={self.base})"
+
+
 class TableIndex:
     """
     This class represents a table index object.
@@ -21,5 +24,6 @@ class TableIndex:
     - table_name: A string that represents the table name.
     - index_name: A string that represents the index name.
     """
+
     table_name: str
     index_name: str

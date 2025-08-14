@@ -6,19 +6,17 @@ from uuid import uuid4
 from sqlalchemy import text
 import pytz
 
-from setup.logging import logger
-from database.engine import Database 
-from database.models import AuditDB
-from utils.misc import invert_dict_list
-from utils.zip import list_zip_contents
-from core.utils.etl import get_zip_to_tablename
-from core.schemas import FileGroupInfo, AuditMetadata, AuditDBSchema
+from ...setup.logging import logger
+from ...utils.misc import invert_dict_list
+from ...utils.zip import list_zip_contents
+from ...core.utils.etl import get_zip_to_tablename
+from ..engine import Database
+from ..models import AuditDB
+from ...core.schemas import FileGroupInfo, AuditMetadata, AuditDBSchema
+
 
 def create_new_audit(
-    table_name: str, 
-    filenames: List[str], 
-    size_bytes: int, 
-    update_at: datetime
+    table_name: str, filenames: List[str], size_bytes: int, update_at: datetime
 ) -> AuditDB:
     """
     Creates a new audit entry.
@@ -44,34 +42,10 @@ def create_new_audit(
         audi_inserted_at=None,
     )
 
-def get_latest_updated_at(database: Database, table_name: str) -> Union[datetime, None]:
-    """
-    Retrieves the latest updated_at timestamp for a given table.
 
-    Args:
-        database (Database): The database object.
-        table_name (str): The name of the table.
-
-    Returns:
-        Union[datetime, None]: The latest updated_at timestamp or None if not found.
-    """
-    sql_query = text(f"""
-        SELECT max(audi_source_updated_at) 
-        FROM public.audit 
-        WHERE audi_table_name = :table_name;
-    """)
-    
-    with database.engine.connect() as connection:
-        result = connection.execute(sql_query, {'table_name': table_name})
-        latest_updated_at = result.fetchone()[0]
-    
-    if latest_updated_at:
-        sao_paulo_timezone = pytz.timezone("America/Sao_Paulo")
-        latest_updated_at = sao_paulo_timezone.localize(latest_updated_at)
-    
-    return latest_updated_at
-
-def create_audit(database: Database, file_group_info: FileGroupInfo) -> Union[AuditDB, None]:
+def create_audit(
+    database: Database, file_group_info: FileGroupInfo
+) -> Union[AuditDB, None]:
     """
     Inserts a new audit entry if the provided processed_at is later than the latest existing entry for the filename.
 
@@ -83,73 +57,75 @@ def create_audit(database: Database, file_group_info: FileGroupInfo) -> Union[Au
         Union[AuditDB, None]: The created audit entry or None if not created.
     """
     if database.engine:
-        with database.session_maker() as session:
-            # Define raw SQL query
-            sql_query = text(f"""SELECT max(audi_source_updated_at) 
-                FROM public.audit 
-                WHERE audi_table_name = \'{file_group_info.table_name}\';"""
+        # Define raw SQL query
+        sql_query = text(f"""SELECT max(audi_source_updated_at) 
+            FROM public.audit 
+            WHERE audi_table_name = \'{file_group_info.table_name}\';""")
+
+        # Execute query with parameters (optional)
+        with database.engine.connect() as connection:
+            result = connection.execute(sql_query)
+
+            # Process results (e.g., fetchall, fetchone)
+            latest_updated_at = result.fetchone()[0]
+
+        if latest_updated_at is not None:
+            format = "%Y-%m-%d %H:%M"
+            latest_updated_at = datetime.strptime(
+                latest_updated_at.strftime(format), format
             )
-            
-            # Execute query with parameters (optional)
-            with database.engine.connect() as connection:
-                result = connection.execute(sql_query)
-            
-                # Process results (e.g., fetchall, fetchone)
-                latest_updated_at = result.fetchone()[0]
+            sao_paulo_timezone = pytz.timezone("America/Sao_Paulo")
+            latest_updated_at = sao_paulo_timezone.localize(latest_updated_at)
 
-            if latest_updated_at is not None:
-                format="%Y-%m-%d %H:%M"
-                latest_updated_at = datetime.strptime(latest_updated_at.strftime(format), format)
-                sao_paulo_timezone = pytz.timezone("America/Sao_Paulo")
-                latest_updated_at = sao_paulo_timezone.localize(latest_updated_at)
+        # First entry: no existing audit entry
+        if latest_updated_at is None:
+            # Create and insert the new entry
+            return create_new_audit(
+                file_group_info.table_name,
+                file_group_info.elements,
+                file_group_info.size_bytes,
+                file_group_info.date_range[1],
+            )
 
-            # First entry: no existing audit entry
-            if latest_updated_at is None:
-                # Create and insert the new entry
-                return create_new_audit(
-                    file_group_info.table_name,
-                    file_group_info.elements,
-                    file_group_info.size_bytes, 
-                    file_group_info.date_range[1]
-                )
+        # New entry: source updated_at is greater
+        elif file_group_info.date_range[1] > latest_updated_at:
+            # Create and insert the new entry
+            return create_new_audit(
+                file_group_info.table_name,
+                file_group_info.elements,
+                file_group_info.size_bytes,
+                file_group_info.date_range[1],
+            )
 
-            # New entry: source updated_at is greater 
-            elif(file_group_info.date_range[1] > latest_updated_at):
-                # Create and insert the new entry
-                return create_new_audit(
-                    file_group_info.table_name, 
-                    file_group_info.elements,
-                    file_group_info.size_bytes, 
-                    file_group_info.date_range[1]
-                )
-            
-            # Not all files are updated in batch aka unreliable
-            elif(file_group_info.date_diff() > 7):
-                return None
-            
-            else:
-                summary=f'Skipping create entry for file group {file_group_info.name}.'
-                explanation='Existing processed_at is later or equal.'
-                error_message=f"{summary} {explanation}"
-                logger.warning(error_message)
-                
-                return None
+        # Not all files are updated in batch aka unreliable
+        elif file_group_info.date_diff() > 7:
+            return None
+
+        else:
+            summary = (
+                f"Skipping create entry for file group {file_group_info.name}."
+            )
+            explanation = "Existing processed_at is later or equal."
+            error_message = f"{summary} {explanation}"
+            logger.warning(error_message)
+
+            return None
 
     if latest_updated_at is None:
         # First entry: no existing audit entry
         return create_new_audit(
             file_group_info.table_name,
             file_group_info.elements,
-            file_group_info.size_bytes, 
-            file_group_info.date_range[1]
+            file_group_info.size_bytes,
+            file_group_info.date_range[1],
         )
     elif file_group_info.date_range[1] > latest_updated_at:
-        # New entry: source updated_at is greater 
+        # New entry: source updated_at is greater
         return create_new_audit(
             file_group_info.table_name,
             file_group_info.elements,
-            file_group_info.size_bytes, 
-            file_group_info.date_range[1]
+            file_group_info.size_bytes,
+            file_group_info.date_range[1],
         )
     elif file_group_info.date_diff() > 7:
         return None
@@ -159,6 +135,7 @@ def create_audit(database: Database, file_group_info: FileGroupInfo) -> Union[Au
             "Existing processed_at is later or equal."
         )
         return None
+
 
 def create_audits(database: Database, files_info: List[FileGroupInfo]) -> List[AuditDB]:
     """
@@ -172,9 +149,11 @@ def create_audits(database: Database, files_info: List[FileGroupInfo]) -> List[A
         List[AuditDB]: A list of audit entries.
     """
     return [
-        create_audit(database, file_info) 
-        for file_info in files_info if create_audit(database, file_info)
+        create_audit(database, file_info)
+        for file_info in files_info
+        if create_audit(database, file_info)
     ]
+
 
 def insert_audit(database: Database, new_audit: AuditDB) -> Union[AuditDB, None]:
     """
@@ -194,11 +173,14 @@ def insert_audit(database: Database, new_audit: AuditDB) -> Union[AuditDB, None]
                 session.commit()
                 return new_audit
             else:
-                logger.warning(f"Skipping insert audit for table name {new_audit.audi_table_name}.")
+                logger.warning(
+                    f"Skipping insert audit for table name {new_audit.audi_table_name}."
+                )
                 return None
     else:
         logger.error("Error connecting to the database!")
         return None
+
 
 def insert_audits(database: Database, new_audits: List[AuditDB]) -> None:
     """
@@ -215,9 +197,12 @@ def insert_audits(database: Database, new_audits: List[AuditDB]) -> None:
         try:
             insert_audit(database, new_audit)
         except Exception as e:
-            logger.error(f"Error inserting audit for table {new_audit.audi_table_name}: {e}")
+            logger.error(
+                f"Error inserting audit for table {new_audit.audi_table_name}: {e}"
+            )
 
-def create_new_audit_metadata(audits: List[AuditDB]) -> AuditMetadata:  
+
+def create_new_audit_metadata(audits: List[AuditDB]) -> AuditMetadata:
     """
     Creates audit metadata based on the provided database, files information, and destination path.
 
@@ -236,21 +221,19 @@ def create_new_audit_metadata(audits: List[AuditDB]) -> AuditMetadata:
     tablename_to_zipfile_dict = invert_dict_list(zipfiles_to_tablenames)
 
     tablename_to_zipfile_to_files = {
-        tablename: {
-            zipfile: zip_file_dict[zipfile]
-            for zipfile in zipfiles
-        }
+        tablename: {zipfile: zip_file_dict[zipfile] for zipfile in zipfiles}
         for tablename, zipfiles in tablename_to_zipfile_dict.items()
     }
     return AuditMetadata(
-        audit_list=[ 
-            AuditDBSchema.model_validate(audit, from_attributes=True) 
-            for audit in audits 
-        ], 
+        audit_list=[
+            AuditDBSchema.model_validate(audit, from_attributes=True)
+            for audit in audits
+        ],
         tablename_to_zipfile_to_files=tablename_to_zipfile_to_files,
     )
 
-def create_audit_metadata(audits: List[AuditDB], to_path: str) -> AuditMetadata:  
+
+def create_audit_metadata(audits: List[AuditDB], to_path: str) -> AuditMetadata:
     """
     Creates audit metadata based on the provided database, files information, and destination path.
 
@@ -263,7 +246,7 @@ def create_audit_metadata(audits: List[AuditDB], to_path: str) -> AuditMetadata:
     """
     zip_file_dict = {
         zip_filename: [
-            content.filename 
+            content.filename
             for content in list_zip_contents(path.join(to_path, zip_filename))
         ]
         for audit in audits
@@ -271,40 +254,18 @@ def create_audit_metadata(audits: List[AuditDB], to_path: str) -> AuditMetadata:
     }
 
     zipfiles_to_tablenames = get_zip_to_tablename(zip_file_dict)
+
     tablename_to_zipfile_dict = invert_dict_list(zipfiles_to_tablenames)
 
     tablename_to_zipfile_to_files = {
-        tablename: {
-            zipfile: zip_file_dict[zipfile]
-            for zipfile in zipfiles
-        }
+        tablename: {zipfile: zip_file_dict[zipfile] for zipfile in zipfiles}
         for tablename, zipfiles in tablename_to_zipfile_dict.items()
     }
     return AuditMetadata(
-        audit_list=[ 
-            AuditDBSchema.model_validate(audit, from_attributes=True) 
-            for audit in audits 
-        ], 
+        audit_list=[
+            AuditDBSchema.model_validate(audit, from_attributes=True)
+            for audit in audits
+        ],
         tablename_to_zipfile_to_files=tablename_to_zipfile_to_files,
     )
 
-
-
-def delete_filename_on_audit(database: Database, table_name: str) -> None:
-    """
-    Delete entries from the database with a specific table name.
-
-    Args:
-        database (Database): The database object.
-        table_name (str): The table name to be deleted.
-
-    Returns:
-        None
-    """
-    if database.engine:
-        with database.session_maker() as session:
-            session.query(AuditDB).filter(AuditDB.audi_table_name == table_name).delete()
-            session.commit()
-            logger.info(f"Deleted entries for table name {table_name}.")
-    else:
-        logger.error("Error connecting to the database!")

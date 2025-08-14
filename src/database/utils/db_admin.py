@@ -1,58 +1,28 @@
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
-from setup.logging import logger
+
+from ...setup.logging import logger
+
 
 def database_exists(user, password, host, port, dbname, target_db):
     """
     Checks if a database exists.
-    
+
     Returns:
         bool: True if the database exists, False otherwise.
     """
-    engine = create_engine(f'postgresql://{user}:{password}@{host}:{port}/{dbname}')
+    engine = create_engine(f"postgresql://{user}:{password}@{host}:{port}/{dbname}")
     with engine.connect() as conn:
         try:
-            result = conn.execute(text(f"SELECT 1 FROM pg_database WHERE datname = :target_db"), {"target_db": target_db})
+            result = conn.execute(
+                text("SELECT 1 FROM pg_database WHERE datname = :target_db"),
+                {"target_db": target_db},
+            )
             exists = result.scalar() is not None
             return exists
         except SQLAlchemyError as e:
             logger.error(f"Error checking if database {target_db} exists: {e}")
             return False
-        finally:
-            conn.close()
-    engine.dispose()
-
-def terminate_db_sessions(user, password, host, port, dbname, target_db):
-    """
-    Terminates all active sessions for the given target_db (except the current one).
-    Connects to the maintenance db (usually 'postgres').
-    """
-    engine = create_engine(f'postgresql://{user}:{password}@{host}:{port}/{dbname}')
-    with engine.connect() as conn:
-        try:
-            conn.execute(text(f"""
-                SELECT pg_terminate_backend(pid)
-                FROM pg_stat_activity
-                WHERE datname = :target_db AND pid <> pg_backend_pid();
-            """), {"target_db": target_db})
-            conn.commit()
-        except SQLAlchemyError as e:
-            print(f"Error terminating sessions for {target_db}: {e}")
-        finally:
-            conn.close()
-    engine.dispose()
-
-def rename_database(user, password, host, port, dbname, old_name, new_name):
-    """
-    Renames a PostgreSQL database from old_name to new_name.
-    """
-    engine = create_engine(f'postgresql://{user}:{password}@{host}:{port}/{dbname}')
-    with engine.connect() as conn:
-        try:
-            conn.execute(text(f'ALTER DATABASE "{old_name}" RENAME TO "{new_name}";'))
-            conn.commit()
-        except SQLAlchemyError as e:
-            print(f"Error renaming database {old_name} to {new_name}: {e}")
         finally:
             conn.close()
     engine.dispose()
@@ -64,8 +34,8 @@ def create_database_if_not_exists(user, password, host, port, dbname, new_db):
     if not database_exists(user, password, host, port, dbname, new_db):
         try:
             autocommit_engine = create_engine(
-                f'postgresql://{user}:{password}@{host}:{port}/{dbname}',
-                isolation_level="AUTOCOMMIT"
+                f"postgresql://{user}:{password}@{host}:{port}/{dbname}",
+                isolation_level="AUTOCOMMIT",
             )
             with autocommit_engine.connect() as autocommit_conn:
                 autocommit_conn.execute(text(f'CREATE DATABASE "{new_db}";'))
@@ -76,66 +46,132 @@ def create_database_if_not_exists(user, password, host, port, dbname, new_db):
     else:
         logger.info(f"Database '{new_db}' already exists")
 
-def drop_database_if_exists(user, password, host, port, dbname, target_db):
+
+def truncate_tables(user, password, host, port, database_name, table_names=None):
     """
-    Drops the target_db if it exists.
+    Truncate specified tables or all tables in the database.
+
+    Args:
+        user: Database user
+        password: Database password
+        host: Database host
+        port: Database port
+        database_name: Database name
+        table_names: List of table names to truncate, or None to truncate all tables
+
+    Returns:
+        bool: True if truncation was successful, False otherwise
     """
-    if database_exists(user, password, host, port, dbname, target_db):
-        try:
-            autocommit_engine = create_engine(
-                f'postgresql://{user}:{password}@{host}:{port}/{dbname}',
-                isolation_level="AUTOCOMMIT"
+    try:
+        engine = create_engine(
+            f"postgresql://{user}:{password}@{host}:{port}/{database_name}"
+        )
+
+        with engine.connect() as conn:
+            # Start a transaction
+            trans = conn.begin()
+
+            try:
+                if table_names is None:
+                    # Get all table names from the database
+                    result = conn.execute(
+                        text("""
+                        SELECT tablename FROM pg_tables 
+                        WHERE schemaname = 'public'
+                        ORDER BY tablename
+                    """)
+                    )
+                    table_names = [row[0] for row in result.fetchall()]
+
+                if not table_names:
+                    logger.info(
+                        f"No tables found to truncate in database '{database_name}'"
+                    )
+                    trans.commit()
+                    return True
+
+                # Disable foreign key checks temporarily
+                conn.execute(text("SET session_replication_role = replica"))
+
+                # Truncate each table
+                for table_name in table_names:
+                    logger.info(
+                        f"Truncating table '{table_name}' in database '{database_name}'"
+                    )
+                    conn.execute(
+                        text(f"TRUNCATE TABLE {table_name} RESTART IDENTITY CASCADE")
+                    )
+
+                # Re-enable foreign key checks
+                conn.execute(text("SET session_replication_role = DEFAULT"))
+
+                trans.commit()
+                logger.info(
+                    f"Successfully truncated {len(table_names)} tables in database '{database_name}'"
+                )
+                return True
+
+            except Exception as e:
+                trans.rollback()
+                logger.error(
+                    f"Error truncating tables in database '{database_name}': {e}"
+                )
+                return False
+
+    except SQLAlchemyError as e:
+        logger.error(
+            f"Database connection error while truncating tables in '{database_name}': {e}"
+        )
+        return False
+
+def get_table_row_counts(user, password, host, port, database_name):
+    """
+    Get row counts for all tables in the database.
+
+    Args:
+        user: Database user
+        password: Database password
+        host: Database host
+        port: Database port
+        database_name: Database name
+
+    Returns:
+        dict: Table names as keys, row counts as values
+    """
+    try:
+        engine = create_engine(
+            f"postgresql://{user}:{password}@{host}:{port}/{database_name}"
+        )
+
+        with engine.connect() as conn:
+            # Get all table names
+            result = conn.execute(
+                text("""
+                SELECT tablename FROM pg_tables 
+                WHERE schemaname = 'public'
+                ORDER BY tablename
+            """)
             )
-            with autocommit_engine.connect() as autocommit_conn:
-                autocommit_conn.execute(text(f'DROP DATABASE "{target_db}";'))
-            autocommit_engine.dispose()
-            logger.info(f"Dropped database '{target_db}'")
-        except SQLAlchemyError as e:
-            logger.error(f"Error dropping database {target_db}: {e}")
-    else:
-        logger.info(f"Database '{target_db}' does not exist, skipping drop")
+            table_names = [row[0] for row in result.fetchall()]
 
-def validate_database(database_name):
-    """
-    Placeholder for real validation logic. Returns True if validation passes.
-    """
-    logger.info(f"[VALIDATION] Validating database '{database_name}'...")
-    # TODO: Implement real validation checks here
-    return True
+            row_counts = {}
 
-def promote_new_database(user, password, host, port, maintenance_db, prod_db, old_db, new_db):
-    logger.info("[PROMOTION] Terminating sessions on all DBs...")
-    terminate_db_sessions(user, password, host, port, maintenance_db, prod_db)
-    terminate_db_sessions(user, password, host, port, maintenance_db, old_db)
-    terminate_db_sessions(user, password, host, port, maintenance_db, new_db)
+            for table_name in table_names:
+                try:
+                    count_result = conn.execute(
+                        text(f"SELECT COUNT(*) FROM {table_name}")
+                    )
+                    row_counts[table_name] = count_result.scalar()
+                except Exception as e:
+                    logger.warning(
+                        f"Could not get row count for table '{table_name}': {e}"
+                    )
+                    row_counts[table_name] = -1  # Indicate error
 
-    # Check if production database exists
-    prod_db_exists = database_exists(user, password, host, port, maintenance_db, prod_db)
+            return row_counts
 
-    if prod_db_exists:
-        logger.info("[PROMOTION] Production database exists. Performing blue-green deployment...")
-        
-        # Drop old database if it exists
-        logger.info("[PROMOTION] Dropping old database if it exists...")
-        drop_database_if_exists(user, password, host, port, maintenance_db, old_db)
-
-        # Rename production database to old database
-        logger.info("[PROMOTION] Renaming production database to old database...")
-        rename_database(user, password, host, port, maintenance_db, prod_db, old_db)
-
-        # Rename new database to production database
-        logger.info("[PROMOTION] Renaming new database to production database...")
-        rename_database(user, password, host, port, maintenance_db, new_db, prod_db)
-
-        # Drop old database to maintain only 2 databases
-        logger.info("[PROMOTION] Dropping old database to maintain only 2 databases...")
-        drop_database_if_exists(user, password, host, port, maintenance_db, old_db)
-    else:
-        logger.info("[PROMOTION] Production database does not exist. Direct promotion...")
-        
-        # Simply rename new database to production database
-        logger.info("[PROMOTION] Renaming new database to production database...")
-        rename_database(user, password, host, port, maintenance_db, new_db, prod_db)
-
-    logger.info("[PROMOTION] Promotion complete. New database is live.") 
-    
+    except SQLAlchemyError as e:
+        logger.error(
+            f"Error getting table row counts from database '{database_name}': {e}"
+        )
+        return {}

@@ -1,201 +1,41 @@
-from os import path, getcwd
+"""
+Unified data loading utilities for CNPJ ETL.
+
+This module provides efficient data loading for both CSV and Parquet files,
+with SQLAlchemy upsert operations for better performance and data integrity.
+Supports both pandas and polars engines based on file format and preferences.
+"""
+
+import polars as pl
 import pandas as pd
-from sqlalchemy import text
-from sqlalchemy.exc import OperationalError
 import numpy as np
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Union
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import Table, MetaData, text
 
-from utils.misc import delete_var, update_progress, get_line_count
-from core.constants import TABLES_INFO_DICT
-from core.schemas import TableInfo
-from database.schemas import Database
-from setup.logging import logger
-
-MAX_RETRIES=3
-
-##########################################################################
-## LOAD AND TRANSFORM
-##########################################################################
-# Chunk size for download and extraction 
-READ_CHUNK_SIZE = 50000
-def populate_table_with_filename(
-    database: Database, table_info: TableInfo, source_folder: str, filename: str
-): 
-    """
-    Populates a table in the database with data from a file.
-
-    Args:
-        database (Database): The database object.
-        table_info (TableInfo): The table information object.
-        to_folder (str): The folder path where the file is located.
-        filename (str): The name of the file.
-
-    Returns:
-        None
-    """
-    dtypes = { column: str for column in table_info.columns }
-    extracted_file_path = path.join(getcwd(), source_folder, filename)
-    
-    csv_read_props = {
-        "filepath_or_buffer": extracted_file_path,
-        "sep": ';', 
-        "skiprows": 0,
-        "chunksize": READ_CHUNK_SIZE, 
-        "dtype": dtypes,
-        "header": None, 
-        "encoding": table_info.encoding,
-        "low_memory": False,
-        "memory_map": True,
-        "on_bad_lines": 'warn',
-        "keep_default_na": False,
-        "encoding_errors": 'replace'
-    }
-
-    row_count = get_line_count(extracted_file_path)
-    if row_count is None or row_count == 0:
-        logger.warning(f"File {extracted_file_path} is empty or could not be read. Skipping.")
-        return
-    
-    chunk_count = np.ceil(row_count/READ_CHUNK_SIZE)
-    for index, df_chunk in enumerate(pd.read_csv(**csv_read_props)):
-        for retry_count in range(MAX_RETRIES):
-            try:
-                # Transform chunk
-                df_chunk = df_chunk.reset_index()
-
-                # Remove index column
-                del df_chunk['index']
-
-                # Cast for string
-                for column in df_chunk.columns:
-                    df_chunk[column] = df_chunk[column].astype(str)
-
-                # Rename columns
-                df_chunk.columns = table_info.columns
-                df_chunk = table_info.transform_map(df_chunk)
-
-                update_progress(index*READ_CHUNK_SIZE, row_count, filename)
-
-                # Query arguments
-                query_args = {
-                    "name": table_info.table_name,
-                    "if_exists": 'append',
-                    "con": database.engine,
-                    "index": index,
-                    "chunksize": 1000,
-                }
-
-                # Break the dataframe into chunks
-                df_chunk.to_sql(**query_args)
-                break
-
-            except Exception as e:
-                progress=f"({retry_count+1}/{MAX_RETRIES})"
-                summary=f"Failed to insert chunk {index} of file {extracted_file_path}"
-                logger.error(f'{progress} {summary}: {e}.')
-
-            if(retry_count == MAX_RETRIES-1):
-                raise Exception(f'Failed to insert chunk {index} of file {extracted_file_path}.')
-
-        if(index == chunk_count-1):
-            break
-    
-    update_progress(row_count, row_count, filename)
-    print()
-    
-    logger.info('File ' + filename + ' inserted with success on database!')
-
-    delete_var(df_chunk)
-
-def populate_table_with_filenames(
-    database: Database, table_info: TableInfo, source_folder: str, filenames: list
-):
-    """
-    Populates a table in the database with data from multiple files.
-
-    Args:
-        database (Database): The database object.
-        table_info (TableInfo): The table information object.
-        source_folder (str): The folder path where the files are located.
-        filenames (list): A list of file names.
-
-    Returns:
-        None
-    """
-    title=f'Table files {table_info.label.upper()}:'
-    logger.info(title)
-    
-    # Drop table (if exists)
-    with database.engine.begin() as conn:
-        query=text(f"DROP TABLE IF EXISTS {table_info.table_name};")
-        
-        # Execute the compiled SQL string
-        try:
-            conn.execute(query)
-        except OperationalError as e:
-            logger.error(f"Failed to erase table {table_info.table_name}: {e}")
-    
-    # Inserir dados
-    for filename in filenames:
-        logger.info('Current file: ' + filename + '')
-        try:
-            file_path=path.join(getcwd(), source_folder, filename)
-            
-            # Check if file exists and has content
-            if not path.exists(file_path):
-                logger.warning(f"File {file_path} does not exist. Skipping.")
-                continue
-                
-            for retry_count in range(MAX_RETRIES):
-                try:
-                    populate_table_with_filename(database, table_info, source_folder, filename)
-                    break
-
-                except Exception as e:
-                    logger.error(f'({retry_count+1}/{MAX_RETRIES}) Failed to insert file {file_path}: {e}')            
-            
-            if(retry_count == MAX_RETRIES-1):
-                raise Exception(f'Failed to insert file {file_path}.')
-
-        except Exception as e:
-            summary=f'Failed to save file {file_path} on table {table_info.table_name}'
-            logger.error(f'{summary}: {e}')
-    
-    logger.info(f'Finished files of table {table_info.label}!')
-
+from ..setup.logging import logger
+from ..core.constants import TABLES_INFO_DICT
+from ..core.schemas import TableInfo
+from ..utils.misc import update_progress, get_line_count, delete_var
+from .schemas import Database
 
 def table_name_to_table_info(table_name: str) -> TableInfo:
+    """Convert table name to TableInfo object."""
     table_info_dict = TABLES_INFO_DICT[table_name]
-    
+
     # Get table info
-    label = table_info_dict['label']
-    zip_group = table_info_dict['group']
-    columns = table_info_dict['columns']
-    encoding = table_info_dict['encoding']
-    transform_map = table_info_dict.get('transform_map', lambda x: x)
-    expression = table_info_dict['expression']
+    label = table_info_dict["label"]
+    zip_group = table_info_dict["group"]
+    columns = table_info_dict["columns"]
+    encoding = table_info_dict["encoding"]
+    transform_map = table_info_dict.get("transform_map", lambda x: x)
+    expression = table_info_dict["expression"]
 
     # Create table info object
-    return TableInfo(label, zip_group, table_name, columns, encoding, transform_map, expression)
-
-
-def populate_table(
-    database: Database, table_name: str, from_folder: str, table_files: list
-):
-    """
-    Populates a table in the database with data from multiple files.
-
-    Args:
-        database (Database): The database object.
-        table_name (str): The name of the table.
-        from_folder (str): The folder path where the files are located.
-        table_files (list): A list of file names.
-
-    Returns:
-        None
-    """
-    table_info = table_name_to_table_info(table_name)
-
-    populate_table_with_filenames(database, table_info, from_folder, table_files)
+    return TableInfo(
+        label, zip_group, table_name, columns, encoding, transform_map, expression
+    )
 
 
 def generate_tables_indices(engine, tables_to_indices):
@@ -204,40 +44,46 @@ def generate_tables_indices(engine, tables_to_indices):
 
     Args:
         engine: The database engine.
+        tables_to_indices: Dict mapping table names to lists of column names for indexing.
 
     Returns:
         None
     """
+
     # Criar índices na base de dados:
-    logger.info(f"Generating indices on database tables {list(tables_to_indices.keys())}")
+    logger.info(
+        f"Generating indices on database tables {list(tables_to_indices.keys())}"
+    )
 
     # Index metadata
     fields_list = [
-        (table_name, column_name, f'{table_name}_{column_name}') 
-        for table_name, columns  in tables_to_indices.items()
+        (table_name, column_name, f"{table_name}_{column_name}")
+        for table_name, columns in tables_to_indices.items()
         for column_name in columns
     ]
-    mask="create index if not exists {index_name} on {table_name} using btree(\"{column_name}\");"
+    mask = 'create index if not exists {index_name} on {table_name} using btree("{column_name}");'
 
     # Execute index queries
     try:
         with engine.connect() as conn:
             for table_name_, column_name_, index_name_ in fields_list:
                 # Compile a SQL string
-                query_str=mask.format(
-                    table_name=table_name_, 
-                    column_name=column_name_, 
-                    index_name=index_name_, 
+                query_str = mask.format(
+                    table_name=table_name_,
+                    column_name=column_name_,
+                    index_name=index_name_,
                 )
-                query=text(query_str)
+                query = text(query_str)
                 print(query_str)
                 # Execute the compiled SQL string
                 try:
                     conn.execute(query)
-                    print(f"Index {index_name_} created on column {column_name_} of table {table_name_}.")
+                    print(
+                        f"Index {index_name_} created on column {column_name_} of table {table_name_}."
+                    )
 
                 except Exception as e:
-                    msg=f"Error generating index {index_name_} on column `{column_name_}` for table {table_name_}"
+                    msg = f"Error generating index {index_name_} on column `{column_name_}` for table {table_name_}"
                     logger.error(f"{msg}: {e}")
 
                 message = f"Index {index_name_} generated on column `{column_name_}` for table {table_name_}"
@@ -249,5 +95,300 @@ def generate_tables_indices(engine, tables_to_indices):
         logger.info(message)
 
     except Exception as e:
-        logger.error(f"Failed to generate indices: {e}") 
+        logger.error(f"Failed to generate indices: {e}")
 
+
+class UnifiedLoader:
+    """Unified data loader supporting both CSV and Parquet files."""
+
+    def __init__(self, database: Database):
+        self.database = database
+
+    def _get_table_metadata(
+        self, table_info: TableInfo
+    ) -> Tuple[Table, List[str], List[str]]:
+        """Get SQLAlchemy table metadata and key information."""
+        metadata = MetaData()
+        table = Table(
+            table_info.table_name, metadata, autoload_with=self.database.engine
+        )
+        primary_keys = [col.name for col in table.primary_key.columns]
+        update_columns = [col for col in table_info.columns if col not in primary_keys]
+        return table, primary_keys, update_columns
+
+    def _upsert_chunk(
+        self,
+        table: Table,
+        rows: List[Dict],
+        primary_keys: List[str],
+        update_columns: List[str],
+    ) -> None:
+        """Perform upsert operation for a chunk of data."""
+        with self.database.engine.begin() as conn:
+            if primary_keys:
+                stmt = pg_insert(table).values(rows)
+                upsert_stmt = stmt.on_conflict_do_update(
+                    index_elements=primary_keys,
+                    set_={col: getattr(stmt.excluded, col) for col in update_columns},
+                )
+                conn.execute(upsert_stmt)
+            else:
+                # Fallback: regular insert
+                conn.execute(table.insert(), rows)
+
+    def load_csv_file(
+        self,
+        table_info: TableInfo,
+        csv_file: Union[str, Path],
+        chunk_size: int = 50000,
+        max_retries: int = 3,
+        show_progress: bool = True,
+    ) -> Tuple[bool, Optional[str], int]:
+        """
+        Load a CSV file into PostgreSQL using pandas with SQLAlchemy upsert.
+
+        Args:
+            table_info: Table information
+            csv_file: Path to CSV file
+            chunk_size: Number of rows to process in each chunk
+            max_retries: Maximum number of retry attempts per chunk
+            show_progress: Whether to show progress updates
+
+        Returns:
+            Tuple of (success, error_message, rows_loaded)
+        """
+        csv_file = Path(csv_file)
+        if not csv_file.exists():
+            return False, f"CSV file not found: {csv_file}", 0
+
+        try:
+            logger.info(f"Loading CSV file: {csv_file}")
+
+            # Get row count for progress tracking
+            row_count = get_line_count(str(csv_file))
+            if row_count is None or row_count == 0:
+                logger.warning(
+                    f"File {csv_file} is empty or could not be read. Skipping."
+                )
+                return True, None, 0
+
+            if show_progress:
+                logger.info(f"Processing {row_count:,} rows from {csv_file.name}")
+
+            # Setup CSV reading parameters
+            dtypes = {column: str for column in table_info.columns}
+            csv_read_props = {
+                "filepath_or_buffer": str(csv_file),
+                "sep": ";",
+                "skiprows": 0,
+                "chunksize": chunk_size,
+                "dtype": dtypes,
+                "header": None,
+                "encoding": table_info.encoding,
+                "low_memory": False,
+                "memory_map": True,
+                "on_bad_lines": "warn",
+                "keep_default_na": False,
+                "encoding_errors": "replace",
+            }
+
+            # Get table metadata
+            table, primary_keys, update_columns = self._get_table_metadata(table_info)
+
+            chunk_count = np.ceil(row_count / chunk_size)
+            processed_rows = 0
+
+            # Process chunks
+            for index, df_chunk in enumerate(pd.read_csv(**csv_read_props)):
+                for retry_count in range(max_retries):
+                    try:
+                        # Transform chunk
+                        df_chunk = df_chunk.reset_index(drop=True)
+                        for column in df_chunk.columns:
+                            df_chunk[column] = df_chunk[column].astype(str)
+                        df_chunk.columns = table_info.columns
+                        df_chunk = table_info.transform_map(df_chunk)
+
+                        # Upsert data
+                        rows = df_chunk.to_dict(orient="records")
+                        self._upsert_chunk(table, rows, primary_keys, update_columns)
+
+                        processed_rows += len(df_chunk)
+                        if show_progress:
+                            update_progress(processed_rows, row_count, csv_file.name)
+                        break
+
+                    except Exception as e:
+                        progress = f"({retry_count + 1}/{max_retries})"
+                        summary = f"Failed to upsert chunk {index} of file {csv_file}"
+                        logger.error(f"{progress} {summary}: {e}.")
+
+                        if retry_count == max_retries - 1:
+                            raise Exception(
+                                f"Failed to upsert chunk {index} of file {csv_file}."
+                            )
+
+                if index == chunk_count - 1:
+                    break
+
+            if show_progress:
+                update_progress(row_count, row_count, csv_file.name)
+                print()
+
+            logger.info(
+                f"File {csv_file.name} upserted with success on database {self.database}!"
+            )
+            delete_var(df_chunk)
+            return True, None, processed_rows
+
+        except Exception as e:
+            error_msg = f"Unexpected error loading {csv_file}: {e}"
+            logger.error(error_msg)
+            return False, error_msg, 0
+
+    def load_parquet_file(
+        self,
+        table_info: TableInfo,
+        parquet_file: Union[str, Path],
+        chunk_size: int = 50000,
+        max_retries: int = 3,
+        show_progress: bool = True,
+    ) -> Tuple[bool, Optional[str], int]:
+        """
+        Load a Parquet file into PostgreSQL using polars or pandas with SQLAlchemy upsert.
+
+        Args:
+            table_info: Table information
+            parquet_file: Path to Parquet file
+            chunk_size: Number of rows to process in each chunk
+            max_retries: Maximum number of retry attempts per chunk
+            show_progress: Whether to show progress updates
+
+        Returns:
+            Tuple of (success, error_message, rows_loaded)
+        """
+        parquet_file = Path(parquet_file)
+        if not parquet_file.exists():
+            return False, f"Parquet file not found: {parquet_file}", 0
+
+        try:
+            logger.info(f"Loading Parquet file: {parquet_file}")
+
+            # Read parquet file
+            df = pl.read_parquet(str(parquet_file)).to_pandas()
+
+            row_count = len(df)
+            if show_progress:
+                logger.info(f"Processing {row_count:,} rows from {parquet_file.name}")
+
+            # Get table metadata
+            table, primary_keys, update_columns = self._get_table_metadata(table_info)
+
+            # Process in chunks
+            processed_rows = 0
+            for index in range(0, row_count, chunk_size):
+                df_chunk = df.iloc[index : index + chunk_size].copy()
+
+                for retry_count in range(max_retries):
+                    try:
+                        # Transform chunk
+                        for column in df_chunk.columns:
+                            df_chunk[column] = df_chunk[column].astype(str)
+                        df_chunk.columns = table_info.columns
+                        df_chunk = table_info.transform_map(df_chunk)
+
+                        # Upsert data
+                        rows = df_chunk.to_dict(orient="records")
+                        self._upsert_chunk(table, rows, primary_keys, update_columns)
+
+                        processed_rows += len(df_chunk)
+                        if show_progress:
+                            update_progress(
+                                processed_rows, row_count, parquet_file.name
+                            )
+                        break
+
+                    except Exception as e:
+                        progress = f"({retry_count + 1}/{max_retries})"
+                        summary = (
+                            f"Failed to upsert chunk {index} of file {parquet_file}"
+                        )
+                        logger.error(f"{progress} {summary}: {e}.")
+
+                        if retry_count == max_retries - 1:
+                            raise Exception(
+                                f"Failed to upsert chunk {index} of file {parquet_file}."
+                            )
+
+            if show_progress:
+                print()
+
+            logger.info(
+                f"File {parquet_file.name} upserted with success on database {self.database}!"
+            )
+            return True, None, processed_rows
+
+        except Exception as e:
+            error_msg = f"Unexpected error loading {parquet_file}: {e}"
+            logger.error(error_msg)
+            return False, error_msg, 0
+
+    def load_file(
+        self,
+        table_info: TableInfo,
+        file_path: Union[str, Path],
+        chunk_size: int = 50000,
+        max_retries: int = 3,
+        show_progress: bool = True,
+    ) -> Tuple[bool, Optional[str], int]:
+        """
+        Auto-detect file format and load accordingly using robust detection.
+
+        Args:
+            table_info: Table information
+            file_path: Path to file (CSV or Parquet)
+            chunk_size: Number of rows to process in each chunk
+            max_retries: Maximum number of retry attempts per chunk
+            show_progress: Whether to show progress updates
+
+        Returns:
+            Tuple of (success, error_message, rows_loaded)
+        """
+        file_path = Path(file_path)
+
+        # Use robust file type detection
+        try:
+            from utils.file_detection import detect_file_type
+
+            file_type = detect_file_type(file_path)
+        except ImportError:
+            # Fallback to basic detection if utils module not available
+            logger.warning("Robust file detection not available, using basic detection")
+            if file_path.suffix.lower() == ".parquet":
+                file_type = "parquet"
+            elif (
+                file_path.suffix.lower() in [".csv", ".txt"]
+                or not file_path.suffix
+                or "CSV" in file_path.suffix.upper()  # Handle .CNAECSV, .MOTICSV etc.
+                or "csv" in file_path.name.lower()
+            ):  # Handle files with csv in name
+                file_type = "csv"
+            else:
+                file_type = "unknown"
+
+        logger.debug(f"File {file_path.name} detected as type: {file_type}")
+
+        if file_type == "parquet":
+            return self.load_parquet_file(
+                table_info, file_path, chunk_size, max_retries, show_progress
+            )
+        elif file_type == "csv":
+            return self.load_csv_file(
+                table_info, file_path, chunk_size, max_retries, show_progress
+            )
+        else:
+            return (
+                False,
+                f"Unsupported or unrecognized file format: {file_path.name} (detected: {file_type})",
+                0,
+            )

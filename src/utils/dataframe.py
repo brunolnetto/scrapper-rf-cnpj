@@ -1,10 +1,12 @@
 import pandas as pd
 
-from setup.logging import logger
+from ..setup.logging import logger
 
 INSERT_CHUNK_SIZE = 1000
+
+
 def to_sql(dataframe: pd.DataFrame, **kwargs):
-    '''
+    """
     Inserts the records from a DataFrame into a database table.
 
     Parameters:
@@ -21,14 +23,14 @@ def to_sql(dataframe: pd.DataFrame, **kwargs):
 
     Raises:
         Exception: If there is an error inserting the records into the table.
-    '''
-    
+    """
+
     # Query arguments
-    tablename = kwargs.get('tablename')
-    filename = kwargs.get('filename')
-    if_exists = kwargs.get('if_exists')
-    conn = kwargs.get('conn')
-    index = kwargs.get('index')
+    tablename = kwargs.get("tablename")
+    filename = kwargs.get("filename")
+    if_exists = kwargs.get("if_exists")
+    conn = kwargs.get("conn")
+    index = kwargs.get("index")
 
     # Query arguments
     query_args = {
@@ -42,7 +44,7 @@ def to_sql(dataframe: pd.DataFrame, **kwargs):
     # Break the dataframe into chunks
     try:
         dataframe.to_sql(**query_args)
-    
+
     except Exception as e:
         summary = f"Failed to insert content of file {filename} on table {tablename}."
         message = f"{summary}: {e}"

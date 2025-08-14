@@ -1,21 +1,19 @@
 """
 Data loading strategies for the CNPJ ETL project.
 
-Implements the strategy pattern for loading data into the database using different backends (CSV, Parquet/DuckDB).
+Implements the strategy pattern for loading data into the database using a unified loader
+that supports both CSV and Parquet formats with auto-detection.
 """
 
 from abc import ABC, abstractmethod
 from typing import Dict, List, Tuple, Optional
-from pathlib import Path
-from database.schemas import Database
-from core.schemas import AuditMetadata
-from setup.logging import logger
 
-# Import existing table population functions
-from database.dml import populate_table
-from database.dml_duckdb import populate_table_duckdb
+from ...database.schemas import Database
+from ...database.dml import table_name_to_table_info, UnifiedLoader
+from ...setup.logging import logger
+from ...setup.config import PathConfig
 
-class DataLoadingStrategy(ABC):
+class BaseDataLoadingStrategy(ABC):
     """Abstract base class for data loading strategies."""
     
     @abstractmethod
@@ -23,9 +21,8 @@ class DataLoadingStrategy(ABC):
         self, 
         database: Database, 
         table_name: str, 
-        source_path: Path,
-        table_files: Optional[List[str]] = None,
-        **kwargs
+        path_config: PathConfig,
+        table_files: Optional[List[str]] = None
     ) -> Tuple[bool, Optional[str], int]:
         """Load a single table and return (success, error, rows_loaded)."""
         pass
@@ -35,77 +32,57 @@ class DataLoadingStrategy(ABC):
         self,
         database: Database,
         table_to_files: Dict[str, List[str]],
-        source_path: Path,
-        **kwargs
+        path_config: PathConfig
     ) -> Dict[str, Tuple[bool, Optional[str], int]]:
         """Load multiple tables and return results dict."""
         pass
 
-class CSVLoadingStrategy(DataLoadingStrategy):
-    """CSV-based loading strategy using pandas."""
-    
-    def load_table(self, database, table_name, source_path, table_files=None, **kwargs):
-        try:
-            logger.info(f"[CSV] Loading table '{table_name}' from CSV files: {table_files}")
-            populate_table(database, table_name, str(source_path), table_files or [])
-            return True, None, -1  # Row count not tracked in current populate_table
-        except Exception as e:
-            logger.error(f"[CSV] Failed to load table '{table_name}': {e}")
-            return False, str(e), 0
-    
-    def load_multiple_tables(self, database, table_to_files, source_path, **kwargs):
-        results = {}
-        for table_name, zipfile_to_files in table_to_files.items():
-            # Flatten the nested structure: {zip_filename: [csv_files]} -> [csv_files]
-            all_files = []
-            for zip_filename, csv_files in zipfile_to_files.items():
-                all_files.extend(csv_files)
-            
-            if not all_files:
-                logger.warning(f"[CSV] No files found for table '{table_name}'")
-                results[table_name] = (False, "No files found", 0)
-                continue
-                
-            results[table_name] = self.load_table(database, table_name, source_path, all_files, **kwargs)
-        return results
 
-class ParquetLoadingStrategy(DataLoadingStrategy):
-    """Parquet-based loading strategy using DuckDB."""
-    
-    def load_table(self, database, table_name, source_path, table_files=None, **kwargs):
+class DataLoadingStrategy(BaseDataLoadingStrategy):
+    """Auto-detecting loading strategy using unified loader (Parquet preferred if available)."""
+
+    def load_table(self, database: Database, table_name: str, path_config: PathConfig, table_files=None):
+        logger.info(f"[Auto] Started Loading table '{table_name}':")
+
         try:
-            logger.info(f"[Parquet] Loading table '{table_name}' from Parquet directory: {source_path}")
-            # table_files is ignored for Parquet; expects {table_name}.parquet in source_path
-            success, error, rows = populate_table_duckdb(database, table_name, source_path)
+            # Use unified loader with auto-detection
+            table_info = table_name_to_table_info(table_name)
+            loader = UnifiedLoader(database)
+
+            # Auto-detect file format
+            parquet_file = path_config.conversion_path / f"{table_name}.parquet"
+
+            if parquet_file.exists():
+                logger.info(f"Using Parquet file for table '{table_name}': {parquet_file}")
+                success, error, total_rows = loader.load_parquet_file(table_info, parquet_file)
+                logger.info(f"[Auto] Completed loading table '{table_name}' using Parquet")
+                return success, error, total_rows
+
+            elif table_files:
+                # Load multiple CSV files
+                logger.info(f"Using CSV files for table '{table_name}': {table_files}")
+                total_rows = 0
+                for filename in table_files:
+                    csv_file = path_config.extract_path / filename
+                    success, error, rows = loader.load_csv_file(table_info, csv_file)
+                    if not success:
+                        return success, error, total_rows
+                    total_rows += rows
+
+                    logger.info(f"[Auto] Completed loading table '{table_name}' using CSV")
+                return True, None, total_rows
+            else:
+                # Panicking
+                logger.error(f"No valid files found for table '{table_name}'")
+                return False, f"No valid files found for table {table_name}", 0
+
             return success, error, rows
+            
         except Exception as e:
-            logger.error(f"[Parquet] Failed to load table '{table_name}': {e}")
+            logger.error(f"[Auto] Failed to load table '{table_name}': {e}")
             return False, str(e), 0
-    
-    def load_multiple_tables(self, database, table_to_files, source_path, **kwargs):
-        results = {}
-        for table_name in table_to_files.keys():
-            results[table_name] = self.load_table(database, table_name, source_path, None, **kwargs)
-        return results
 
-class AutoLoadingStrategy(DataLoadingStrategy):
-    """Auto-detecting loading strategy (Parquet preferred if available)."""
-    
-    def __init__(self, prefer_parquet: bool = True):
-        self.prefer_parquet = prefer_parquet
-        self.csv_strategy = CSVLoadingStrategy()
-        self.parquet_strategy = ParquetLoadingStrategy()
-    
-    def load_table(self, database, table_name, source_path, table_files=None, **kwargs):
-        parquet_file = source_path / f"{table_name}.parquet"
-        if self.prefer_parquet and parquet_file.exists():
-            logger.info(f"[Auto] Using Parquet strategy for table '{table_name}'")
-            return self.parquet_strategy.load_table(database, table_name, source_path, None, **kwargs)
-        else:
-            logger.info(f"[Auto] Using CSV strategy for table '{table_name}'")
-            return self.csv_strategy.load_table(database, table_name, source_path, table_files, **kwargs)
-    
-    def load_multiple_tables(self, database, table_to_files, source_path, **kwargs):
+    def load_multiple_tables(self, database, table_to_files, path_config: PathConfig):
         results = {}
         for table_name, zipfile_to_files in table_to_files.items():
             # Flatten the nested structure: {zip_filename: [csv_files]} -> [csv_files]
@@ -118,5 +95,6 @@ class AutoLoadingStrategy(DataLoadingStrategy):
                 results[table_name] = (False, "No files found", 0)
                 continue
                 
-            results[table_name] = self.load_table(database, table_name, source_path, all_files, **kwargs)
+            results[table_name] = self.load_table(database, table_name, path_config, all_files)
         return results
+
