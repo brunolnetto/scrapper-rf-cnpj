@@ -136,7 +136,7 @@ class ETLOrchestrator:
                         "after": final_count,
                         "diff": change,
                     }
-                    print(f"[METRICS] Table '{table_name}': {initial_count} -> {final_count} (Δ{change:+d})")
+                    print(f"[METRICS] Table '{table_name}': {initial_count} -> {final_count} (diff: {change:+d})")
                     table_audit = list(
                         filter(
                             lambda x: x.audi_table_name == table_name,
@@ -156,7 +156,7 @@ class ETLOrchestrator:
                     table_audit.audi_metadata = {"row_count": row_count_metadata}
 
                     logger.info(
-                        f"[METRICS] Table '{table_name}': {initial_count} -> {final_count} (Δ{change:+d})"
+                        f"[METRICS] Table '{table_name}': {initial_count} -> {final_count} (diff: {change:+d})"
                     )
 
                 # Insert audits into the database
@@ -172,3 +172,4 @@ class ETLOrchestrator:
             # Calculate and log execution time
             execution_time = time.time() - start_time
             logger.info(f"[METRICS] Total execution time: {execution_time:.2f} seconds")
+
