@@ -45,6 +45,7 @@ TABLES_INFO_DICT: Dict[str, Dict[str, Any]] = {
     "empresa": {
         "label": "Empresa",
         "group": "empresas",
+        "index_columns": ["cnpj_basico"],
         "columns": [
             "cnpj_basico",
             "razao_social",
@@ -57,11 +58,11 @@ TABLES_INFO_DICT: Dict[str, Dict[str, Any]] = {
         "expression": "EMPRE",
         "transform_map": empresa_transform_map,
         "encoding": DEFAULT_ENCODING,
-        "index_columns": ["cnpj_basico"],
     },
     "estabelecimento": {
         "label": "Estabelecimento",
         "group": "estabelecimentos",
+        "index_columns": ["cnpj_basico", "cnpj_ordem", "cnpj_dv"],
         "columns": [
             "cnpj_basico",
             "cnpj_ordem",
@@ -97,11 +98,11 @@ TABLES_INFO_DICT: Dict[str, Dict[str, Any]] = {
         "expression": "ESTABELE",
         "transform_map": default_transform_map,
         "encoding": DEFAULT_ENCODING,
-        "index_columns": ["cnpj_basico", "cnpj_ordem", "cnpj_dv"],
     },
     "socios": {
         "label": "Socios",
         "group": "socios",
+        "index_columns": ["cnpj_basico"],
         "columns": [
             "cnpj_basico",
             "identificador_socio",
@@ -117,8 +118,7 @@ TABLES_INFO_DICT: Dict[str, Dict[str, Any]] = {
         ],
         "expression": "SOCIO",
         "transform_map": default_transform_map,
-        "encoding": DEFAULT_ENCODING,
-        "index_columns": ["cnpj_basico"],
+        "encoding": DEFAULT_ENCODING        
     },
     "simples": {
         "label": "Simples",

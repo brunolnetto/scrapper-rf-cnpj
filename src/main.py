@@ -11,7 +11,7 @@ def main():
     parser.add_argument("--year", type=int, help="Year to process")
     parser.add_argument("--month", type=int, help="Month to process")
     parser.add_argument(
-        "--full-refresh", type=bool, default=False, help="Full refresh flag"
+        "--full-refresh", type=bool, default=False, help="Full refresh all tables flag"
     )
     parser.add_argument(
         "--clear-tables", type=str, default="", help="Comma-separated tables to clear"

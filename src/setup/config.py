@@ -46,6 +46,7 @@ class DatabaseConfig:
 class ETLConfig:
     """ETL process configuration."""
 
+    delimiter: str = ";"
     chunk_size: int = 50000
     max_retries: int = 3
     parallel_workers: int = 4
@@ -144,6 +145,7 @@ class ConfigurationService:
         """Load ETL configuration from environment variables."""
         return ETLConfig(
             timezone=os.getenv("ETL_TIMEZONE", "America/Sao_Paulo"),
+            delimiter=os.getenv("ETL_FILE_DELIMITER", ";"),
             chunk_size=int(os.getenv("ETL_CHUNK_SIZE", "50000")),
             max_retries=int(os.getenv("ETL_MAX_RETRIES", "3")),
             parallel_workers=int(os.getenv("ETL_WORKERS", "4")),
@@ -161,16 +163,17 @@ class ConfigurationService:
         root_path = Path.cwd()
         data_path = Path.cwd() / "data"
         return PathConfig(
-            download_path=data_path / os.getenv("DOWNLOAD_PATH", "DOWNLOAD_FILES"),
+            download_path=data_path / os.getenv("DOWNLOAD_PATH", "DOWNLOADED_FILES"),
             extract_path=data_path / os.getenv("EXTRACT_PATH", "EXTRACTED_FILES"),
-            conversion_path=data_path / os.getenv("CONVERSION_PATH", "CONVERTED_FILES"),
+            conversion_path=data_path / os.getenv("CONVERT_PATH", "CONVERTED_FILES"),
             log_path=root_path / "logs",
         )
 
     def _load_url_config(self) -> URLConfig:
         """Load URL configuration from environment variables."""
         return URLConfig(
-            base_url=os.getenv("RF_BASE_URL"), layout_url=os.getenv("RF_LAYOUT_URL")
+            base_url=os.getenv("RF_BASE_URL"), 
+            layout_url=os.getenv("RF_LAYOUT_URL")
         )
 
     def is_development_mode(self) -> bool:
@@ -237,6 +240,7 @@ class ConfigurationService:
                 },
             },
             "etl": {
+                "delimiter": self.etl.delimiter, 
                 "chunk_size": self.etl.chunk_size,
                 "max_retries": self.etl.max_retries,
                 "parallel_workers": self.etl.parallel_workers,

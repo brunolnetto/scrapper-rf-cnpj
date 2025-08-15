@@ -13,20 +13,25 @@ from rich.progress import (
 from ..core.constants import TABLES_INFO_DICT
 
 
-def convert_table_csvs_to_parquet(table_name, csv_paths, output_dir):
+def convert_table_csvs_to_parquet(table_name, csv_paths, output_dir, deilmiter):
     try:
         expected_columns = TABLES_INFO_DICT.get(table_name, {}).get("columns")
         if not expected_columns:
             return f"[WARN] No column mapping for '{table_name}'"
 
-        schema = {col: pl.Utf8 for col in expected_columns}
+        schema = {col: pl.Utf8 for col in expected_columns  }
 
         out_file = output_dir / f"{table_name}.parquet"
         if out_file.exists():
             out_file.unlink()
 
         dfs_lazy = [
-            pl.scan_csv(str(filepath), schema=schema, encoding="utf8-lossy")
+            pl.scan_csv(
+                str(filepath), 
+                separator=deilmiter, 
+                schema=schema, 
+                encoding="utf8-lossy"
+            )
             for filepath in csv_paths
         ]
         if not dfs_lazy:
@@ -41,7 +46,11 @@ def convert_table_csvs_to_parquet(table_name, csv_paths, output_dir):
 
 
 def convert_csvs_to_parquet(
-    audit_map: dict, unzip_dir: Path, output_dir: Path, max_workers: int = 4
+    audit_map: dict, 
+    unzip_dir: Path, 
+    output_dir: Path, 
+    max_workers: int = 4, 
+    delimiter: str = ";"
 ):
     output_dir.mkdir(exist_ok=True)
 
@@ -64,7 +73,7 @@ def convert_csvs_to_parquet(
                     continue
                 tasks.append(
                     executor.submit(
-                        convert_table_csvs_to_parquet, table_name, csv_paths, output_dir
+                        convert_table_csvs_to_parquet, table_name, csv_paths, output_dir, delimiter
                     )
                 )
 

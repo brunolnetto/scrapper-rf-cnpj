@@ -157,12 +157,10 @@ class CNPJ_ETL:
             logger.error(f"Error parsing date for file: {filename}")
             return None
 
-    def fetch_data(self) -> List[AuditDB]:
+    def fetch_audit_data(self) -> List[AuditDB]:
         files_info = self.scrap_data()
-        return self.audit_service.create_audits_from_files(files_info)
 
-    def retrieve_data(self) -> List[AuditDB]:
-        audits = self.fetch_data()
+        audits = self.audit_service.create_audits_from_files(files_info)
 
         # Development mode filtering
         if self.config.is_development_mode():
@@ -172,30 +170,41 @@ class CNPJ_ETL:
                 if audit.audi_file_size_bytes < self.config.get_file_size_limit()
             ]
 
-        if audits:
-            year_ = self.config.etl.year
-            month_ = self.config.etl.month
-            files = self.config.urls.get_files_url(year_, month_)
+        return audits
 
-            self.file_downloader.download_and_extract(
-                audits,
-                files,
-                str(self.config.paths.download_path),
-                str(self.config.paths.extract_path),
-                parallel=self.config.etl.is_parallel,
-            )
+    def download_and_extract(self, audits) -> None:
+        year_ = self.config.etl.year
+        month_ = self.config.etl.month
+        files = self.config.urls.get_files_url(year_, month_)
+
+        self.file_downloader.download_and_extract(
+            audits,
+            files,
+            str(self.config.paths.download_path),
+            str(self.config.paths.extract_path),
+            parallel=self.config.etl.is_parallel,
+        )
+
+    def retrieve_data(self) -> List[AuditDB]:
+        audits = self.fetch_audit_data()
+
+        if audits:
+            self.download_and_extract(audits)
         else:
             logger.warning("No audits to retrieve.")
 
         return audits
 
-    def convert_to_parquet(
-        self, audit_metadata: AuditMetadata, max_workers: int = 4
-    ) -> Path:
+    
+
+    def convert_to_parquet(self, audit_metadata: AuditMetadata) -> Path:
         from ..utils.misc import makedir
         from ..utils.conversion import convert_csvs_to_parquet
-        
+
+        num_workers=self.config.etl.parallel_workers
+        delimiter=self.config.etl.delimiter
         output_dir = Path(self.config.paths.conversion_path)
+        
         makedir(output_dir)
 
         audit_map = {}
@@ -205,15 +214,16 @@ class CNPJ_ETL:
         ) in audit_metadata.tablename_to_zipfile_to_files.items():
             if table_name not in audit_map:
                 audit_map[table_name] = {}
+
             for zip_filename, csv_files in zipfile_to_files.items():
                 audit_map[table_name][zip_filename] = csv_files
 
         logger.info("Converting CSV files to Parquet format...")
         logger.info(f"Output directory: {output_dir}")
-        logger.info(f"Processing {len(audit_map)} tables with {max_workers} workers")
+        logger.info(f"Processing {len(audit_map)} tables with {num_workers} workers")
         extract_path = Path(self.config.paths.extract_path)
         
-        convert_csvs_to_parquet(audit_map, extract_path, output_dir, max_workers)
+        convert_csvs_to_parquet(audit_map, extract_path, output_dir, num_workers, delimiter)
         logger.info(f"Parquet conversion completed. Files saved to: {output_dir}")
 
         return output_dir
@@ -239,9 +249,7 @@ class CNPJ_ETL:
         audits = self.retrieve_data()
 
         if audits:
-            audit_metadata = self.audit_service.create_audit_metadata(
-                audits, download_path
-            )
+            audit_metadata = self.audit_service.create_audit_metadata(audits, download_path)
 
             # Remove downloaded files
             if self.config.etl.delete_files:
@@ -263,3 +271,4 @@ class CNPJ_ETL:
 
         if self.config.etl.delete_files:
             remove_folder(extract_path)
+
