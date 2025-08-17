@@ -31,15 +31,38 @@ def batch_generator_csv(path: str, headers: List[str], chunk_size: int = 20_000)
             dialect = csv.Sniffer().sniff(sample)
         except Exception:
             dialect = csv.get_dialect('excel')
-        has_header = csv.Sniffer().has_header(sample) if sample else False
-
-        reader = csv.DictReader(f, dialect=dialect) if has_header else csv.reader(f, dialect=dialect)
+        
+        # More robust header detection
+        reader = csv.reader(f, dialect=dialect)
+        first_row = next(reader, None)
+        
+        # Check if first row contains header-like strings (non-numeric, matches expected headers)
+        skip_header = False
+        if first_row:
+            # If any expected header is found in first row, treat it as header
+            if any(header in first_row for header in headers):
+                skip_header = True
+            # Or if first row looks like text headers (no numbers)
+            elif all(not cell.isdigit() for cell in first_row if cell):
+                skip_header = True
+        
+        # If we decided not to skip header, reset and include first row as data
+        if not skip_header and first_row:
+            f.seek(0)
+            reader = csv.reader(f, dialect=dialect)
+        
         batch = []
         for row in reader:
-            if has_header:
-                batch.append(tuple(row.get(h, None) for h in headers))
-            else:
-                batch.append(tuple(row[i] if i < len(headers) else None for i in range(len(headers))))
+            # Convert to tuple, handle missing columns and empty values
+            processed_row = []
+            for i, header in enumerate(headers):
+                if i < len(row):
+                    value = row[i].strip() if row[i] else None
+                    processed_row.append(value if value else None)  # Empty string -> None
+                else:
+                    processed_row.append(None)
+            batch.append(tuple(processed_row))
+            
             if len(batch) >= chunk_size:
                 yield batch
                 batch = []

@@ -5,7 +5,7 @@ import csv
 import tempfile
 from pathlib import Path
 from src.base import create_pool
-from src.csv_ingestor import batch_generator
+from src.ingestors import batch_generator_csv
 from src.uploader import async_upsert
 
 # Standalone test without any fixtures to avoid hanging issues
@@ -59,8 +59,7 @@ async def test_upsert_insert_then_update_standalone():
         file1_path = create_test_csv(headers, initial_data)
         
         await async_upsert(
-            pool, file1_path, headers, 'upsert_test', 'id', 
-            batch_generator, run_id='insert_phase'
+            pool, file1_path, headers, 'upsert_test', ['id'], batch_generator_csv, run_id='insert_phase'
         )
         
         # Verify insert worked
@@ -80,8 +79,7 @@ async def test_upsert_insert_then_update_standalone():
         file2_path = create_test_csv(headers, update_data)
         
         await async_upsert(
-            pool, file2_path, headers, 'upsert_test', 'id',
-            batch_generator, run_id='update_phase'
+            pool, file2_path, headers, 'upsert_test', ['id'], batch_generator_csv, run_id='update_phase'
         )
         
         # Verify final state
@@ -152,8 +150,7 @@ async def test_upsert_mixed_operations_standalone():
         file1_path = create_test_csv(headers, initial_data)
         
         await async_upsert(
-            pool, file1_path, headers, 'upsert_test', 'id',
-            batch_generator, run_id='baseline'
+            pool, file1_path, headers, 'upsert_test', ['id'], batch_generator_csv, run_id='baseline'
         )
         
         # Mixed operations: update existing + insert new
@@ -165,8 +162,7 @@ async def test_upsert_mixed_operations_standalone():
         file2_path = create_test_csv(headers, mixed_data)
         
         await async_upsert(
-            pool, file2_path, headers, 'upsert_test', 'id',
-            batch_generator, run_id='mixed'
+            pool, file2_path, headers, 'upsert_test', ['id'], batch_generator_csv, run_id='mixed'
         )
         
         # Verify results

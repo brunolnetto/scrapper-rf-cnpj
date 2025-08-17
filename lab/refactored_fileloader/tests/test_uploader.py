@@ -2,7 +2,7 @@ import pytest
 import os
 from src.base import create_pool
 from src.uploader import async_upsert
-from src.csv_ingestor import batch_generator
+from src.ingestors import batch_generator_csv
 
 @pytest.mark.asyncio
 async def test_async_upsert(test_dsn, temp_csv_file):
@@ -32,8 +32,8 @@ async def test_async_upsert(test_dsn, temp_csv_file):
             temp_csv_file,
             ['id', 'val'],
             'test_table',
-            'id',
-            batch_generator,
+            ['id'],  # Fixed: primary_keys should be a list
+            batch_generator_csv,
             max_retries=2,
             run_id='test_run'
         )

@@ -3,7 +3,7 @@ import tempfile
 import os
 from src.uploader import async_upsert
 from src.base import create_pool
-from src.csv_ingestor import batch_generator
+from src.ingestors import batch_generator_csv
 
 @pytest.mark.asyncio
 async def test_upsert_idempotency():
@@ -44,8 +44,7 @@ async def test_upsert_idempotency():
         file_path,
         headers,
         'test_table',
-        'id',
-        batch_generator,
+        ['id'], batch_generator_csv,
         max_retries=2,
         run_id='test_run_1'
     )
@@ -55,8 +54,7 @@ async def test_upsert_idempotency():
         file_path,
         headers,
         'test_table',
-        'id',
-        batch_generator,
+        ['id'], batch_generator_csv,
         max_retries=2,
         run_id='test_run_2'
     )

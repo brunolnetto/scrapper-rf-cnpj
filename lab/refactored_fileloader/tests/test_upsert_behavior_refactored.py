@@ -3,7 +3,7 @@ import os
 import csv
 import tempfile
 from src.base import create_pool
-from src.csv_ingestor import batch_generator
+from src.ingestors import batch_generator_csv
 from src.uploader import async_upsert
 
 def create_test_csv(headers, data):
@@ -60,8 +60,7 @@ async def test_upsert_insert_then_update():
             file1_path,
             headers,
             'upsert_test',
-            'id',
-            batch_generator,
+            ['id'], batch_generator_csv,
             max_retries=2,
             run_id='insert_test'
         )
@@ -89,8 +88,7 @@ async def test_upsert_insert_then_update():
             file2_path,
             headers,
             'upsert_test',
-            'id',
-            batch_generator,
+            ['id'], batch_generator_csv,
             max_retries=2,
             run_id='update_test'
         )
@@ -150,7 +148,7 @@ async def test_upsert_mixed_operations():
         ]
         file1_path = create_test_csv(headers, initial_data)
         
-        await async_upsert(pool, file1_path, headers, 'upsert_test', 'id', batch_generator, run_id='baseline')
+        await async_upsert(pool, file1_path, headers, 'upsert_test', ['id'], batch_generator_csv, run_id='baseline')
         
         # Mixed operations: update existing + insert new
         mixed_data = [
@@ -160,7 +158,7 @@ async def test_upsert_mixed_operations():
         ]
         file2_path = create_test_csv(headers, mixed_data)
         
-        await async_upsert(pool, file2_path, headers, 'upsert_test', 'id', batch_generator, run_id='mixed')
+        await async_upsert(pool, file2_path, headers, 'upsert_test', ['id'], batch_generator_csv, run_id='mixed')
         
         # Verify results
         conn = await pool.acquire()
@@ -216,7 +214,7 @@ async def test_upsert_duplicate_keys_in_batch():
         ]
         file_path = create_test_csv(headers, duplicate_data)
         
-        await async_upsert(pool, file_path, headers, 'upsert_test', 'id', batch_generator, run_id='duplicates')
+        await async_upsert(pool, file_path, headers, 'upsert_test', ['id'], batch_generator_csv, run_id='duplicates')
         
         # Verify last value wins
         conn = await pool.acquire()

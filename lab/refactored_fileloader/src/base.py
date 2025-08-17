@@ -50,22 +50,19 @@ def upsert_from_temp_sql(
     Build an upsert SQL that deduplicates rows from tmp_table by primary key
     before performing the INSERT ... ON CONFLICT ... DO UPDATE.
 
-    Deduplication method: use DISTINCT ON to pick the first row per primary key.
-    This avoids array indexing syntax and 'ON CONFLICT DO UPDATE affects row a second time' errors.
+    Deduplication method: use DISTINCT ON to pick the LAST row per primary key.
+    This ensures "last value wins" behavior for proper upsert semantics.
     """
     pk_list = ", ".join(quote_ident(c) for c in primary_keys)
     collist = ", ".join(quote_ident(c) for c in headers)
 
-    # Order by PKs only (first row per PK)
-    order_by = ", ".join(quote_ident(c) for c in primary_keys)
-
-    # Build SELECT using DISTINCT ON
+    # Build SELECT using DISTINCT ON with CTID DESC to get last occurrence
     select_list = ", ".join(quote_ident(c) for c in headers)
     sql = (
         f"WITH dedup AS ("
         f"  SELECT DISTINCT ON ({pk_list}) {select_list} "
         f"  FROM {quote_ident(tmp_table)} "
-        f"  ORDER BY {order_by} "
+        f"  ORDER BY {pk_list}, CTID DESC "
         f") "
         f"INSERT INTO {quote_ident(target_table)} ({collist}) "
         f"SELECT {select_list} FROM dedup "

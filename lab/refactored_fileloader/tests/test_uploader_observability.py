@@ -5,7 +5,7 @@ import logging
 from unittest.mock import patch
 from src.uploader import async_upsert
 from src.base import create_pool
-from src.csv_ingestor import batch_generator
+from src.ingestors import batch_generator_csv
 
 @pytest.mark.asyncio
 async def test_upsert_emits_metrics_and_logs():
@@ -50,8 +50,7 @@ async def test_upsert_emits_metrics_and_logs():
             file_path,
             headers,
             'test_table',
-            'id',
-            batch_generator,
+            ['id'], batch_generator_csv,
             max_retries=1,
             run_id='obs_test'
         )

@@ -2,7 +2,7 @@ import pytest
 import tempfile
 import os
 from src.base import create_pool
-from src.csv_ingestor import batch_generator
+from src.ingestors import batch_generator_csv
 from src.uploader import async_upsert
 
 @pytest.mark.asyncio
@@ -52,8 +52,7 @@ async def test_final_synthetic_run():
         file_path,
         headers,
         'synthetic_table',
-        'id',
-        batch_generator,
+        ['id'], batch_generator_csv,
         max_retries=2,
         run_id='synthetic_run_insert'
     )
@@ -102,8 +101,7 @@ async def test_final_synthetic_run():
         file_path_2,
         headers,
         'synthetic_table',
-        'id',
-        batch_generator,
+        ['id'], batch_generator_csv,
         max_retries=2,
         run_id='synthetic_run_upsert'
     )

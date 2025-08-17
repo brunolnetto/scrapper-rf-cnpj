@@ -1,6 +1,6 @@
 import tempfile
 import csv
-from src.csv_ingestor import batch_generator
+from src.ingestors import batch_generator_csv
 
 def test_csv_batch_generator():
     headers = ['a', 'b']
@@ -11,7 +11,7 @@ def test_csv_batch_generator():
         for row in rows:
             writer.writerow(row)
         f.flush()
-        batches = list(batch_generator(f.name, headers, chunk_size=1))
+        batches = list(batch_generator_csv(f.name, headers, chunk_size=1))
         assert len(batches) == 2
         assert batches[0][0] == ('1', '2')
         assert batches[1][0] == ('3', '4')

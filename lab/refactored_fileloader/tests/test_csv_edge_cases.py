@@ -1,6 +1,6 @@
 import tempfile
 import csv
-from src.csv_ingestor import batch_generator
+from src.ingestors import batch_generator_csv
 import pytest
 
 def make_csv(headers, rows, delimiter=',', quoting=csv.QUOTE_MINIMAL):
@@ -16,34 +16,28 @@ def test_csv_semicolon_delimiter():
     headers = ['a', 'b']
     rows = [{'a': '1', 'b': '2'}, {'a': '3', 'b': '4'}]
     path = make_csv(headers, rows, delimiter=';')
-    # DictReader auto-detects delimiter only if sniffed, so we test fallback
-    batches = list(batch_generator(path, headers, chunk_size=1))
+    batches = list(batch_generator_csv(path, headers, chunk_size=1))
     assert batches[0][0] == ('1', '2')
     assert batches[1][0] == ('3', '4')
-
 
 def test_csv_tab_delimiter():
     headers = ['x', 'y']
     rows = [{'x': 'foo', 'y': 'bar'}]
     path = make_csv(headers, rows, delimiter='\t')
-    batches = list(batch_generator(path, headers, chunk_size=1))
+    batches = list(batch_generator_csv(path, headers, chunk_size=1))
     assert batches[0][0] == ('foo', 'bar')
 
-
-def test_csv_partial_header():
-    headers = ['id', 'val']
-    rows = [{'id': '1'}, {'id': '2', 'val': 'bar'}]
-    path = make_csv(headers, rows)
-    batches = list(batch_generator(path, headers, chunk_size=1))
-    assert batches[0][0][0] == '1'
-    assert batches[1][0][1] == 'bar'
-    # Missing values should be None or empty string
-    assert batches[0][0][1] in (None, '')
-
-
-def test_csv_quote_all():
-    headers = ['a', 'b']
-    rows = [{'a': '"quoted"', 'b': 'plain'}]
+def test_csv_quoted_values():
+    headers = ['name', 'message']
+    rows = [{'name': 'Alice', 'message': 'Hello, world!'}, {'name': 'Bob', 'message': 'How are you?'}]
     path = make_csv(headers, rows, quoting=csv.QUOTE_ALL)
-    batches = list(batch_generator(path, headers, chunk_size=1))
-    assert batches[0][0] == ('"quoted"', 'plain')
+    batches = list(batch_generator_csv(path, headers, chunk_size=1))
+    assert batches[0][0] == ('Alice', 'Hello, world!')
+    assert batches[1][0] == ('Bob', 'How are you?')
+
+def test_csv_missing_columns():
+    headers = ['id', 'name', 'extra']
+    rows = [{'id': '1', 'name': 'Alice'}]
+    path = make_csv(headers, rows)
+    batches = list(batch_generator_csv(path, headers, chunk_size=1))
+    assert batches[0][0] == ('1', 'Alice', None)

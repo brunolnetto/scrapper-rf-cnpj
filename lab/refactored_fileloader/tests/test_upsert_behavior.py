@@ -2,7 +2,7 @@ import pytest
 import tempfile
 import os
 from src.base import create_pool
-from src.csv_ingestor import batch_generator
+from src.ingestors import batch_generator_csv
 from src.uploader import async_upsert
 
 @pytest.mark.asyncio
@@ -48,8 +48,7 @@ async def test_upsert_insert_then_update():
         file1_path = f.name
 
     await async_upsert(
-        pool, file1_path, headers, 'upsert_test', 'id',
-        batch_generator, max_retries=2, run_id='insert_phase'
+        pool, file1_path, headers, 'upsert_test', ['id'], batch_generator_csv, max_retries=2, run_id='insert_phase'
     )
 
     # Verify initial insert
@@ -80,8 +79,7 @@ async def test_upsert_insert_then_update():
         file2_path = f.name
 
     await async_upsert(
-        pool, file2_path, headers, 'upsert_test', 'id',
-        batch_generator, max_retries=2, run_id='upsert_phase'
+        pool, file2_path, headers, 'upsert_test', ['id'], batch_generator_csv, max_retries=2, run_id='upsert_phase'
     )
 
     # Verify final state after upsert
@@ -156,8 +154,7 @@ async def test_upsert_duplicate_keys_within_batch():
         file_path = f.name
 
     await async_upsert(
-        pool, file_path, headers, 'duplicate_test', 'id',
-        batch_generator, max_retries=2, run_id='duplicate_test'
+        pool, file_path, headers, 'duplicate_test', ['id'], batch_generator_csv, max_retries=2, run_id='duplicate_test'
     )
 
     # Verify results - last value should win for duplicate keys
