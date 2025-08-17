@@ -8,8 +8,6 @@ parquet_file = Path(path.join(getcwd(), "data/CONVERTED_FILES/socios.parquet"))
 csv_folder = Path(path.join(getcwd(), "data/EXTRACTED_FILES"))
 csv_files = sorted(csv_folder.glob("*.SOCIOCSV"))
 
-print(csv_files)
-
 # Parquet row count
 pf = pq.ParquetFile(parquet_file)
 parquet_rows = pf.metadata.num_rows
