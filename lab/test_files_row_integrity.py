@@ -1,11 +1,14 @@
 from pathlib import Path
 import pyarrow.parquet as pq
 import polars as pl
+from os import getcwd, path
 
 # Paths
-parquet_file = Path("/mnt/c/Users/SuasVendas/github/scrapper-rf-cnpj/data/CONVERTED_FILES/socios.parquet")
-csv_folder = Path("/mnt/c/Users/SuasVendas/github/scrapper-rf-cnpj/data/EXTRACTED_FILES")
+parquet_file = Path(path.join(getcwd(), "data/CONVERTED_FILES/socios.parquet"))
+csv_folder = Path(path.join(getcwd(), "data/EXTRACTED_FILES"))
 csv_files = sorted(csv_folder.glob("*.SOCIOCSV"))
+
+print(csv_files)
 
 # Parquet row count
 pf = pq.ParquetFile(parquet_file)
