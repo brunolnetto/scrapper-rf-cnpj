@@ -44,10 +44,13 @@ async def async_upsert(
     run_id: Optional[str] = None,
     types: dict = None
 ):
-    run_id = run_id or uuid.uuid4().hex
+    # Generate unique run_id for this file processing session
+    run_id = run_id or f"{uuid.uuid4().hex[:8]}_{os.getpid()}"
     filename = os.path.basename(file_path)
     filesize = None
     checksum = None
+    
+    emit_log("file_processing_started", run_id=run_id, filename=filename, file_path=file_path)
     try:
         with open(file_path, "rb") as f:
             data = f.read()
@@ -58,6 +61,8 @@ async def async_upsert(
 
     async with pool.acquire() as conn:
         await conn.execute(base.ensure_table_sql(table, headers, base.map_types(headers, types), primary_keys))
+        # Ensure manifest table exists using centralized schema
+        await base.ensure_manifest_table(conn)
 
     async with pool.acquire() as conn:
         rows_total = 0

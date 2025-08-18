@@ -5,6 +5,20 @@ from typing import List, Dict
 
 IDENTIFIER_REGEX = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 
+# Centralized schema for ingestion manifest table
+INGESTION_MANIFEST_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ingestion_manifest (
+    filename TEXT PRIMARY KEY,
+    checksum BYTEA,
+    filesize BIGINT,
+    processed_at TIMESTAMP WITH TIME ZONE,
+    rows BIGINT,
+    status TEXT,
+    run_id TEXT,
+    notes TEXT
+);
+"""
+
 def quote_ident(ident: str) -> str:
     if not IDENTIFIER_REGEX.match(ident):
         raise ValueError(f"Invalid identifier: {ident!r}")
@@ -71,3 +85,7 @@ def upsert_from_temp_sql(
         + ";"
     )
     return sql
+
+async def ensure_manifest_table(conn: asyncpg.Connection):
+    """Ensure the ingestion manifest table exists using the centralized schema."""
+    await conn.execute(INGESTION_MANIFEST_SCHEMA)

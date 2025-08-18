@@ -7,7 +7,7 @@ import tempfile
 import os
 import csv
 from src.uploader import async_upsert
-from src.base import create_pool, ensure_manifest_table
+from src.base import create_pool
 from src.ingestors import batch_generator_csv
 
 
@@ -34,8 +34,18 @@ class TestUploaderCore:
         await conn.execute(f'DROP TABLE IF EXISTS {table_name}')
         await conn.execute(f'CREATE TABLE {table_name} (id TEXT PRIMARY KEY, val TEXT)')
         await conn.execute('DROP TABLE IF EXISTS ingestion_manifest')
-        # Use centralized manifest table schema
-        await ensure_manifest_table(conn)
+        await conn.execute('''
+            CREATE TABLE ingestion_manifest (
+                filename TEXT PRIMARY KEY,
+                checksum BYTEA,
+                filesize BIGINT,
+                processed_at TIMESTAMP WITH TIME ZONE,
+                rows BIGINT,
+                status TEXT,
+                run_id TEXT,
+                notes TEXT
+            )
+        ''')
         await pool.release(conn)
         return pool
 
