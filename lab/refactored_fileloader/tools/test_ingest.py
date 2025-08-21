@@ -10,8 +10,8 @@ TABLE = "ingest_test_table"
 PK = ["id"]
 HEADERS = ["id","name","value"]
 CONCURRENCY = 3  # Process up to 3 files concurrently
-CHUNK_SIZE = 50000
-SUB_BATCH_SIZE = 5000
+CHUNK_SIZE = 10
+SUB_BATCH_SIZE = 5
 
 async def run_ingest_batch_auto_detect(file_paths: List[Path]):
     """Run ingestion for multiple files with auto-format detection."""
@@ -21,15 +21,15 @@ async def run_ingest_batch_auto_detect(file_paths: List[Path]):
     cmd = [
         "python3", "-m", "src.cli",
         "--dsn", DSN,
-        "--files", *[str(path) for path in file_paths],
         # Note: No --file-type argument = auto-detection enabled
         "--table", TABLE,
         "--pk", ",".join(PK),
         "--headers", ",".join(HEADERS),
-        "--chunk-size", str(CHUNK_SIZE),
+        "--batch-size", str(CHUNK_SIZE),
         "--sub-batch-size", str(SUB_BATCH_SIZE),
         "--concurrency", str(CONCURRENCY),
-        "--max-retries", "3"
+        "--max-retries", "3",
+        *[str(path) for path in file_paths]  # files as positional arguments
     ]
     
     print(f"Running auto-detection ingestion for {len(file_paths)} mixed files:")
@@ -65,15 +65,15 @@ async def run_ingest_batch(file_paths: List[Path], file_type: str):
     cmd = [
         "python3", "-m", "src.cli",
         "--dsn", DSN,
-        "--files", *[str(path) for path in file_paths],
         "--file-type", file_type,
         "--table", TABLE,
         "--pk", ",".join(PK),
         "--headers", ",".join(HEADERS),
-        "--chunk-size", str(CHUNK_SIZE),
+        "--batch-size", str(CHUNK_SIZE),
         "--sub-batch-size", str(SUB_BATCH_SIZE),
         "--concurrency", str(CONCURRENCY),
-        "--max-retries", "3"
+        "--max-retries", "3",
+        *[str(path) for path in file_paths]  # files as positional arguments
     ]
     
     print(f"Running concurrent ingestion for {len(file_paths)} {file_type} files:")

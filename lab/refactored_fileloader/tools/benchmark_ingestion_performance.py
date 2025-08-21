@@ -13,11 +13,11 @@ PK = ["id"]
 HEADERS = ["id", "name", "value"]
 
 # Define the parameters to sweep
-CHUNK_SIZES = [10_000, 50_000, 100_000, 200_000]
-SUB_BATCH_SIZES = [500, 1_000, 5_000, 10_000]
+CHUNK_SIZES = [1_000, 2_000, 3_000, 4_000]
+SUB_BATCH_SIZES = [100, 200, 400, 800]
 
 FILE_TO_TEST = DATA_DIR / "sample_1.csv"
-GENERATOR_SCRIPT = Path("src/generate_test_files.py")
+GENERATOR_SCRIPT = Path("tools/generate_test_files.py")
 
 
 def generate_mega_file():
@@ -43,13 +43,13 @@ async def run_ingest(file_path: Path, chunk_size: int, sub_batch_size: int):
     cmd = [
         "python3", "-m", "src.cli",
         "--dsn", DSN,
-        "--files", str(file_path),
         "--file-type", "csv",
         "--table", TABLE,
         "--pk", ",".join(PK),
         "--headers", ",".join(HEADERS),
-        "--chunk-size", str(chunk_size),
-        "--sub-batch-size", str(sub_batch_size)
+        "--batch-size", str(chunk_size),
+        "--sub-batch-size", str(sub_batch_size),
+        str(file_path)  # file as positional argument
     ]
     print(f"\nRunning ingestion: chunk={chunk_size}, sub_batch={sub_batch_size}")
     start = time.time()
