@@ -12,6 +12,7 @@ from urllib3.util.retry import Retry
 from ..setup.logging import logger
 from ..setup.config import ConfigurationService
 from ..database.models import AuditDB, MainBase, AuditBase
+from .interfaces import Pipeline
 
 
 from .schemas import FileInfo, AuditMetadata
@@ -342,8 +343,32 @@ class CNPJ_ETL:
             from ..database.dml import generate_tables_indices
             generate_tables_indices(self.database.engine, renew_table_indices)
 
-    def run(self) -> Optional[AuditMetadata]:
+    def validate_config(self) -> bool:
+        """Validate pipeline configuration."""
+        try:
+            return bool(
+                self.config and 
+                self.config.databases and 
+                self.config.etl and 
+                self.config.paths
+            )
+        except Exception:
+            return False
+    
+    def get_name(self) -> str:
+        """Return pipeline name for logging."""
+        return "CNPJ_ETL"
+    
+    def run(self, **kwargs) -> Optional[AuditMetadata]:
         from ..utils.misc import remove_folder
+        
+        # Handle orchestrator parameters
+        year = kwargs.get('year')
+        month = kwargs.get('month')
+        if year:
+            self.config.etl.year = int(year)
+        if month:
+            self.config.etl.month = int(month)
         
         extract_path = str(self.config.paths.extract_path)
         download_path = str(self.config.paths.download_path)
