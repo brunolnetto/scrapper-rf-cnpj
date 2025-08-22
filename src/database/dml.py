@@ -18,6 +18,7 @@ from ..setup.logging import logger
 from ..core.constants import TABLES_INFO_DICT
 from ..core.schemas import TableInfo
 from ..utils.misc import update_progress, get_line_count, delete_var
+from ..utils.model_utils import get_table_columns
 from .schemas import Database
 
 def table_name_to_table_info(table_name: str) -> TableInfo:
@@ -27,7 +28,7 @@ def table_name_to_table_info(table_name: str) -> TableInfo:
     # Get table info
     label = table_info_dict["label"]
     zip_group = table_info_dict["group"]
-    columns = table_info_dict["columns"]
+    columns = get_table_columns(table_name)  # Derive from SQLAlchemy model
     encoding = table_info_dict["encoding"]
     transform_map = table_info_dict.get("transform_map", lambda x: x)
     expression = table_info_dict["expression"]
@@ -342,7 +343,7 @@ class UnifiedLoader:
         show_progress: bool = True,
     ) -> Tuple[bool, Optional[str], int]:
         """
-        Auto-detect file format and load accordingly using robust detection.
+        Auto-detect file format and load accordingly using enhanced robust detection.
 
         Args:
             table_info: Table information
@@ -356,14 +357,14 @@ class UnifiedLoader:
         """
         file_path = Path(file_path)
 
-        # Use robust file type detection
+        # Use enhanced file type detection with fallback
         try:
-            from utils.file_detection import detect_file_type
-
-            file_type = detect_file_type(file_path)
+            from ..utils.file_detection import detect_file_type_enhanced
+            file_type = detect_file_type_enhanced(file_path)
+            logger.debug(f"Enhanced detection for {file_path.name}: {file_type}")
         except ImportError:
-            # Fallback to basic detection if utils module not available
-            logger.warning("Robust file detection not available, using basic detection")
+            # Fallback to basic detection if enhanced utils not available
+            logger.warning("Enhanced file detection not available, using basic detection")
             if file_path.suffix.lower() == ".parquet":
                 file_type = "parquet"
             elif (
@@ -375,6 +376,10 @@ class UnifiedLoader:
                 file_type = "csv"
             else:
                 file_type = "unknown"
+        except Exception as e:
+            logger.error(f"Enhanced file detection failed for {file_path}: {e}")
+            # Ultimate fallback
+            file_type = "csv"
 
         logger.debug(f"File {file_path.name} detected as type: {file_type}")
 

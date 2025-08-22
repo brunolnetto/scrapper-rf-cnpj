@@ -21,11 +21,27 @@ class DataLoadingService:
         self,
         database: Database,
         path_config: PathConfig,
-        strategy: BaseDataLoadingStrategy
+        strategy: BaseDataLoadingStrategy,
+        config=None,
+        audit_service=None
     ):
         self.database = database
         self.path_config = path_config
-        self.strategy = strategy
+        self.config = config
+        self.audit_service = audit_service  # Store audit service
+        
+        # Always use enhanced strategy (replace legacy implementation)
+        if config:
+            try:
+                from .strategies import DataLoadingStrategy
+                self.strategy = DataLoadingStrategy(config, audit_service=audit_service)
+                logger.info("Using enhanced loading strategy (default)")
+            except ImportError as e:
+                logger.warning(f"Enhanced strategy not available, using fallback: {e}")
+                self.strategy = strategy
+        else:
+            # Fallback if no config provided
+            self.strategy = strategy
 
     def load_data(self, audit_metadata: AuditMetadata) -> AuditMetadata:
         """

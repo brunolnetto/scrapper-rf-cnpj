@@ -146,7 +146,7 @@ class Socios(MainBase):
     cnpj_basico = Column(Text, nullable=False, primary_key=True)
     identificador_socio = Column(Text, nullable=True)
     nome_socio_razao_social = Column(Text, nullable=True)
-    cpf_cnpj_socio = Column(Text, nullable=True)
+    cpf_cnpj_socio = Column(Text, nullable=False, primary_key=True)
     qualificacao_socio = Column(Text, nullable=True)
     data_entrada_sociedade = Column(Text, nullable=True)
     pais = Column(Text, nullable=True)

@@ -57,6 +57,13 @@ class ETLConfig:
     # Development mode settings
     development_mode: bool = False
     development_file_size_limit: int = 50000  # bytes
+    
+    # Enhanced loading settings (always enabled - no feature flags)
+    sub_batch_size: int = 5000
+    internal_concurrency: int = 3
+    manifest_tracking: bool = False
+    async_pool_min_size: int = 1
+    async_pool_max_size: int = 10
 
 
 @dataclass
@@ -156,6 +163,12 @@ class ConfigurationService:
             development_file_size_limit=int(
                 os.getenv("ETL_DEV_FILE_SIZE_LIMIT", "50000")
             ),
+            # Enhanced loading settings (following ETL_ convention)
+            sub_batch_size=int(os.getenv("ETL_SUB_BATCH_SIZE", "5000")),
+            internal_concurrency=int(os.getenv("ETL_INTERNAL_CONCURRENCY", "3")),
+            manifest_tracking=os.getenv("ETL_MANIFEST_TRACKING", "false").lower() == "true",
+            async_pool_min_size=int(os.getenv("ETL_ASYNC_POOL_MIN_SIZE", "1")),
+            async_pool_max_size=int(os.getenv("ETL_ASYNC_POOL_MAX_SIZE", "10")),
         )
 
     def _load_path_config(self) -> PathConfig:

@@ -13,17 +13,18 @@ from ..setup.logging import logger
 from ..setup.config import ConfigurationService
 from ..database.models import AuditDB, MainBase, AuditBase
 
+
 from .constants import TABLES_INFO_DICT
 from .schemas import FileInfo, AuditMetadata
 from .audit.service import AuditService
+from .loading.strategies import DataLoadingStrategy
 
 class CNPJ_ETL:
     def __init__(self, config_service: ConfigurationService = None) -> None:
-        from .loading.strategies import DataLoadingStrategy
         from .download.service import FileDownloadService
-        
+
         self.config = config_service
-        
+
         # Lazy initialization - don't connect to databases until needed
         self._database = None
         self._audit_service = None
@@ -31,7 +32,7 @@ class CNPJ_ETL:
 
         # Initialize file downloader and uploader (these are fast)
         self.file_downloader = FileDownloadService()
-        self.loading_strategy = DataLoadingStrategy()
+        self.loading_strategy = DataLoadingStrategy(self.config)  # Use consolidated strategy
         # Note: data_loader will be initialized when database is ready
 
     @property
@@ -43,7 +44,7 @@ class CNPJ_ETL:
     
     @property
     def audit_service(self):
-        """Lazy audit service initialization.""" 
+        """Lazy audit service initialization with manifest tracking.""" 
         if self._audit_service is None:
             self._init_databases()
         return self._audit_service
@@ -55,7 +56,11 @@ class CNPJ_ETL:
 
         if not hasattr(self, '_data_loader') or self._data_loader is None:
             self._data_loader = DataLoadingService(
-                self.database, self.config.paths, self.loading_strategy
+                self.database, 
+                self.config.paths, 
+                self.loading_strategy, 
+                self.config,
+                audit_service=self.audit_service
             )
         return self._data_loader
 
@@ -87,7 +92,7 @@ class CNPJ_ETL:
             f"Creating tables in audit database: {self.config.databases['audit'].database_name}"
         )
         audit_db.create_tables()
-        self._audit_service = AuditService(audit_db)
+        self._audit_service = AuditService(audit_db, self.config)
         
         self._initialized = True
 
@@ -330,12 +335,9 @@ class CNPJ_ETL:
         return self.convert_to_parquet(audit_metadata)
 
     def create_indices(self) -> None:
-        # Build indices from TABLES_INFO_DICT
-        renew_table_indices = {
-            table_name: set(table_info.get("index_columns", []))
-            for table_name, table_info in TABLES_INFO_DICT.items()
-            if table_info.get("index_columns")
-        }
+        # Build indices from SQLAlchemy models
+        from ..utils.model_utils import get_tables_to_indices
+        renew_table_indices = get_tables_to_indices()
 
         if renew_table_indices:
             from ..database.dml import generate_tables_indices

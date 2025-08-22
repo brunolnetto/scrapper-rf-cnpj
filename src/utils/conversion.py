@@ -11,11 +11,12 @@ from rich.progress import (
 )
 
 from ..core.constants import TABLES_INFO_DICT
+from .model_utils import get_table_columns
 
 
 def convert_table_csvs_to_parquet(table_name, csv_paths, output_dir, deilmiter):
     try:
-        expected_columns = TABLES_INFO_DICT.get(table_name, {}).get("columns")
+        expected_columns = get_table_columns(table_name)
         if not expected_columns:
             return f"[WARN] No column mapping for '{table_name}'"
 

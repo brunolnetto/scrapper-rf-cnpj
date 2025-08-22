@@ -4,11 +4,86 @@ Robust file type detection utilities for data loading.
 This module provides comprehensive file type detection that goes beyond simple
 file extension checking to include magic number detection, content analysis,
 and encoding detection for reliable data processing.
+
+Enhanced with integration to lab/refactored_fileloader for improved detection.
 """
 
 from pathlib import Path
 from typing import Dict, Union
 import struct
+from ..setup.logging import logger
+
+
+def detect_file_type_enhanced(file_path: Path) -> str:
+    """
+    Enhanced file type detection using refactored file loader.
+    Falls back to comprehensive detection if enhanced loader is not available.
+    
+    Args:
+        file_path: Path to the file to detect
+        
+    Returns:
+        str: 'csv' or 'parquet'
+    """
+    try:
+        # Try to use the enhanced detection from local file loader
+        from .file_loader import FileLoader
+        
+        loader = FileLoader(str(file_path))
+        detected_format = loader.get_format()
+        
+        logger.debug(f"Enhanced detection for {file_path.name}: {detected_format}")
+        return detected_format
+        
+    except ImportError as e:
+        logger.warning(f"Enhanced file detection not available: {e}")
+        return _comprehensive_file_detection(file_path)
+    except Exception as e:
+        logger.error(f"Enhanced detection failed for {file_path}: {e}")
+        return _comprehensive_file_detection(file_path)
+
+
+def _comprehensive_file_detection(file_path: Path) -> str:
+    """
+    Use the comprehensive detection system as fallback.
+    
+    Args:
+        file_path: Path to the file to detect
+        
+    Returns:
+        str: 'csv' or 'parquet'
+    """
+    result = detect_file_type_with_confidence(file_path)
+    
+    if result['type'] in ['csv', 'parquet']:
+        logger.debug(f"Comprehensive detection for {file_path.name}: {result['type']} (confidence: {result['confidence']:.2f})")
+        return result['type']
+    else:
+        # Default to CSV for unknown types (existing behavior)
+        logger.debug(f"Comprehensive detection for {file_path.name}: defaulting to csv (type was {result['type']})")
+        return 'csv'
+
+
+def get_file_loader(file_path: Path):
+    """
+    Get an appropriate file loader for the given file.
+    Returns the enhanced FileLoader if available, None otherwise.
+    
+    Args:
+        file_path: Path to the file
+        
+    Returns:
+        FileLoader instance or None
+    """
+    try:
+        from .file_loader import FileLoader
+        return FileLoader(str(file_path))
+    except ImportError:
+        logger.debug("Enhanced FileLoader not available")
+        return None
+    except Exception as e:
+        logger.error(f"Failed to create FileLoader for {file_path}: {e}")
+        return None
 
 
 def detect_file_type_with_confidence(
