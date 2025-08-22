@@ -1,15 +1,15 @@
 # AI Agent Instructions - CNPJ ETL Project
 
 ## Project Overview
-Production ETL pipeline that processes Brazilian Federal Revenue public CNPJ data (~17GB uncompressed) into PostgreSQL. Features comprehensive auditing, incremental loading, and performance optimizations based on dynamic web scraping.
+Production ETL pipeline that processes Brazilian Federal Revenue public CNPJ data (~17GB uncompressed) into PostgreSQL. Features high-performance async processing, comprehensive auditing, incremental loading, and robust file detection.
 
 ## Core Architecture
 - **Main Flow**: `src/main.py` → `ETLOrchestrator` → `CNPJ_ETL` → Download/Extract/Convert/Load
 - **Configuration**: `ConfigurationService` in `src/setup/config.py` - single source of truth
 - **Dual Databases**: Production (`MainBase`) + Audit (`AuditBase`) with separate SQLAlchemy bases
-- **Auto-detection**: Parquet preferred over CSV via `UnifiedLoader` with robust detection
+- **Enhanced Loading**: `EnhancedUnifiedLoader` with async processing and 4-layer file detection
 - **Lazy Loading**: Resources initialize on-demand with `@property` pattern
-- **Strategy Pattern**: `DataLoadingStrategy` for unified loading
+- **Simplified Strategy**: Clean `DataLoadingStrategy` (147 lines) for unified loading
 
 ## Critical Development Patterns
 
@@ -39,29 +39,34 @@ def data_loader(self):
     return self._data_loader
 ```
 
-### Data Loading (Parquet Priority)
+### Enhanced Data Loading
 ```python
-# Strategy Pattern - always check Parquet first
-parquet_file = path_config.conversion_path / f"{table_name}.parquet"
-if parquet_file.exists():
-    success, error, rows = loader.load_parquet_file(table_info, parquet_file)
-else:
-    # fallback to multiple CSV files
-    success, error, rows = loader.load_csv_file(table_info, csv_files)
+# Unified loading via factory pattern (backward compatible)
+from src.database.dml import UnifiedLoader
+
+# Creates EnhancedUnifiedLoader internally
+loader = UnifiedLoader(database, config)
+
+# Auto-detection with robust validation + async processing
+success, error, rows = loader.load_file(table_info, file_path)
+
+# Supports both CSV and Parquet with transforms
+success, error, rows = loader.load_csv_file(table_info, csv_file)
+success, error, rows = loader.load_parquet_file(table_info, parquet_file)
 ```
 
-### Robust File Detection (lab/refactored_fileloader)
+### File Detection & Processing
 ```python
-# Robust 4-layer format detection pattern
-from lab.refactored_fileloader.src.file_loader import FileLoader
+# Integrated file detection with content validation
+from src.utils.file_loader import FileLoader
 
-# Auto-detection with content validation
-loader = FileLoader(file_path)
+# 4-layer detection: existence, extension, content, fallback
+loader = FileLoader(file_path, encoding='utf-8')
 detected_format = loader.get_format()  # 'csv' or 'parquet'
 
-# Unified batch generation
+# Streaming batch generation with encoding support
 for batch in loader.batch_generator(headers, chunk_size):
-    process_batch(batch)
+    process_batch(batch)  # List[Tuple] format
 ```
 
 ## Essential Commands
@@ -86,24 +91,22 @@ just clean     # clear logs and cache
 just search "token"  # search codebase
 ```
 
-### High-Performance CLI (lab/refactored_fileloader)
-```bash
-# Auto-detect mixed CSV/Parquet files with dual parallelism
-python -m lab.refactored_fileloader.src.cli 
-    --dsn postgresql://user:pass@localhost:5433/testdb 
-    --table socios 
-    --concurrency 4 --internal-concurrency 2 
-    data/*.{csv,parquet}
-
-# Performance testing tools
-python lab/refactored_fileloader/tools/benchmark_socios_ingestion.py
-python lab/refactored_fileloader/tools/analyze_socios_performance.py
-```
-
 ### Dependencies and Build
 - **Package Manager**: `uv` (modern, fast) over traditional pip
+- **Core**: asyncpg (async database), pyarrow (file processing), sqlalchemy (ORM)
+- **Performance**: polars (CSV→Parquet conversion only)
 - **Linting**: `ruff` with F (Pyflakes) + ARG (unused arguments) rules
 - **Python**: >=3.9, configured via `pyproject.toml`
+
+### Performance Configuration
+```bash
+# Enhanced loading configuration in .env
+ETL_CHUNK_SIZE=50000                    # Main batch size
+ETL_SUB_BATCH_SIZE=5000                # Internal sub-batch size
+ETL_INTERNAL_CONCURRENCY=3             # Parallel sub-batches per file
+ETL_ASYNC_POOL_MIN_SIZE=2              # Connection pool minimum
+ETL_ASYNC_POOL_MAX_SIZE=10             # Connection pool maximum
+```
 
 ## Data Structure Specifics
 
@@ -115,11 +118,22 @@ python lab/refactored_fileloader/tools/analyze_socios_performance.py
 
 ### Data Transformations
 ```python
-# Example transform_map specific to empresa
-def empresa_transform_map(artifact):
-    artifact["capital_social"] = artifact["capital_social"].str.replace(",", ".")
-    artifact["capital_social"] = artifact["capital_social"].astype(float)
-    return artifact
+# Row-level transforms (pure Python, no pandas dependency)
+def empresa_transform_map(row_dict: Dict[str, str]) -> Dict[str, str]:
+    """Converts Brazilian number format to standard format"""
+    if "capital_social" in row_dict and row_dict["capital_social"]:
+        # Handle: "1.234.567,89" → "1234567.89"
+        value = row_dict["capital_social"]
+        if "," in value:
+            parts = value.split(",")
+            if len(parts) == 2:
+                integer_part = parts[0].replace(".", "")  # Remove thousands separators
+                decimal_part = parts[1]
+                row_dict["capital_social"] = f"{integer_part}.{decimal_part}"
+    return row_dict
+
+# Applied automatically by EnhancedUnifiedLoader during processing
+# All other tables use default_transform_map (no-op)
 ```
 
 ### Audit System
@@ -136,11 +150,13 @@ def empresa_transform_map(artifact):
 4. **Conversion**: Parquet to `data/CONVERTED_FILES/` (optimization)
 5. **Loading**: PostgreSQL upsert with auditing
 
-### Refactored Loading Architecture
-- **Robust Detection**: `lab/refactored_fileloader` with multi-layer validation
-- **Batch Processing**: Specialized ingestors for CSV/Parquet
-- **Internal Parallelism**: Concurrent sub-batches within same file
-- **Advanced Auditing**: Manifest with checksums and complete metadata
+### Enhanced Loading Architecture
+- **Robust Detection**: 4-layer file validation (existence, extension, content, fallback)
+- **Batch Processing**: Streaming ingestors for CSV/Parquet with encoding support
+- **Internal Parallelism**: Async concurrent sub-batches within same file
+- **Advanced Auditing**: Complete manifest tracking with checksums and metadata
+- **Memory Efficient**: Streaming processing with configurable batch sizes
+- **Transform Support**: Row-level transforms applied during processing
 
 ### Development Mode
 - Size filtering by `development_file_size_limit`
