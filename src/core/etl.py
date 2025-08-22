@@ -14,7 +14,6 @@ from ..setup.config import ConfigurationService
 from ..database.models import AuditDB, MainBase, AuditBase
 
 
-from .constants import TABLES_INFO_DICT
 from .schemas import FileInfo, AuditMetadata
 from .audit.service import AuditService
 from .loading.strategies import DataLoadingStrategy
@@ -363,9 +362,6 @@ class CNPJ_ETL:
 
             # Load data using the new DataLoadingService
             self.data_loader.load_data(audit_metadata)
-
-            # Create database indices
-            self.create_indices()
 
             return audit_metadata
         else:

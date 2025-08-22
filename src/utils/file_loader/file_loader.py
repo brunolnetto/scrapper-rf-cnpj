@@ -149,7 +149,7 @@ class FileLoader:
     
     def batch_generator(self, headers: List[str], chunk_size: int = 20_000) -> Iterable[List[Tuple]]:
         """
-        Generate batches of data from the file.
+        Generate batches of data from the file using the appropriate generator.
         
         Args:
             headers: List of expected column headers
@@ -160,10 +160,12 @@ class FileLoader:
         """
         if self.format == 'csv':
             # Pass encoding to CSV batch generator
-            yield from self._batch_generator(self.file_path, headers, chunk_size, encoding=self.encoding)
-        else:
+            yield from batch_generator_csv(self.file_path, headers, chunk_size, encoding=self.encoding)
+        elif self.format == 'parquet':
             # Parquet doesn't need encoding
-            yield from self._batch_generator(self.file_path, headers, chunk_size)
+            yield from batch_generator_parquet(self.file_path, headers, chunk_size)
+        else:
+            raise ValueError(f"No batch generator available for format: {self.format}")
     
     def __repr__(self) -> str:
         return f"FileLoader(file_path='{self.file_path}', format='{self.format}', encoding='{self.encoding}')"

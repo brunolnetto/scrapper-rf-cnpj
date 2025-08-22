@@ -58,11 +58,12 @@ class ETLConfig:
     development_mode: bool = False
     development_file_size_limit: int = 50000  # bytes
     
-    # Enhanced loading settings (always enabled - no feature flags)
+    # Enhanced loading settings - high-performance async processing
     sub_batch_size: int = 5000
     internal_concurrency: int = 3
-    manifest_tracking: bool = False
-    async_pool_min_size: int = 1
+    enable_internal_parallelism: bool = True
+    manifest_tracking: bool = True
+    async_pool_min_size: int = 2
     async_pool_max_size: int = 10
 
 

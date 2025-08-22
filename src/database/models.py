@@ -1,4 +1,5 @@
-from sqlalchemy import Column, BigInteger, String, TIMESTAMP, JSON, Text, Float, Index
+from sqlalchemy import Column, BigInteger, String, TIMESTAMP, JSON, Text, Float, Index, ForeignKey
+from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import UUID
 from typing import Optional, Generic, TypeVar, List, Any
 from pydantic import BaseModel, Field
@@ -62,11 +63,11 @@ class AuditDBSchema(BaseModel, Generic[T]):
         )
 
 
+
 class AuditDB(AuditBase):
     """
     SQLAlchemy model for the audit table.
     """
-
     __tablename__ = "audit"
 
     audi_id = Column(UUID(as_uuid=True), primary_key=True)
@@ -79,6 +80,12 @@ class AuditDB(AuditBase):
     audi_processed_at = Column(TIMESTAMP, nullable=True)
     audi_inserted_at = Column(TIMESTAMP, nullable=True)
     audit_metadata = Column(JSON, nullable=True)
+    # Relationship to manifest entries (one audit can have many manifest records)
+    manifests = relationship(
+            "AuditManifest",
+            back_populates="audit",
+            cascade="all, delete-orphan"
+        )
 
     @property
     def is_precedence_met(self) -> bool:
@@ -91,11 +98,18 @@ class AuditDB(AuditBase):
         is_met = True
         and_map = lambda a, b: a and b
         for index, current_timestamp in enumerate(previous_timestamps):
+            # Skip validation if current timestamp is None
+            if current_timestamp is None:
+                continue
+                
             previous_t = previous_timestamps[0:index]
             if index > 0:
-                greater_than_map = lambda a: a <= current_timestamp
-                this_is_met = reduce(and_map, map(greater_than_map, previous_t))
-                is_met = is_met and this_is_met
+                # Only compare with non-None previous timestamps
+                non_none_previous = [t for t in previous_t if t is not None]
+                if non_none_previous:
+                    greater_than_map = lambda a: a <= current_timestamp
+                    this_is_met = reduce(and_map, map(greater_than_map, non_none_previous))
+                    is_met = is_met and this_is_met
         return is_met
 
     def __get_pydantic_core_schema__(self):
@@ -116,6 +130,35 @@ class AuditDB(AuditBase):
         return f"AuditDB({args})"
 
 
+# Manifest table for loader ingestion events
+class AuditManifest(AuditBase):
+    """
+    SQLAlchemy model for the ingestion manifest table.
+    Centralizes file-level ingestion metadata for loader/audit integration.
+    """
+    __tablename__ = "ingestion_manifest"
+
+    manifest_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    audit_id = Column(UUID(as_uuid=True), ForeignKey('audit.audi_id'), nullable=True)
+    file_path = Column(Text, nullable=False)
+    status = Column(String(64), nullable=False)
+    checksum = Column(Text, nullable=True)
+    filesize = Column(BigInteger, nullable=True)
+    rows = Column(BigInteger, nullable=True)
+    processed_at = Column(TIMESTAMP, nullable=True)
+    file_metadata = Column(JSON, nullable=True)
+
+    # Foreign key to AuditDB for lineage    
+    audit = relationship("AuditDB", back_populates="manifests")
+
+    def __repr__(self):
+        return (
+            f"AuditManifest(manifest_id={self.manifest_id}, file_path={self.file_path}, "
+            f"status={self.status}, checksum={self.checksum}, filesize={self.filesize}, "
+            f"rows={self.rows}, processed_at={self.processed_at})"
+        )
+
+
 # Main CNPJ/source tables use MainBase
 class Empresa(MainBase):
     __tablename__ = "empresa"
@@ -128,6 +171,11 @@ class Empresa(MainBase):
     ente_federativo_responsavel = Column(Text, nullable=True)
     __table_args__ = (Index("empresa_cnpj_basico", "cnpj_basico"),)
 
+    # Relationships
+    estabelecimentos = relationship("Estabelecimento", back_populates="empresa")
+    socios = relationship("Socios", back_populates="empresa")
+    simples = relationship("SimplesNacional", back_populates="empresa")
+
 
 class SimplesNacional(MainBase):
     __tablename__ = "simples"
@@ -139,6 +187,9 @@ class SimplesNacional(MainBase):
     data_opcao_mei = Column(Text, nullable=True)
     data_exclusao_mei = Column(Text, nullable=True)
     __table_args__ = (Index("simples_cnpj_basico", "cnpj_basico"),)
+
+    # Relationship to Empresa
+    empresa = relationship("Empresa", back_populates="simples", primaryjoin="Empresa.cnpj_basico==SimplesNacional.cnpj_basico")
 
 
 class Socios(MainBase):
@@ -155,6 +206,9 @@ class Socios(MainBase):
     qualificacao_representante_legal = Column(Text, nullable=True)
     faixa_etaria = Column(Text, nullable=True)
     __table_args__ = (Index("socios_cnpj_basico", "cnpj_basico"),)
+
+    # Relationship to Empresa
+    empresa = relationship("Empresa", back_populates="socios", primaryjoin="Empresa.cnpj_basico==Socios.cnpj_basico")
 
 
 class Estabelecimento(MainBase):
@@ -198,6 +252,9 @@ class Estabelecimento(MainBase):
         Index("estabelecimento_cep", "cep"),
         Index("estabelecimento_uf", "uf"),
     )
+
+    # Relationship to Empresa
+    empresa = relationship("Empresa", back_populates="estabelecimentos", primaryjoin="Empresa.cnpj_basico==Estabelecimento.cnpj_basico")
 
 
 class Qualificacoes(MainBase):

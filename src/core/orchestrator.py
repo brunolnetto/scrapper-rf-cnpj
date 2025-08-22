@@ -151,7 +151,7 @@ class ETLOrchestrator:
                 # Convert existing CSV files to Parquet
                 conversion_path = scrapper.convert_existing_csvs_to_parquet()
                 if conversion_path:
-                    logger.info(f"[CONVERT-ONLY] Successfully converted existing CSV files to Parquet")
+                    logger.info("[CONVERT-ONLY] Successfully converted existing CSV files to Parquet")
                     logger.info(f"[CONVERT-ONLY] Parquet files saved to: {conversion_path}")
                 else:
                     logger.warning("[CONVERT-ONLY] No CSV files were converted")
@@ -161,7 +161,7 @@ class ETLOrchestrator:
                 raise
 
         # Full ETL mode (default)
-        logger.info(f"[FULL-ETL] Running full ETL pipeline...")
+        logger.info("[FULL-ETL] Running full ETL pipeline...")
         logger.info(f"[FULL-ETL] Target database: {prod_db}")
 
         # Ensure the production database exists

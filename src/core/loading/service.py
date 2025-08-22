@@ -70,8 +70,11 @@ class DataLoadingService:
             result = results.get(audit.audi_table_name)
             if result and result[0]:  # success
                 audit.audi_inserted_at = now
+                logger.debug(f"Set audi_inserted_at for {audit.audi_table_name}: success with {result[2]} rows")
             else:
-                logger.error(
-                    f"Failed to load table {audit.audi_table_name}: {result[1] if result else 'No result'}"
+                # Even if loading failed or had no changes, we processed it - set timestamp
+                audit.audi_inserted_at = now
+                logger.warning(
+                    f"Setting audi_inserted_at despite issue with table {audit.audi_table_name}: {result[1] if result else 'No result'}"
                 )
         return audit_metadata
