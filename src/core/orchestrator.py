@@ -45,7 +45,16 @@ class ETLOrchestrator:
 
         return success
 
-    def run(self, year=None, month=None, full_refresh=False, clear_tables=None):
+    def run(
+        self,
+        year=None,
+        month=None,
+        full_refresh: bool = False,
+        clear_tables: str = "",
+        download_only: bool = False,
+        download_and_convert: bool = False,
+        convert_only: bool = False,
+    ):
         """
         Run the ETL process with upsert to production database.
 
@@ -54,6 +63,9 @@ class ETLOrchestrator:
             month: Month for ETL processing (default: current month)
             full_refresh: If True, clear all tables before upsert (default: False)
             clear_tables: List of specific tables to clear, or None (only used if full_refresh=True)
+            download_only: If True, only download files without processing (default: False)
+            download_and_convert: If True, download and convert to Parquet but skip database loading (default: False)
+            convert_only: If True, convert existing CSV files to Parquet without downloading (default: False)
         """
         start_time = time.time()
 
@@ -78,7 +90,79 @@ class ETLOrchestrator:
 
         logger.info(f"ETL start: {datetime.now():%Y-%m-%d %H:%M:%S}")
         logger.info(f"Running ETL for year={year}, month={str(month).zfill(2)}")
-        logger.info(f"Target database: {prod_db}")
+        
+        # Handle download-only mode
+        if download_only:
+            logger.info("[DOWNLOAD-ONLY] Running in download-only mode...")
+            from .etl import CNPJ_ETL
+            scrapper = CNPJ_ETL(config_service=self.config_service)
+            
+            try:
+                audits = scrapper.retrieve_data()
+                if audits:
+                    logger.info(f"[DOWNLOAD-ONLY] Successfully downloaded {len(audits)} files")
+                    logger.info(f"[DOWNLOAD-ONLY] Files saved to: {self.config_service.paths.download_path}")
+                else:
+                    logger.warning("[DOWNLOAD-ONLY] No files were downloaded")
+                return
+            except Exception as e:
+                logger.error(f"[DOWNLOAD-ONLY] Download failed: {e}")
+                raise
+        
+        # Handle download-and-convert mode
+        if download_and_convert:
+            logger.info("[DOWNLOAD-CONVERT] Running in download-and-convert mode...")
+            from .etl import CNPJ_ETL
+            scrapper = CNPJ_ETL(config_service=self.config_service)
+            
+            try:
+                # Download files
+                audits = scrapper.retrieve_data()
+                if not audits:
+                    logger.warning("[DOWNLOAD-CONVERT] No files were downloaded")
+                    return
+                
+                # Create audit metadata and convert to Parquet
+                download_path = str(self.config_service.paths.download_path)
+                audit_metadata = scrapper.audit_service.create_audit_metadata(audits, download_path)
+                conversion_path = scrapper.convert_to_parquet(audit_metadata)
+                
+                logger.info(f"[DOWNLOAD-CONVERT] Successfully downloaded {len(audits)} files")
+                logger.info(f"[DOWNLOAD-CONVERT] Files converted to Parquet and saved to: {conversion_path}")
+                
+                # Cleanup downloaded files if configured
+                if self.config_service.etl.delete_files:
+                    from ..utils.misc import remove_folder
+                    remove_folder(download_path)
+                    logger.info("[DOWNLOAD-CONVERT] Cleaned up downloaded files")
+                
+                return
+            except Exception as e:
+                logger.error(f"[DOWNLOAD-CONVERT] Process failed: {e}")
+                raise
+
+        # Handle convert-only mode
+        if convert_only:
+            logger.info("[CONVERT-ONLY] Running in convert-only mode...")
+            from .etl import CNPJ_ETL
+            scrapper = CNPJ_ETL(config_service=self.config_service)
+            
+            try:
+                # Convert existing CSV files to Parquet
+                conversion_path = scrapper.convert_existing_csvs_to_parquet()
+                if conversion_path:
+                    logger.info(f"[CONVERT-ONLY] Successfully converted existing CSV files to Parquet")
+                    logger.info(f"[CONVERT-ONLY] Parquet files saved to: {conversion_path}")
+                else:
+                    logger.warning("[CONVERT-ONLY] No CSV files were converted")
+                return
+            except Exception as e:
+                logger.error(f"[CONVERT-ONLY] Conversion failed: {e}")
+                raise
+
+        # Full ETL mode (default)
+        logger.info(f"[FULL-ETL] Running full ETL pipeline...")
+        logger.info(f"[FULL-ETL] Target database: {prod_db}")
 
         # Ensure the production database exists
         create_database_if_not_exists(
@@ -88,16 +172,16 @@ class ETLOrchestrator:
         # Handle full refresh option
         if full_refresh:
             logger.info(
-                "[REFRESH] Full refresh requested - clearing tables before upsert..."
+                "[FULL-ETL] Full refresh requested - clearing tables before upsert..."
             )
             if not self.clear_production_tables(clear_tables):
-                logger.error("[REFRESH] Failed to clear tables. Aborting ETL process.")
+                logger.error("[FULL-ETL] Failed to clear tables. Aborting ETL process.")
                 return
 
         # Get current row counts for validation
-        logger.info("[VALIDATION] Getting current table row counts...")
+        logger.info("[FULL-ETL] Getting current table row counts...")
         initial_row_counts = get_table_row_counts(user, password, host, port, prod_db)
-        logger.info(f"[VALIDATION] Current row counts: {initial_row_counts}")
+        logger.info(f"[FULL-ETL] Current row counts: {initial_row_counts}")
 
         # Initialize ETL with production database
         from .etl import CNPJ_ETL
@@ -106,23 +190,23 @@ class ETLOrchestrator:
         # Run the ETL job with upsert directly to production
         try:
             logger.info(
-                "[ETL] Starting data processing and upsert to production database..."
+                "[FULL-ETL] Starting data processing and upsert to production database..."
             )
             audit_metadata = scrapper.run()
 
             if audit_metadata:
                 # Get final row counts for validation
-                logger.info("[VALIDATION] Getting final table row counts...")
+                logger.info("[FULL-ETL] Getting final table row counts...")
                 final_row_counts = get_table_row_counts(
                     user, password, host, port, prod_db
                 )
-                logger.info(f"[VALIDATION] Final row counts: {final_row_counts}")
+                logger.info(f"[FULL-ETL] Final row counts: {final_row_counts}")
 
                 logger.info(
-                    f"[SUCCESS] ETL job for {year}-{str(month).zfill(2)} completed successfully."
+                    f"[FULL-ETL] ETL job for {year}-{str(month).zfill(2)} completed successfully."
                 )
                 logger.info(
-                    f"[SUCCESS] Data successfully upserted to production database '{prod_db}'."
+                    f"[FULL-ETL] Data successfully upserted to production database '{prod_db}'."
                 )
 
                 # Log row count changes

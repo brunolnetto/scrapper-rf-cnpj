@@ -228,6 +228,107 @@ class CNPJ_ETL:
 
         return output_dir
 
+    def create_audit_metadata_from_existing_csvs(self) -> Optional[AuditMetadata]:
+        """
+        Create audit metadata from existing CSV files in EXTRACTED_FILES directory.
+        
+        This reuses the existing audit metadata infrastructure but creates synthetic
+        entries that point to existing CSV files instead of downloaded/extracted ones.
+        
+        Returns:
+            AuditMetadata: Compatible audit metadata for existing CSV files, or None if no files found
+        """
+        from pathlib import Path
+        from ..core.constants import TABLES_INFO_DICT
+        from ..core.schemas import AuditMetadata
+        from ..database.models import AuditDBSchema
+        from datetime import datetime
+        from uuid import uuid4
+        
+        extract_path = Path(self.config.paths.extract_path)
+        if not extract_path.exists():
+            logger.warning(f"Extract path does not exist: {extract_path}")
+            return None
+        
+        # Get all CSV files in extract directory
+        csv_files = list(extract_path.glob("*"))
+        csv_files = [f for f in csv_files if f.is_file() and ('CSV' in f.name.upper())]
+        
+        if not csv_files:
+            logger.warning(f"No CSV files found in: {extract_path}")
+            return None
+        
+        logger.info(f"Found {len(csv_files)} CSV files in {extract_path}")
+        
+        # Map CSV files to table names using expression patterns
+        tablename_to_files = {}
+        for table_name, table_info in TABLES_INFO_DICT.items():
+            expression = table_info.get("expression")
+            if not expression:
+                continue
+                
+            # Find CSV files matching this table's expression
+            matching_files = [f.name for f in csv_files if expression in f.name]
+            
+            if matching_files:
+                tablename_to_files[table_name] = matching_files
+                logger.info(f"Table '{table_name}': Found {len(matching_files)} CSV files")
+        
+        if not tablename_to_files:
+            logger.warning("No CSV files matched any known table patterns")
+            return None
+        
+        # Create synthetic audit metadata compatible with existing convert_to_parquet method
+        # We use "synthetic_conversion" as a fake zipfile name since the existing structure expects
+        # a tablename -> zipfile -> files mapping
+        tablename_to_zipfile_to_files = {
+            table_name: {"synthetic_conversion": files}
+            for table_name, files in tablename_to_files.items()
+        }
+        
+        # Create a minimal audit list for compatibility
+        audit_list = []
+        for table_name in tablename_to_files.keys():
+            synthetic_audit = AuditDBSchema(
+                audi_id=str(uuid4()),  # Generate a proper UUID string
+                audi_table_name=table_name,
+                audi_filenames=["synthetic_conversion"],  # Fake filename for compatibility
+                audi_file_size_bytes=0.0,  # Not relevant for convert-only
+                audi_source_updated_at=datetime.now(),
+                audi_processed_at=None,
+                audi_inserted_at=datetime.now(),  # Required field
+                audi_metadata={"convert_only": True}
+            )
+            audit_list.append(synthetic_audit)
+        
+        logger.info(f"Successfully mapped {len(tablename_to_files)} tables from existing CSV files")
+        
+        return AuditMetadata(
+            audit_list=audit_list,
+            tablename_to_zipfile_to_files=tablename_to_zipfile_to_files
+        )
+
+    def convert_existing_csvs_to_parquet(self) -> Optional[Path]:
+        """
+        Convert existing CSV files from EXTRACTED_FILES to Parquet format.
+        
+        This method reuses the existing convert_to_parquet infrastructure by creating
+        synthetic audit metadata that points to existing CSV files.
+        
+        Returns:
+            Path: Output directory with Parquet files, or None if conversion failed
+        """
+        # Create synthetic audit metadata from existing CSV files
+        audit_metadata = self.create_audit_metadata_from_existing_csvs()
+        if not audit_metadata:
+            logger.error("No existing CSV files found to convert")
+            return None
+        
+        logger.info(f"Converting {len(audit_metadata.tablename_to_zipfile_to_files)} tables from existing CSV files to Parquet...")
+        
+        # Reuse the existing convert_to_parquet method
+        return self.convert_to_parquet(audit_metadata)
+
     def create_indices(self) -> None:
         # Build indices from TABLES_INFO_DICT
         renew_table_indices = {
