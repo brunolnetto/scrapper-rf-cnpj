@@ -4,13 +4,15 @@ import argparse
 import sys
 
 # Find time bottleneck between calls
-from .core.orchestrator import ETLOrchestrator
+from .core.orchestrator import GenericOrchestrator
+from .core.etl import CNPJ_ETL
+from .core.strategies import StrategyFactory
 from .setup.config import ConfigurationService
 
 
 def validate_cli_arguments(args):
     """
-    Validate CLI argument combinations to prevent conflicting options.
+    Validate CLI argument combinations to ensure valid strategy selection.
     
     Args:
         args: Parsed command line arguments
@@ -20,37 +22,29 @@ def validate_cli_arguments(args):
     """
     errors = []
     
-    # Check for mutually exclusive download modes
-    execution_modes = [args.download_only, args.download_and_convert, args.convert_only]
-    active_modes = sum(execution_modes)
+    # Check for valid strategy combinations
+    strategy_key = (args.download, args.convert, args.load)
+    valid_combinations = [
+        (True, False, False),  # Download Only
+        (True, True, False),   # Download and Convert  
+        (False, True, False),  # Convert Only
+        (False, False, True),  # Load Only
+        (False, True, True),   # Convert and Load
+        (True, True, True),    # Full ETL
+    ]
     
-    if active_modes > 1:
-        mode_names = []
-        if args.download_only:
-            mode_names.append("--download-only")
-        if args.download_and_convert:
-            mode_names.append("--download-and-convert")
-        if args.convert_only:
-            mode_names.append("--convert-only")
-        
+    if strategy_key not in valid_combinations:
         errors.append(
-            f"Cannot specify multiple execution modes: {', '.join(mode_names)}. "
-            "These options are mutually exclusive."
+            f"Invalid strategy combination: download={args.download}, convert={args.convert}, load={args.load}. "
+            "Valid combinations: 100 (download only), 110 (download+convert), 010 (convert only), "
+            "001 (load only), 011 (convert+load), 111 (full ETL)."
         )
     
-    # Check for database-related options with download-only modes
-    non_database_modes = args.download_only or args.download_and_convert or args.convert_only
-    
-    if non_database_modes and args.full_refresh:
+    # Check for database-related options with non-database modes
+    if not args.load and (args.full_refresh or args.clear_tables):
         errors.append(
-            "Cannot use --full-refresh with non-database modes. "
-            "Database operations are not performed in download-only, download-and-convert, or convert-only modes."
-        )
-    
-    if non_database_modes and args.clear_tables:
-        errors.append(
-            "Cannot use --clear-tables with non-database modes. "
-            "Database operations are not performed in download-only, download-and-convert, or convert-only modes."
+            "Cannot use --full-refresh or --clear-tables without --load flag. "
+            "Database operations require loading data to database."
         )
     
     # Print errors and exit if any found
@@ -63,70 +57,90 @@ def validate_cli_arguments(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run CNPJ ETL pipeline.",
+        description="Run CNPJ ETL pipeline with flexible step selection.",
         epilog="""
 Examples:
-  %(prog)s --download-only --year 2024 --month 12
-    Download files only (no processing)
+  %(prog)s --download --year 2024 --month 12
+    Download files only (100)
   
-  %(prog)s --download-and-convert --year 2024 --month 12
-    Download and convert to Parquet (no database loading)
+  %(prog)s --download --convert --year 2024 --month 12
+    Download and convert to Parquet (110)
   
-  %(prog)s --convert-only
-    Convert existing CSV files from EXTRACTED_FILES to Parquet
+  %(prog)s --convert
+    Convert existing CSV files to Parquet (010)
+    
+  %(prog)s --load
+    Load existing files to database (001)
+    
+  %(prog)s --convert --load
+    Convert existing CSV files and load to database (011)
   
-  %(prog)s --year 2024 --month 12
-    Full ETL pipeline (download, convert, load to database)
+  %(prog)s --download --convert --load --year 2024 --month 12
+    Full ETL pipeline (111)
   
-  %(prog)s --year 2024 --month 12 --full-refresh true
+  %(prog)s --download --convert --load --full-refresh --year 2024 --month 12
     Full ETL with database table refresh
 
-Note: --download-only, --download-and-convert, and --convert-only are mutually exclusive.
-Database options (--full-refresh, --clear-tables) only work with full ETL mode.
+Valid combinations: 100, 110, 010, 001, 011, 111
+Default (no flags): Full ETL (111)
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--year", type=int, help="Year to process")
     parser.add_argument("--month", type=int, help="Month to process")
     
-    # Database-related options (only for full ETL mode)
-    db_group = parser.add_argument_group('Database options (full ETL mode only)')
+    # Pipeline step flags
+    step_group = parser.add_argument_group('Pipeline steps (combine as needed)')
+    step_group.add_argument(
+        "--download", action="store_true", help="Download files from source"
+    )
+    step_group.add_argument(
+        "--convert", action="store_true", help="Convert files to Parquet format"
+    )
+    step_group.add_argument(
+        "--load", action="store_true", help="Load files to database"
+    )
+    
+    # Database-related options (only when loading)
+    db_group = parser.add_argument_group('Database options (requires --load)')
     db_group.add_argument(
-        "--full-refresh", type=bool, default=False, help="Full refresh all tables flag"
+        "--full-refresh", action="store_true", help="Full refresh all tables before loading"
     )
     db_group.add_argument(
         "--clear-tables", type=str, default="", help="Comma-separated tables to clear"
     )
-    
-    # Execution mode options (mutually exclusive)
-    mode_group = parser.add_argument_group('Execution modes (mutually exclusive)')
-    mode_group.add_argument(
-        "--download-only", action="store_true", help="Only download files without processing"
-    )
-    mode_group.add_argument(
-        "--download-and-convert", action="store_true", help="Download files and convert to Parquet, skip database loading"
-    )
-    mode_group.add_argument(
-        "--convert-only", action="store_true", help="Convert existing CSV files from EXTRACTED_FILES to Parquet, skip download"
-    )
 
     args = parser.parse_args()
 
+    # Handle default case (no flags = full ETL)
+    if not (args.download or args.convert or args.load):
+        args.download = True
+        args.convert = True
+        args.load = True
+
     # Validate CLI argument combinations
     validate_cli_arguments(args)
-
-    # Find time bottleneck between calls
+    
+    # Create configuration and pipeline
     config_service = ConfigurationService()
-    orchestrator = ETLOrchestrator(config_service)
+    pipeline = CNPJ_ETL(config_service)
+    
+    # Create strategy based on boolean flags
+    strategy = StrategyFactory.create_strategy(
+        download=args.download,
+        convert=args.convert,
+        load=args.load
+    )
+    
+    # Create orchestrator with strategy
+    orchestrator = GenericOrchestrator(pipeline, strategy, config_service)
 
+    # Run with parameters
     orchestrator.run(
         year=args.year,
         month=args.month,
         full_refresh=args.full_refresh,
         clear_tables=args.clear_tables,
-        download_only=args.download_only,
-        download_and_convert=args.download_and_convert,
-        convert_only=args.convert_only,
     )
 
 if __name__ == "__main__":

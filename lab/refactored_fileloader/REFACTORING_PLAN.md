@@ -38,96 +38,60 @@ FileLoader → Ingestors (CSV/Parquet) → AsyncUploader → Database
 
 ## Refactoring Strategy
 
-### Phase 1: Foundation and Detection Enhancement
-**Duration:** 2-3 hours  
-**Risk:** Low  
-**Priority:** High
+## Loader-Only Migration and Centralization
 
-#### 1.1 Configuration Enhancement
-**File:** `src/setup/config.py`
+### 1. Exclusive Use of Enhanced Loader for File IO
+**Action:** All file reading, detection, and batch generation must be routed through the enhanced loader (`lab/refactored_fileloader/src/file_loader.py`).
 
-Add enhanced loading configuration to `ETLConfig`:
-```python
-@dataclass
-class ETLConfig:
-    # Existing fields...
-    
-    # Enhanced loading features
-    enhanced_loading_enabled: bool = False
-    robust_file_detection: bool = True
-    enable_parallel_processing: bool = False
-    internal_concurrency: int = 3
-    manifest_tracking: bool = False
-    
-    # Performance tuning
-    sub_batch_size: int = 5000
-    async_pool_min_size: int = 1
-    async_pool_max_size: int = 10
-```
+- Remove direct pandas/polars file IO from `UnifiedLoader` and any ETL/service classes.
+- In `UnifiedLoader`, replace `pd.read_csv`, `pl.read_parquet`, and chunking logic with calls to the enhanced loader’s batch generator and detection.
+- All file format detection must use the robust detection from the enhanced loader.
 
-Environment variables:
-```env
-# Enhanced Loading Configuration
-ENHANCED_LOADING_ENABLED=true
-ROBUST_FILE_DETECTION=true
-ENABLE_PARALLEL_PROCESSING=false
-INTERNAL_CONCURRENCY=3
-MANIFEST_TRACKING=true
-SUB_BATCH_SIZE=5000
-ASYNC_POOL_MIN_SIZE=1
-ASYNC_POOL_MAX_SIZE=10
-```
+### 2. Deprecate and Refactor Legacy Loader
+**Action:** Mark legacy loader code as deprecated and refactor to delegate to the enhanced loader.
 
-#### 1.2 Enhanced File Detection Integration
-**File:** `src/utils/file_detection.py` (new)
+- Add `@deprecated` comments to all pandas-based methods in `UnifiedLoader`.
+- Refactor `load_csv_file`, `load_parquet_file`, and `load_file` to call the enhanced loader for reading and batching, only retaining upsert logic if not yet migrated.
+- Remove pandas chunking and upsert logic as soon as the enhanced loader’s batch output is compatible with the database upsert.
 
-Create wrapper for robust detection:
-```python
-"""
-Enhanced file detection module integrating refactored file loader.
-"""
-from pathlib import Path
-from typing import Optional
-from ..setup.logging import logger
+### 3. Update ETL Entry Points and Strategies
+**Action:** Ensure all ETL, strategy, and service classes use the enhanced loader for file IO.
 
-def detect_file_type_enhanced(file_path: Path) -> str:
-    """
-    Enhanced file type detection using refactored file loader.
-    Falls back to basic detection if enhanced loader is not available.
-    """
-    try:
-        from lab.refactored_fileloader.src.file_loader import FileLoader
-        return FileLoader.detect_file_format(str(file_path))
-    except ImportError as e:
-        logger.warning(f"Enhanced file detection not available: {e}")
-        return _basic_file_detection(file_path)
-    except Exception as e:
-        logger.error(f"Enhanced detection failed for {file_path}: {e}")
-        return _basic_file_detection(file_path)
+- In `ETLOrchestrator`, `CNPJ_ETL`, `DataLoadingService`, and all strategies, replace any legacy loader instantiation with the enhanced loader.
+- Remove fallback logic to legacy loader except for a single emergency/rollback path, controlled by a feature flag.
+- Remove any direct pandas/polars file IO in these classes.
 
-def _basic_file_detection(file_path: Path) -> str:
-    """Fallback basic detection (current implementation)."""
-    # Current logic from UnifiedLoader.load_file()
-    pass
-```
+### 4. Centralize Error Handling and Auditing
+**Action:** Ensure audit/manifest logic is triggered only from the enhanced loader.
 
-#### 1.3 Update UnifiedLoader Detection
-**File:** `src/database/dml.py`
+- Move all audit/manifest creation to hooks in the enhanced loader.
+- Remove audit logic from legacy loader and ETL classes.
+- Ensure error handling is standardized and centralized in the enhanced loader, with clear logging and fallback only for rollback scenarios.
 
-Replace basic detection in `UnifiedLoader.load_file()`:
-```python
-def load_file(self, table_info: TableInfo, file_path: Union[str, Path], ...):
-    file_path = Path(file_path)
-    
-    # Use enhanced detection
-    try:
-        from utils.file_detection import detect_file_type_enhanced
-        file_type = detect_file_type_enhanced(file_path)
-    except ImportError:
-        # Keep existing fallback logic
-        logger.warning("Enhanced file detection not available, using basic detection")
-        # ... existing basic detection code
-```
+### 5. Documentation and Migration Guide
+**Action:** Clearly document that the enhanced loader is the only supported file IO path.
+
+- Update `docs/ENHANCED_LOADING.md` and the main README to state that all file IO must use the enhanced loader.
+- Add migration notes to legacy loader files, indicating deprecation and the new workflow.
+- Document the emergency rollback path and how to re-enable legacy loader only if needed.
+
+### 6. Testing and Validation
+**Action:** Ensure all integration and performance tests use the enhanced loader.
+
+- Update or create tests to verify that no legacy loader code is executed during normal ETL runs.
+- Add tests for error handling, audit/manifest creation, and rollback scenarios.
+
+---
+
+**Summary of Key Changes:**
+- All file IO (reading, detection, batching) is routed through the enhanced loader.
+- Legacy loader code is deprecated and refactored to delegate to the enhanced loader.
+- ETL, strategy, and service classes use only the enhanced loader for file IO.
+- Error handling and audit/manifest logic are centralized in the enhanced loader.
+- Documentation is updated to reflect the new single source of truth for file IO.
+- Fallback to legacy loader is only available for emergency/rollback, controlled by a feature flag.
+
+This plan ensures a clean migration, eliminates duplication, and makes the enhanced loader the exclusive entry point for all file IO in your ETL pipeline.
 
 ### Phase 2: Enhanced Strategy Implementation
 **Duration:** 4-5 hours  
@@ -578,34 +542,33 @@ def benchmark_loading_strategies():
 **Priority:** High
 
 #### 6.1 Feature Flag Implementation
+
 **File:** `src/core/etl.py`
 
-Add feature flag support:
+**Assertive Migration:**
+The enhanced loader is now the exclusive, production-grade solution for all ETL file IO. All legacy loader code will be removed. No runtime fallback logic remains. All ETL, strategy, and service classes must use the enhanced loader.
+
+Example implementation:
 ```python
 def _init_loading_strategy(self):
-    """Initialize appropriate loading strategy based on configuration."""
-    if self.config.etl.enhanced_loading_enabled:
-        try:
-            from .loading.enhanced_strategies import EnhancedDataLoadingStrategy
-            self.loading_strategy = EnhancedDataLoadingStrategy(self.config)
-            logger.info("Enhanced loading strategy enabled")
-        except ImportError as e:
-            logger.warning(f"Enhanced loading not available: {e}")
-            from .loading.strategies import DataLoadingStrategy
-            self.loading_strategy = DataLoadingStrategy()
-    else:
-        from .loading.strategies import DataLoadingStrategy
-        self.loading_strategy = DataLoadingStrategy()
+    """Initialize the only supported loading strategy."""
+    from .loading.enhanced_strategies import EnhancedDataLoadingStrategy
+    self.loading_strategy = EnhancedDataLoadingStrategy(self.config)
+    logger.info("Enhanced loading strategy enabled (legacy loader removed)")
 ```
 
+**Rollback:**
+Rollback is only possible by reverting to a previous commit in version control. No runtime fallback is maintained.
+
 #### 6.2 Documentation Updates
+
 **File:** `docs/ENHANCED_LOADING.md` (new)
 
 ```markdown
 # Enhanced Loading System
 
 ## Overview
-The enhanced loading system provides improved reliability, performance, and audit capabilities.
+The enhanced loader is the only supported and maintained solution for all ETL file IO. Legacy loader code is deprecated and will be removed in the next release cycle. No runtime fallback remains.
 
 ## Configuration
 Add to your `.env` file:

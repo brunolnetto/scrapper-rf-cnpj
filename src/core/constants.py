@@ -9,33 +9,67 @@ from ..setup.logging import logger
 
 # Constants
 class Encoding(Enum):
-    LATIN1 = "latin-1"
+    LATIN1 = "latin-1" 
     UTF8 = "utf-8"
 
-
-def empresa_transform_map(artifact: Any) -> Any:
+def empresa_transform_map(row_dict: Dict[str, str]) -> Dict[str, str]:
     """
-    Transform map for 'empresa' artifact.
-
+    Transform map for 'empresa' row data.
+    Pure Python implementation - converts capital_social from Brazilian format to standard format.
+    
+    Handles:
+    - Simple comma decimal: "1000,50" → "1000.50"  
+    - Thousands separators: "1.234.567,89" → "1234567.89"
+    - Edge cases: empty, invalid, etc.
+    
     Args:
-        artifact: The artifact to transform.
-
+        row_dict: Dictionary representing a single row
+        
     Returns:
-        The transformed artifact.
+        Transformed row dictionary
     """
     try:
-        comma_to_period = lambda x: x.replace(",", ".")
-        artifact["capital_social"] = artifact["capital_social"].apply(comma_to_period)
-        artifact["capital_social"] = artifact["capital_social"].astype(float)
+        if "capital_social" in row_dict and row_dict["capital_social"]:
+            original_value = row_dict["capital_social"].strip()
+            
+            if not original_value:
+                return row_dict
+            
+            # Brazilian number format conversion
+            # Pattern: "1.234.567,89" → "1234567.89"
+            if "," in original_value:
+                # Split on comma (decimal separator in Brazilian format)
+                parts = original_value.split(",")
+                if len(parts) == 2:
+                    # Remove dots (thousands separators) from integer part
+                    integer_part = parts[0].replace(".", "")
+                    decimal_part = parts[1]
+                    
+                    # Reconstruct as standard format
+                    converted_value = f"{integer_part}.{decimal_part}"
+                    
+                    try:
+                        # Validate it's a valid number
+                        float(converted_value)
+                        row_dict["capital_social"] = converted_value
+                        logger.debug(f"Converted capital_social: {original_value} → {converted_value}")
+                    except ValueError:
+                        # Keep original value if conversion fails
+                        logger.warning(f"Could not convert capital_social: {original_value}")
+                else:
+                    # Multiple commas - invalid format, keep original
+                    logger.warning(f"Invalid capital_social format (multiple commas): {original_value}")
+            # If no comma, assume it's already in correct format or integer
+            
     except Exception as e:
-        logger.error(f"Error transforming 'empresa' artifact: {e}")
-        raise ValueError(f"Error transforming 'empresa' artifact: {e}")
-    return artifact
-
+        logger.warning(f"Transform error for empresa row: {e}")
+    
+    return row_dict
 
 # Default transform function (no-op)
-def default_transform_map(artifact: Any) -> Any:
-    return artifact
+def default_transform_map(row_dict: Dict[str, str]) -> Dict[str, str]:
+    """Default no-op transform that returns row unchanged."""
+    return row_dict
 
 
 # Common table encoding
@@ -45,16 +79,6 @@ TABLES_INFO_DICT: Dict[str, Dict[str, Any]] = {
     "empresa": {
         "label": "Empresa",
         "group": "empresas",
-        "index_columns": ["cnpj_basico"],
-        "columns": [
-            "cnpj_basico",
-            "razao_social",
-            "natureza_juridica",
-            "qualificacao_responsavel",
-            "capital_social",
-            "porte_empresa",
-            "ente_federativo_responsavel",
-        ],
         "expression": "EMPRE",
         "transform_map": empresa_transform_map,
         "encoding": DEFAULT_ENCODING,
@@ -62,39 +86,6 @@ TABLES_INFO_DICT: Dict[str, Dict[str, Any]] = {
     "estabelecimento": {
         "label": "Estabelecimento",
         "group": "estabelecimentos",
-        "index_columns": ["cnpj_basico", "cnpj_ordem", "cnpj_dv"],
-        "columns": [
-            "cnpj_basico",
-            "cnpj_ordem",
-            "cnpj_dv",
-            "identificador_matriz_filial",
-            "nome_fantasia",
-            "situacao_cadastral",
-            "data_situacao_cadastral",
-            "motivo_situacao_cadastral",
-            "nome_cidade_exterior",
-            "pais",
-            "data_inicio_atividade",
-            "cnae_fiscal_principal",
-            "cnae_fiscal_secundaria",
-            "tipo_logradouro",
-            "logradouro",
-            "numero",
-            "complemento",
-            "bairro",
-            "cep",
-            "uf",
-            "municipio",
-            "ddd_1",
-            "telefone_1",
-            "ddd_2",
-            "telefone_2",
-            "ddd_fax",
-            "fax",
-            "correio_eletronico",
-            "situacao_especial",
-            "data_situacao_especial",
-        ],
         "expression": "ESTABELE",
         "transform_map": default_transform_map,
         "encoding": DEFAULT_ENCODING,
@@ -102,20 +93,6 @@ TABLES_INFO_DICT: Dict[str, Dict[str, Any]] = {
     "socios": {
         "label": "Socios",
         "group": "socios",
-        "index_columns": ["cnpj_basico"],
-        "columns": [
-            "cnpj_basico",
-            "identificador_socio",
-            "nome_socio_razao_social",
-            "cpf_cnpj_socio",
-            "qualificacao_socio",
-            "data_entrada_sociedade",
-            "pais",
-            "representante_legal",
-            "nome_do_representante",
-            "qualificacao_representante_legal",
-            "faixa_etaria",
-        ],
         "expression": "SOCIO",
         "transform_map": default_transform_map,
         "encoding": DEFAULT_ENCODING        
@@ -123,15 +100,6 @@ TABLES_INFO_DICT: Dict[str, Dict[str, Any]] = {
     "simples": {
         "label": "Simples",
         "group": "simples",
-        "columns": [
-            "cnpj_basico",
-            "opcao_pelo_simples",
-            "data_opcao_simples",
-            "data_exclusao_simples",
-            "opcao_mei",
-            "data_opcao_mei",
-            "data_exclusao_mei",
-        ],
         "expression": "SIMPLES",
         "transform_map": default_transform_map,
         "encoding": DEFAULT_ENCODING,
@@ -139,7 +107,6 @@ TABLES_INFO_DICT: Dict[str, Dict[str, Any]] = {
     "cnae": {
         "label": "CNAEs",
         "group": "cnaes",
-        "columns": ["codigo", "descricao"],
         "expression": "CNAE",
         "transform_map": default_transform_map,
         "encoding": DEFAULT_ENCODING,
@@ -147,14 +114,13 @@ TABLES_INFO_DICT: Dict[str, Dict[str, Any]] = {
     "moti": {
         "label": "Motivos",
         "group": "motivos",
-        "columns": ["codigo", "descricao"],
         "expression": "MOTI",
+        "transform_map": default_transform_map,
         "encoding": DEFAULT_ENCODING,
     },
     "munic": {
         "label": "Municipios",
         "group": "municipios",
-        "columns": ["codigo", "descricao"],
         "expression": "MUNIC",
         "transform_map": default_transform_map,
         "encoding": DEFAULT_ENCODING,
@@ -162,7 +128,6 @@ TABLES_INFO_DICT: Dict[str, Dict[str, Any]] = {
     "natju": {
         "label": "Naturezas",
         "group": "naturezas",
-        "columns": ["codigo", "descricao"],
         "expression": "NATJU",
         "transform_map": default_transform_map,
         "encoding": DEFAULT_ENCODING,
@@ -170,7 +135,6 @@ TABLES_INFO_DICT: Dict[str, Dict[str, Any]] = {
     "pais": {
         "label": "Paises",
         "group": "paises",
-        "columns": ["codigo", "descricao"],
         "expression": "PAIS",
         "transform_map": default_transform_map,
         "encoding": DEFAULT_ENCODING,
@@ -178,7 +142,6 @@ TABLES_INFO_DICT: Dict[str, Dict[str, Any]] = {
     "quals": {
         "label": "Qualificacoes",
         "group": "qualificacoes",
-        "columns": ["codigo", "descricao"],
         "expression": "QUALS",
         "transform_map": default_transform_map,
         "encoding": DEFAULT_ENCODING,

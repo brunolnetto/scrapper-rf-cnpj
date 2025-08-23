@@ -85,12 +85,12 @@ lint:
 
 # Run the application
 run:
-    python3 ./src/main.py
+    python3 -m src.main
 
 # Run ETL with specific year and month
 run-etl year month:
-    python3 ./src/main.py --year {{year}} --month {{month}}
+    python3 -m src.main --year {{year}} --month {{month}}
 
 # Run ETL for current date
 run-current:
-    python3 ./src/main.py 
+    python3 -m src.main 

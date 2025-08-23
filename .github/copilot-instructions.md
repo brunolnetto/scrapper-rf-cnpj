@@ -1,29 +1,29 @@
-# Instruções para Agentes IA - Projeto ETL CNPJ
+# AI Agent Instructions - CNPJ ETL Project
 
-## Visão Geral do Projeto
-Pipeline ETL de produção que processa dados públicos de CNPJ da Receita Federal do Brasil (~17GB descompactados) no PostgreSQL. Sistema com auditoria completa, carregamento incremental e otimizações de performance baseado em web scraping dinâmico.
+## Project Overview
+Production ETL pipeline that processes Brazilian Federal Revenue public CNPJ data (~17GB uncompressed) into PostgreSQL. Features high-performance async processing, comprehensive auditing, incremental loading, and robust file detection.
 
-## Arquitetura Central
-- **Fluxo Principal**: `src/main.py` → `ETLOrchestrator` → `CNPJ_ETL` → Download/Extract/Convert/Load
-- **Configuração**: `ConfigurationService` em `src/setup/config.py` - fonte única da verdade
-- **Bancos Duplos**: Produção (`MainBase`) + Auditoria (`AuditBase`) com bases SQLAlchemy separadas
-- **Auto-detecção**: Parquet preferencial sobre CSV via `UnifiedLoader` com detecção robusta
-- **Lazy Loading**: Recursos inicializam sob demanda com pattern `@property`
-- **Strategy Pattern**: `DataLoadingStrategy` para carregamento unificado
+## Core Architecture
+- **Main Flow**: `src/main.py` → `ETLOrchestrator` → `CNPJ_ETL` → Download/Extract/Convert/Load
+- **Configuration**: `ConfigurationService` in `src/setup/config.py` - single source of truth
+- **Dual Databases**: Production (`MainBase`) + Audit (`AuditBase`) with separate SQLAlchemy bases
+- **Enhanced Loading**: `EnhancedUnifiedLoader` with async processing and 4-layer file detection
+- **Lazy Loading**: Resources initialize on-demand with `@property` pattern
+- **Simplified Strategy**: Clean `DataLoadingStrategy` (147 lines) for unified loading
 
-## Padrões Críticos de Desenvolvimento
+## Critical Development Patterns
 
-### Acesso a Configurações
+### Configuration Access
 ```python
-# SEMPRE use ConfigurationService - nunca env vars direto
+# ALWAYS use ConfigurationService - never direct env vars
 config_service = ConfigurationService()
-db_config = config_service.databases['main']  # ou 'audit'
+db_config = config_service.databases['main']  # or 'audit'
 etl_config = config_service.etl  # ETL_CHUNK_SIZE, etc.
 ```
 
-### Inicialização de Recursos (Lazy Loading)
+### Resource Initialization (Lazy Loading)
 ```python
-# Padrão obrigatório em CNPJ_ETL - evita conexões desnecessárias
+# Mandatory pattern in CNPJ_ETL - avoids unnecessary connections
 @property
 def database(self):
     if self._database is None:
@@ -39,104 +39,155 @@ def data_loader(self):
     return self._data_loader
 ```
 
-### Carregamento de Dados (Prioridade Parquet)
+### Enhanced Data Loading
 ```python
-# Strategy Pattern - sempre verificar Parquet primeiro
-parquet_file = path_config.conversion_path / f"{table_name}.parquet"
-if parquet_file.exists():
-    success, error, rows = loader.load_parquet_file(table_info, parquet_file)
-else:
-    # fallback para CSV múltiplos
-    success, error, rows = loader.load_csv_file(table_info, csv_files)
+# Unified loading via factory pattern (backward compatible)
+from src.database.dml import UnifiedLoader
+
+# Creates EnhancedUnifiedLoader internally
+loader = UnifiedLoader(database, config)
+
+# Auto-detection with robust validation + async processing
+success, error, rows = loader.load_file(table_info, file_path)
+
+# Supports both CSV and Parquet with transforms
+success, error, rows = loader.load_csv_file(table_info, csv_file)
+success, error, rows = loader.load_parquet_file(table_info, parquet_file)
 ```
 
-### Detecção Robusta de Arquivos (lab/refactored_fileloader)
+### File Detection & Processing
 ```python
-# Padrão robusto de 4 camadas para detecção de formato
-from lab.refactored_fileloader.src.file_loader import FileLoader
+# Integrated file detection with content validation
+from src.utils.file_loader import FileLoader
 
-# Detecção automática com validação de conteúdo
-loader = FileLoader(file_path)
-detected_format = loader.get_format()  # 'csv' ou 'parquet'
+# 4-layer detection: existence, extension, content, fallback
+loader = FileLoader(file_path, encoding='utf-8')
+detected_format = loader.get_format()  # 'csv' or 'parquet'
 
-# Geração de batches unificada
+# Streaming batch generation with encoding support
 for batch in loader.batch_generator(headers, chunk_size):
-    process_batch(batch)
+    process_batch(batch)  # List[Tuple] format
 ```
 
-## Comandos Essenciais
+## Essential Commands
 
-### Execução ETL
+### ETL Execution
 ```bash
-# Via just (recomendado) - comando task runner
-just run                    # mês/ano atual
-just run-etl 2024 12       # período específico
+# Via just (recommended) - task runner command
+just run                    # current month/year
+just run-etl 2024 12       # specific period
 
-# Execução direta com argumentos CLI  
+# Direct execution with CLI args  
 python -m src.main --year 2024 --month 12 --full-refresh true
-python -m src.main --download-only --year 2024 --month 12  # só download
-python -m src.main --convert-only  # só conversão CSV→Parquet
+python -m src.main --download-only --year 2024 --month 12  # download only
+python -m src.main --convert-only  # CSV→Parquet conversion only
 ```
 
-### Desenvolvimento
+### Development
 ```bash
-just install    # uv para dependências (package manager moderno)
-just lint      # ruff com detecção de imports não utilizados
-just clean     # limpar logs e cache
-just search "token"  # buscar no código
+just install    # uv for dependencies (modern package manager)
+just lint      # ruff with unused import detection
+just clean     # clear logs and cache
+just search "token"  # search codebase
 ```
 
-### Dependências e Build
-- **Package Manager**: `uv` (moderno, rápido) sobre pip tradicional
-- **Linting**: `ruff` com regras F (Pyflakes) + ARG (unused arguments)
-- **Python**: >=3.9, configurado via `pyproject.toml`
+### Dependencies and Build
+- **Package Manager**: `uv` (modern, fast) over traditional pip
+- **Core**: asyncpg (async database), pyarrow (file processing), sqlalchemy (ORM)
+- **Performance**: polars (CSV→Parquet conversion only)
+- **Linting**: `ruff` with F (Pyflakes) + ARG (unused arguments) rules
+- **Python**: >=3.9, configured via `pyproject.toml`
 
-## Estrutura de Dados Específica
+### Performance Configuration
+```bash
+# Enhanced loading configuration in .env
+ETL_CHUNK_SIZE=50000                    # Main batch size
+ETL_SUB_BATCH_SIZE=5000                # Internal sub-batch size
+ETL_INTERNAL_CONCURRENCY=3             # Parallel sub-batches per file
+ETL_ASYNC_POOL_MIN_SIZE=2              # Connection pool minimum
+ETL_ASYNC_POOL_MAX_SIZE=10             # Connection pool maximum
+```
 
-### Tabelas Principais (indexadas por `cnpj_basico`)
-- `empresa` (~50M registros) - dados da matriz, capital social transformado
-- `estabelecimento` (~60M) - filiais com `cnpj_ordem` + `cnpj_dv`
-- `socios` (~30M) - dados dos sócios
+## Data Structure Specifics
+
+### Main Tables (indexed by `cnpj_basico`)
+- `empresa` (~50M records) - company headquarters, capital_social transformed
+- `estabelecimento` (~60M) - branches with `cnpj_ordem` + `cnpj_dv`
+- `socios` (~30M) - partner data
 - `simples` (~40M) - MEI/Simples Nacional
 
-### Transformações de Dados
+### Data Transformations
 ```python
-# Exemplo de transform_map específico para empresa
-def empresa_transform_map(artifact):
-    artifact["capital_social"] = artifact["capital_social"].str.replace(",", ".")
-    artifact["capital_social"] = artifact["capital_social"].astype(float)
-    return artifact
+# Row-level transforms (pure Python, no pandas dependency)
+def empresa_transform_map(row_dict: Dict[str, str]) -> Dict[str, str]:
+    """Converts Brazilian number format to standard format"""
+    if "capital_social" in row_dict and row_dict["capital_social"]:
+        # Handle: "1.234.567,89" → "1234567.89"
+        value = row_dict["capital_social"]
+        if "," in value:
+            parts = value.split(",")
+            if len(parts) == 2:
+                integer_part = parts[0].replace(".", "")  # Remove thousands separators
+                decimal_part = parts[1]
+                row_dict["capital_social"] = f"{integer_part}.{decimal_part}"
+    return row_dict
+
+# Applied automatically by EnhancedUnifiedLoader during processing
+# All other tables use default_transform_map (no-op)
 ```
 
-### Sistema de Auditoria
-- **Rastreamento**: Todo arquivo processado gera registro em `AuditDB`
-- **Metadatas**: `AuditService` centraliza criação/inserção de auditorias
-- **Validação**: Contagem inicial vs final por tabela
+### Audit System
+- **Tracking**: Every processed file generates record in `AuditDB`
+- **Metadata**: `AuditService` centralizes audit creation/insertion
+- **Validation**: Initial vs final row counts per table
 
-## Fluxo de Processamento
+## Processing Flow
 
-### Pipeline Completo
-1. **Scraping**: `scrap_data()` - extrai metadados da fonte gov.br
-2. **Download**: Arquivos ZIP para `data/DOWNLOAD_FILES/`
-3. **Extração**: CSV para `data/EXTRACTED_FILES/`
-4. **Conversão**: Parquet para `data/CONVERTED_FILES/` (otimização)
-5. **Carregamento**: Upsert PostgreSQL com auditoria
+### Complete Pipeline
+1. **Scraping**: `scrap_data()` - extracts metadata from gov.br source
+2. **Download**: ZIP files to `data/DOWNLOAD_FILES/`
+3. **Extraction**: CSV to `data/EXTRACTED_FILES/`
+4. **Conversion**: Parquet to `data/CONVERTED_FILES/` (optimization)
+5. **Loading**: PostgreSQL upsert with auditing
 
-### Arquitetura de Carregamento Refatorada
-- **Detecção Robusta**: `lab/refactored_fileloader` com validação multi-camadas
-- **Batch Processing**: Ingestors especializados para CSV/Parquet
-- **Paralelismo Interno**: Sub-batches concorrentes dentro do mesmo arquivo
-- **Auditoria Avançada**: Manifest com checksums e metadados completos
+### Enhanced Loading Architecture
+- **Robust Detection**: 4-layer file validation (existence, extension, content, fallback)
+- **Batch Processing**: Streaming ingestors for CSV/Parquet with encoding support
+- **Internal Parallelism**: Async concurrent sub-batches within same file
+- **Advanced Auditing**: Complete manifest tracking with checksums and metadata
+- **Memory Efficient**: Streaming processing with configurable batch sizes
+- **Transform Support**: Row-level transforms applied during processing
 
-### Modo Desenvolvimento
-- Filtragem por tamanho de arquivo (`development_file_size_limit`)
-- Logs estruturados JSON em `logs/YYYY-MM-DD/HH_MM/`
-- Configuração via `ENVIRONMENT=development`
-- Detecção automática: `config.is_development_mode()`
+### Development Mode
+- Size filtering by `development_file_size_limit`
+- Structured JSON logs in `logs/YYYY-MM-DD/HH_MM/`
+- Configuration via `ENVIRONMENT=development`
+- Auto-detection: `config.is_development_mode()`
 
-## Troubleshooting Comum
-- **Erro conexão**: Verificar `.env` e dual database setup
-- **Timeout download**: Web scraping gov.br pode falhar - retry automático
-- **Memória insuficiente**: Ajustar `ETL_CHUNK_SIZE` (padrão 50000)
-- **Espaço disco**: Monitorar `data/` (~50GB necessários)
-- **Formato inválido**: `UnifiedLoader` detecta robustamente CSV/Parquet
+## Partner/Stakeholder Uniqueness
+Based on CNPJ metadata documentation, partners should be uniquely identified by:
+```python
+# Theoretical PK (from documentation)
+PRIMARY KEY (cnpj_basico, identificador_socio, cpf_cnpj_socio, qualificacao_socio)
+
+# Current implementation (works in practice due to UPSERT deduplication)
+PRIMARY KEY (cnpj_basico, identificador_socio)
+```
+- Use analysis tools in `lab/refactored_fileloader/tools/analyze_socios_*.py` to validate uniqueness
+- Current PK achieves 100% uniqueness due to UPSERT handling of ~47% source duplicates
+
+## Performance Testing
+```bash
+# Comprehensive performance analysis for real CNPJ data
+cd lab/refactored_fileloader
+python tools/benchmark_socios_ingestion.py  # Multi-config benchmark
+python tools/analyze_socios_uniqueness.py   # PK analysis
+python tools/deep_socios_analysis.py        # Source vs DB comparison
+```
+
+## Troubleshooting
+- **Connection errors**: Check `.env` and dual database setup
+- **Download timeouts**: gov.br web scraping can fail - auto retry
+- **Memory issues**: Adjust `ETL_CHUNK_SIZE` (default 50000)
+- **Disk space**: Monitor `data/` (~50GB needed)
+- **Invalid format**: `UnifiedLoader` robustly detects CSV/Parquet

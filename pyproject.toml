@@ -40,13 +40,13 @@ dependencies = [
 ]
 
 [tool.ruff]
-select = [
+lint.select = [
     "F",    # Pyflakes: unused imports, unused variables, etc.
     "ARG",  # flake8-unused-arguments: unused function arguments
 ]
 
 # Optional: if you only want warnings for unused functions/args
-ignore = []
+lint.ignore = []
 
 [dependency-groups]
 dev = [
