@@ -67,16 +67,14 @@ def extract_primary_keys(table_info) -> list[str]:
         List of primary key column names
     """
     try:
-        # Try to get primary keys from constants
-        from ...core.constants import TABLES_INFO_DICT
-        table_dict = TABLES_INFO_DICT.get(table_info.table_name, {})
-        if 'index_columns' in table_dict:
-            return table_dict['index_columns']
+        # Try to get primary keys from SQLAlchemy model
+        from ...utils.model_utils import get_model_by_table_name
+        model = get_model_by_table_name(table_info.table_name)
+        pk_columns = [col.name for col in model.__table__.primary_key.columns]
+        if pk_columns:
+            return pk_columns
     except Exception:
         pass
-    
-    # Default fallback for Brazilian CNPJ data
-    return ['cnpj_basico']
 
 
 def get_column_types_mapping(table_info) -> dict[str, str]:

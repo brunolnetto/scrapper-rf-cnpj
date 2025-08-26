@@ -51,8 +51,12 @@ async def async_upsert(
     filename = os.path.basename(file_path)
     filesize = None
     checksum = None
-    
+
     emit_log("file_processing_started", run_id=run_id, filename=filename, file_path=file_path)
+    # Debug: Log headers and types
+    logging.debug(f"[DEBUG] Table: {table}, Headers: {headers}")
+    if types:
+        logging.debug(f"[DEBUG] Types mapping: {types}")
     try:
         with open(file_path, "rb") as f:
             data = f.read()
@@ -65,18 +69,26 @@ async def async_upsert(
         await conn.execute(base.ensure_table_sql(table, headers, base.map_types(headers, types), primary_keys))
         # Ensure manifest table exists using centralized schema
         await base.ensure_manifest_table(conn)
+        # Debug: Confirm table creation
+        logging.debug(f"[DEBUG] ensure_table_sql executed for {table}")
 
     async with pool.acquire() as conn:
         rows_total = 0
         batch_idx = 0
-        
         # Create semaphore for internal concurrency if enabled
         internal_semaphore = asyncio.Semaphore(internal_concurrency) if enable_internal_parallelism else None
-        
+        # Debug: Track first batch for inspection
+        first_batch_logged = False
         for batch in batch_gen(file_path, headers, chunk_size):
             emit_log("batch_started", run_id=run_id, batch_idx=batch_idx, 
                     batch_size=len(batch), parallel_mode=enable_internal_parallelism)
-            
+            # Debug: Log first batch and sample row
+            if not first_batch_logged:
+                logging.debug(f"[DEBUG] First batch (batch_idx={batch_idx}): {batch[:2]}")
+                if batch:
+                    for i, row in enumerate(batch[:2]):
+                        logging.debug(f"[DEBUG] Row {i} values: {row}")
+                first_batch_logged = True
             if enable_internal_parallelism:
                 # Process sub-batches in parallel
                 rows_processed = await _process_batch_parallel(
@@ -89,14 +101,11 @@ async def async_upsert(
                     conn, batch, sub_batch_size, table, headers, primary_keys,
                     run_id, batch_idx, max_retries, types
                 )
-            
             rows_total += rows_processed
             batch_idx += 1
-
         emit_log("file_completed", run_id=run_id, filename=filename, rows=rows_total,
                 parallel_mode=enable_internal_parallelism)
         await record_manifest(conn, filename, "success", checksum, filesize, run_id, rows=rows_total)
-    
     return rows_total  # Return the total number of rows processed
 
 

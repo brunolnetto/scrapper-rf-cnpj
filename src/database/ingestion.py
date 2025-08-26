@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Tuple, Optional, Union, List
 from ..setup.logging import logger
 from ..core.schemas import TableInfo
-from ..database.schemas import Database
+from .schemas import Database
 from ..utils.file_loader.file_loader import FileLoader
 from ..utils.file_loader.uploader import async_upsert
 from ..utils.file_loader.connection_factory import (
@@ -34,7 +34,7 @@ class EnhancedUnifiedLoader:
     def __init__(self, database: Database, config=None):
         self.database = database
         self.config = config
-        logger.info("[EnhancedLoader] Initialized with async support")
+        logger.info("[UnifiedLoader] Initialized with async support")
     
     def load_file(
         self,
@@ -72,20 +72,20 @@ class EnhancedUnifiedLoader:
             else:
                 encoding = 'utf-8'  # Default encoding
             
-            logger.info(f"[EnhancedLoader] Loading file: {file_path.name} (encoding: {encoding})")
+            logger.info(f"[UnifiedLoader] Loading file: {file_path.name} (encoding: {encoding})")
             
             # Use lab's robust file detection
             file_loader = FileLoader(str(file_path), encoding=encoding)
             detected_format = file_loader.get_format()
             
-            logger.info(f"[EnhancedLoader] Detected format: {detected_format}")
+            logger.info(f"[UnifiedLoader] Detected format: {detected_format}")
             
             # Load using async processing
             return asyncio.run(self._async_load_file(table_info, file_path, file_loader, chunk_size, max_retries))
             
         except Exception as e:
             error_msg = f"Failed to load {file_path.name}: {e}"
-            logger.error(f"[EnhancedLoader] {error_msg}")
+            logger.error(f"[UnifiedLoader] {error_msg}")
             return False, error_msg, 0
     
     async def _async_load_file(
@@ -111,8 +111,11 @@ class EnhancedUnifiedLoader:
             # Get table metadata
             primary_keys = extract_primary_keys(table_info)
             column_types = get_column_types_mapping(table_info)
-            
-            logger.info(f"[EnhancedLoader] Processing with chunk_size={chunk_size}, "
+
+            print(primary_keys)
+            print(column_types)
+
+            logger.info(f"[UnifiedLoader] Processing with chunk_size={chunk_size}, "
                        f"sub_batch_size={sub_batch_size}, parallelism={enable_parallelism}")
             
             # Create a compatible batch generator function for async_upsert with transforms
@@ -139,11 +142,11 @@ class EnhancedUnifiedLoader:
                 internal_concurrency=internal_concurrency
             )
             
-            logger.info(f"[EnhancedLoader] Successfully processed {rows_processed:,} rows from {file_path.name}")
+            logger.info(f"[UnifiedLoader] Successfully processed {rows_processed:,} rows from {file_path.name}")
             return True, None, rows_processed
             
         except Exception as e:
-            logger.error(f"[EnhancedLoader] Async loading failed for {file_path.name}: {e}")
+            logger.error(f"[UnifiedLoader] Async loading failed for {file_path.name}: {e}")
             return False, str(e), 0
         
         finally:
@@ -156,12 +159,12 @@ class EnhancedUnifiedLoader:
         
         if not transform_func or transform_func.__name__ == 'default_transform_map':
             # No transforms needed, yield batches as-is
-            logger.debug(f"[EnhancedLoader] No transforms for table {table_info.table_name}")
+            logger.debug(f"[UnifiedLoader] No transforms for table {table_info.table_name}")
             for batch in batch_generator:
                 yield batch
         else:
             # Apply transforms to each row
-            logger.info(f"[EnhancedLoader] Applying {transform_func.__name__} transforms to {table_info.table_name}")
+            logger.info(f"[UnifiedLoader] Applying {transform_func.__name__} transforms to {table_info.table_name}")
             
             for batch in batch_generator:
                 transformed_batch = []
@@ -184,7 +187,7 @@ class EnhancedUnifiedLoader:
                         
                     except Exception as e:
                         # On transform error, use original row and log warning
-                        logger.warning(f"[EnhancedLoader] Transform failed for row in {table_info.table_name}: {e}")
+                        logger.warning(f"[UnifiedLoader] Transform failed for row in {table_info.table_name}: {e}")
                         transformed_batch.append(row_tuple)
                 
                 yield transformed_batch
@@ -201,7 +204,7 @@ class EnhancedUnifiedLoader:
         Compatibility method for existing CSV loading code.
         Delegates to load_file() with enhanced detection.
         """
-        logger.debug(f"[EnhancedLoader] CSV compatibility mode for {Path(csv_file).name}")
+        logger.debug(f"[UnifiedLoader] CSV compatibility mode for {Path(csv_file).name}")
         return self.load_file(table_info, csv_file, chunk_size, max_retries)
     
     def load_parquet_file(
@@ -215,5 +218,5 @@ class EnhancedUnifiedLoader:
         Compatibility method for existing Parquet loading code.
         Delegates to load_file() with enhanced detection.
         """
-        logger.debug(f"[EnhancedLoader] Parquet compatibility mode for {Path(parquet_file).name}")
+        logger.debug(f"[UnifiedLoader] Parquet compatibility mode for {Path(parquet_file).name}")
         return self.load_file(table_info, parquet_file, chunk_size, max_retries)
