@@ -18,6 +18,7 @@ from .interfaces import Pipeline
 from .schemas import FileInfo, AuditMetadata
 from .audit.service import AuditService
 from .loading.strategies import DataLoadingStrategy
+from .constants import TABLES_INFO_DICT
 
 class CNPJ_ETL:
     def __init__(self, config_service: ConfigurationService = None) -> None:
@@ -255,15 +256,16 @@ class CNPJ_ETL:
             logger.warning(f"Extract path does not exist: {extract_path}")
             return None
         
-        # Get all CSV files in extract directory
-        csv_files = list(extract_path.glob("*"))
-        csv_files = [f for f in csv_files if f.is_file() and ('CSV' in f.name.upper())]
+        # Get all CSV files in extract directory using robust detection
+        csv_files = self._detect_csv_files(extract_path)
         
         if not csv_files:
             logger.warning(f"No CSV files found in: {extract_path}")
             return None
         
         logger.info(f"Found {len(csv_files)} CSV files in {extract_path}")
+        for csv_file in csv_files:
+            logger.debug(f"Detected CSV file: {csv_file.name}")
         
         # Map CSV files to table names using expression patterns
         tablename_to_files = {}
@@ -383,7 +385,7 @@ class CNPJ_ETL:
                 remove_folder(download_path)
 
             # Convert to Parquet
-            self.convert_to_parquet(audit_metadata)
+            self.c(audit_metadata)
 
             # Load data using the new DataLoadingService
             self.data_loader.load_data(audit_metadata)
@@ -395,4 +397,94 @@ class CNPJ_ETL:
 
         if self.config.etl.delete_files:
             remove_folder(extract_path)
+
+    def _detect_csv_files(self, extract_path: Path) -> List[Path]:
+        """
+        Robustly detect CSV files in the extract directory.
+        
+        Uses multiple detection methods:
+        1. File extensions (.csv, .txt)
+        2. Content analysis (checks for CSV-like structure)
+        3. Known table expressions as fallback
+        
+        Args:
+            extract_path: Directory to search for CSV files
+            
+        Returns:
+            List of detected CSV file paths
+        """
+        if not extract_path.exists():
+            return []
+        
+        # Get all files in directory
+        all_files = list(extract_path.glob("*"))
+        candidate_files = [f for f in all_files if f.is_file()]
+        
+        if not candidate_files:
+            return []
+        
+        csv_files = []
+        
+        for file_path in candidate_files:
+            if self._is_csv_file(file_path):
+                csv_files.append(file_path)
+        
+        return csv_files
+    
+    def _is_csv_file(self, file_path: Path) -> bool:
+        """
+        Determine if a file is a CSV file using multiple detection methods.
+        
+        Args:
+            file_path: Path to the file to check
+            
+        Returns:
+            True if file appears to be CSV format
+        """
+        # Method 1: Check file extension
+        csv_extensions = {'.csv', '.txt', '.dat'}
+        if file_path.suffix.lower() in csv_extensions:
+            logger.debug(f"CSV detected by extension: {file_path.name}")
+            return True
+        
+        # Method 2: Check filename for known patterns
+        filename = file_path.name.upper()
+        known_patterns = ['CSV', 'EMPRE', 'ESTABELE', 'SOCIO', 'SIMPLES', 'CNAE', 'MOTI', 'MUNIC', 'NATJU', 'PAIS', 'QUALS']
+        if any(pattern in filename for pattern in known_patterns):
+            logger.debug(f"CSV detected by pattern: {file_path.name}")
+            return True
+        
+        # Method 3: Content analysis (check first few lines)
+        try:
+            with open(file_path, 'r', encoding='latin-1', errors='ignore') as f:
+                # Read first few lines
+                lines = []
+                for i, line in enumerate(f):
+                    lines.append(line.strip())
+                    if i >= 4:  # Check first 5 lines
+                        break
+                
+                if not lines:
+                    return False
+                
+                # Check if lines contain semicolons (Brazilian CSV delimiter)
+                semicolon_count = sum(line.count(';') for line in lines)
+                comma_count = sum(line.count(',') for line in lines)
+                
+                # If semicolons are more common than commas, likely CSV
+                if semicolon_count > comma_count and semicolon_count > 0:
+                    logger.debug(f"CSV detected by content (semicolons): {file_path.name}")
+                    return True
+                
+                # Check for typical CSV structure (multiple columns)
+                first_line_fields = lines[0].split(';')
+                if len(first_line_fields) > 5:  # At least 5 columns
+                    logger.debug(f"CSV detected by structure: {file_path.name}")
+                    return True
+                
+        except Exception as e:
+            logger.debug(f"Could not analyze content of {file_path.name}: {e}")
+            return False
+        
+        return False
 

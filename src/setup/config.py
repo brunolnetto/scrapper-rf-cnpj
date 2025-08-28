@@ -1,7 +1,12 @@
 """
 Centralized configuration management for the CNPJ ETL project.
 
-This module provides a unified interface for accessing configuration settings
+    # CSV to Parquet conversion settings
+    conversion_chunk_size: int = 100000  # Rows per chunk during conversion
+    conversion_max_memory_mb: int = 1024  # Max memory usage in MB
+    conversion_flush_threshold: int = 10   # Chunks to accumulate before flushing
+    conversion_auto_fallback: bool = True  # Auto fallback to PyArrow on failure
+    conversion_row_estimation_factor: int = 8000  # Rows per MB for estimationmodule provides a unified interface for accessing configuration settings
 from environment variables, eliminating hard-coded values throughout the codebase.
 """
 
@@ -65,6 +70,13 @@ class ETLConfig:
     manifest_tracking: bool = True
     async_pool_min_size: int = 2
     async_pool_max_size: int = 10
+
+    # CSV to Parquet conversion settings
+    conversion_chunk_size: int = 100000  # Rows per chunk during conversion
+    conversion_max_memory_mb: int = 1024  # Max memory usage in MB
+    conversion_flush_threshold: int = 10   # Chunks to accumulate before flushing
+    conversion_auto_fallback: bool = True  # Auto fallback to pyarrow on polars failure
+    conversion_row_estimation_factor: int = 8000  # Rows per MB for estimation
 
 
 @dataclass
