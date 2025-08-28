@@ -166,7 +166,7 @@ class Empresa(MainBase):
     razao_social = Column(Text, nullable=True)
     natureza_juridica = Column(Text, nullable=True)
     qualificacao_responsavel = Column(Text, nullable=True)
-    capital_social = Column(Float(53), nullable=True)
+    capital_social = Column(Text, nullable=True)
     porte_empresa = Column(Text, nullable=True)
     ente_federativo_responsavel = Column(Text, nullable=True)
     __table_args__ = (Index("empresa_cnpj_basico", "cnpj_basico"),)

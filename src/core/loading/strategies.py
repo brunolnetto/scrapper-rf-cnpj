@@ -34,7 +34,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                    table_files: Optional[List[str]] = None) -> Tuple[bool, Optional[str], int]:
         """Load table using EnhancedUnifiedLoader only."""
         
-        logger.info(f"[LoadingStrategy] Loading table '{table_name}' with EnhancedUnifiedLoader")
+        logger.info(f"[LoadingStrategy] Loading table '{table_name}' with UnifiedLoader")
         
         try:
             table_info = table_name_to_table_info(table_name)

@@ -336,15 +336,6 @@ class CNPJ_ETL:
         # Reuse the existing convert_to_parquet method
         return self.convert_to_parquet(audit_metadata)
 
-    def create_indices(self) -> None:
-        # Build indices from SQLAlchemy models
-        from ..utils.model_utils import get_tables_to_indices
-        renew_table_indices = get_tables_to_indices()
-
-        if renew_table_indices:
-            from ..database.dml import generate_tables_indices
-            generate_tables_indices(self.database.engine, renew_table_indices)
-
     def validate_config(self) -> bool:
         """Validate pipeline configuration."""
         try:
@@ -385,7 +376,7 @@ class CNPJ_ETL:
                 remove_folder(download_path)
 
             # Convert to Parquet
-            self.c(audit_metadata)
+            self.convert_to_parquet(audit_metadata)
 
             # Load data using the new DataLoadingService
             self.data_loader.load_data(audit_metadata)

@@ -93,3 +93,5 @@ class TableInfo(NamedTuple):
     encoding: str
     transform_map: Callable
     expression: str
+    table_model: object = None
+

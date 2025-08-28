@@ -133,7 +133,7 @@ class ConfigurationService:
 
         logger.info("Configuration loaded successfully")
 
-    def _load_database_config(self) -> DatabaseConfig:
+    def _load_main_database_config(self) -> DatabaseConfig:
         """Load database configuration from environment variables."""
         return DatabaseConfig(
             host=os.getenv("POSTGRES_HOST", "localhost"),
@@ -157,7 +157,7 @@ class ConfigurationService:
     def _load_databases_config(self) -> Dict[str, DatabaseConfig]:
         """Load all database configurations."""
         return {
-            "main": self._load_database_config(),
+            "main": self._load_main_database_config(),
             "audit": self._load_audit_database_config(),
         }
 

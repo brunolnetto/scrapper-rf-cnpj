@@ -16,25 +16,25 @@ def empresa_transform_map(row_dict: Dict[str, str]) -> Dict[str, str]:
     """
     Transform map for 'empresa' row data.
     Pure Python implementation - converts capital_social from Brazilian format to standard format.
-    
+
     Handles:
-    - Simple comma decimal: "1000,50" → "1000.50"  
+    - Simple comma decimal: "1000,50" → "1000.50"
     - Thousands separators: "1.234.567,89" → "1234567.89"
     - Edge cases: empty, invalid, etc.
-    
+
     Args:
         row_dict: Dictionary representing a single row
-        
+
     Returns:
         Transformed row dictionary
     """
     try:
         if "capital_social" in row_dict and row_dict["capital_social"]:
             original_value = row_dict["capital_social"].strip()
-            
+
             if not original_value:
                 return row_dict
-            
+
             # Brazilian number format conversion
             # Pattern: "1.234.567,89" → "1234567.89"
             if "," in original_value:
@@ -44,26 +44,32 @@ def empresa_transform_map(row_dict: Dict[str, str]) -> Dict[str, str]:
                     # Remove dots (thousands separators) from integer part
                     integer_part = parts[0].replace(".", "")
                     decimal_part = parts[1]
-                    
+
                     # Reconstruct as standard format
                     converted_value = f"{integer_part}.{decimal_part}"
-                    
+
                     try:
-                        # Validate it's a valid number
-                        float(converted_value)
-                        row_dict["capital_social"] = converted_value
-                        logger.debug(f"Converted capital_social: {original_value} → {converted_value}")
+                        # Validate it's a valid number and convert to float
+                        numeric_value = float(converted_value)
+                        row_dict["capital_social"] = converted_value  # Keep as formatted string
                     except ValueError:
                         # Keep original value if conversion fails
                         logger.warning(f"Could not convert capital_social: {original_value}")
                 else:
                     # Multiple commas - invalid format, keep original
                     logger.warning(f"Invalid capital_social format (multiple commas): {original_value}")
-            # If no comma, assume it's already in correct format or integer
-            
+            # If no comma, try to convert to float anyway
+            else:
+                try:
+                    numeric_value = float(original_value.replace(".", "").replace(",", "."))
+                    formatted_value = f"{numeric_value:.2f}"  # Format as string with 2 decimal places
+                    row_dict["capital_social"] = formatted_value
+                except ValueError:
+                    logger.warning(f"Could not convert capital_social: {original_value}")
+
     except Exception as e:
         logger.warning(f"Transform error for empresa row: {e}")
-    
+
     return row_dict
 
 # Default transform function (no-op)
