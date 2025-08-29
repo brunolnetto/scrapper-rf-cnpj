@@ -106,6 +106,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
         if self.audit_service and hasattr(self.audit_service, 'create_file_manifest'):
             try:
                 from pathlib import Path
+                from datetime import datetime
                 file_path_obj = Path(file_path)
                 
                 # Calculate file info if file exists
@@ -114,18 +115,33 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                 if file_path_obj.exists():
                     filesize = file_path_obj.stat().st_size
                 
-                # Create manifest entry with table name included
+                # Generate meaningful notes based on processing context
+                notes_parts = []
+                if rows_processed is not None:
+                    notes_parts.append(f"Processed {rows_processed:,} rows")
+                if filesize is not None:
+                    notes_parts.append(f"File size: {filesize:,} bytes")
+                if error_msg:
+                    notes_parts.append(f"Error: {error_msg}")
+                if status == "COMPLETED":
+                    notes_parts.append("Successfully loaded")
+                elif status == "FAILED":
+                    notes_parts.append("Loading failed")
+                elif status == "PARTIAL":
+                    notes_parts.append("Partially loaded")
+                
+                notes = "; ".join(notes_parts) if notes_parts else None
+                
+                # Create manifest entry with table name and notes
                 self.audit_service.create_file_manifest(
                     str(file_path_obj),
                     status=status,
                     checksum=checksum,
                     filesize=filesize,
-                    rows=rows_processed
+                    rows=rows_processed,
+                    table_name=table_name,
+                    notes=notes
                 )
-                
-                # Update the manifest entry with table name
-                if hasattr(self.audit_service, 'update_manifest_table_name'):
-                    self.audit_service.update_manifest_table_name(str(file_path_obj), table_name)
                         
             except Exception as e:
                 logger.warning(f"Failed to create manifest entry for {file_path}: {e}")

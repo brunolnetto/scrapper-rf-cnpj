@@ -1,8 +1,14 @@
-from typing import NamedTuple, List, Dict, Tuple, Callable
+from typing import NamedTuple, List, Dict, Tuple, Callable, Optional
 from datetime import datetime
 from pydantic import BaseModel
+from uuid import UUID
 
-from ..database.models import AuditDBSchema
+# Use absolute import instead of relative import
+try:
+    from database.models import AuditDBSchema
+except ImportError:
+    # Fallback for when running from different contexts
+    from ..database.models import AuditDBSchema
 
 
 class FileInfo(BaseModel):
@@ -34,6 +40,27 @@ class FileGroupInfo(BaseModel):
         return (end - start).days
 
 
+class AuditManifestSchema(BaseModel):
+    """
+    Pydantic schema for AuditManifest model.
+    Represents file-level ingestion metadata.
+    """
+    manifest_id: Optional[UUID] = None
+    audit_id: Optional[UUID] = None
+    file_path: str
+    status: str
+    checksum: Optional[str] = None
+    filesize: Optional[int] = None
+    rows: Optional[int] = None
+    processed_at: Optional[datetime] = None
+    file_metadata: Optional[Dict] = None
+    table_name: Optional[str] = None
+    notes: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
 class AuditMetadata(BaseModel):
     """
     Represents the metadata for auditing purposes.
@@ -60,4 +87,5 @@ class TableInfo(NamedTuple):
     transform_map: Callable
     expression: str
     table_model: object = None
+
 

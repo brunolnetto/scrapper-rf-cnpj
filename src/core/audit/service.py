@@ -47,12 +47,58 @@ class AuditService:
     def insert_audits(self, audit_metadata: AuditMetadata) -> None:
         """
         Insert all audit records in audit_metadata into the database.
+        Creates manifest entries for both successful and failed insertions.
         """
         for audit in audit_metadata.audit_list:
             try:
+                # Attempt to insert the audit record
                 insert_audit(self.database, audit.to_audit_db())
+
+                # ✅ SUCCESS: Create manifest entry for successful insertion
+                if self.manifest_enabled:
+                    self._create_audit_manifest_entry(audit, "success")
+
+                logger.info(f"Successfully inserted audit for {audit.audi_table_name}")
+
             except Exception as e:
-                logger.error(f"Error inserting audit {audit}: {e}")
+                # ❌ FAILURE: Create manifest entry for failed insertion
+                if self.manifest_enabled:
+                    self._create_audit_manifest_entry(audit, "failed", error_message=str(e))
+
+                logger.error(f"Failed to insert audit for {audit.audi_table_name}: {e}")
+
+    def _create_audit_manifest_entry(self, audit, status: str, error_message: str = None) -> None:
+        """Create a manifest entry for an audit insertion attempt."""
+        try:
+            # Extract file information from audit
+            file_path = "unknown"
+            if hasattr(audit, 'audi_filenames') and audit.audi_filenames:
+                file_path = audit.audi_filenames[0]  # Use first filename
+
+            # Extract table name
+            table_name = getattr(audit, 'audi_table_name', 'unknown')
+
+            # Extract file size if available
+            filesize = getattr(audit, 'audi_file_size_bytes', 0)
+            if filesize is None:
+                filesize = 0
+
+            # Create manifest entry with table name
+            self._insert_manifest_entry(
+                table_name=table_name,
+                file_path=file_path,
+                filename=Path(file_path).name if file_path != "unknown" else f"audit_{table_name}",
+                status=status,
+                checksum=None,  # Audits don't have checksums
+                filesize=int(filesize),
+                rows_processed=0,  # Audit insertions don't have row counts
+                processed_at=datetime.now()
+            )
+
+            logger.debug(f"Created {status} manifest entry for audit: {table_name}")
+
+        except Exception as e:
+            logger.error(f"Failed to create manifest entry for audit {audit}: {e}")
 
     def _filter_relevant_files(self, files_info: List[FileInfo]) -> List[FileInfo]:
         """
@@ -75,7 +121,8 @@ class AuditService:
 
     # Manifest tracking capabilities
     def create_file_manifest(self, file_path: str, status: str, checksum: Optional[str] = None,
-                           filesize: Optional[int] = None, rows: Optional[int] = None) -> None:
+                           filesize: Optional[int] = None, rows: Optional[int] = None,
+                           table_name: str = 'unknown', notes: Optional[str] = None) -> None:
         """Create manifest entry for processed file."""
         if not self.manifest_enabled:
             logger.debug(f"Manifest tracking disabled, skipping {Path(file_path).name}")
@@ -91,18 +138,38 @@ class AuditService:
                 if checksum is None:
                     checksum = self._calculate_file_checksum(file_path_obj)
 
+            # Generate default notes if none provided
+            if notes is None:
+                notes_parts = []
+                if rows is not None:
+                    notes_parts.append(f"Processed {rows:,} rows")
+                if filesize is not None:
+                    notes_parts.append(f"File size: {filesize:,} bytes")
+                if status == "COMPLETED":
+                    notes_parts.append("Successfully processed")
+                elif status == "FAILED":
+                    notes_parts.append("Processing failed")
+                elif status == "PARTIAL":
+                    notes_parts.append("Partially processed")
+                elif status == "PENDING":
+                    notes_parts.append("Processing pending")
+                
+                notes = "; ".join(notes_parts) if notes_parts else f"Status: {status}"
+
             # Ensure manifest table exists
             self._ensure_manifest_table()
 
             # Insert manifest entry
             self._insert_manifest_entry(
+                table_name=table_name,
                 file_path=str(file_path_obj),
                 filename=file_path_obj.name,
                 status=status,
                 checksum=checksum,
                 filesize=filesize,
                 rows_processed=rows,
-                processed_at=datetime.now()
+                processed_at=datetime.now(),
+                notes=notes
             )
 
             logger.info(f"Manifest entry created for {file_path_obj.name} (status: {status})")
@@ -130,7 +197,7 @@ class AuditService:
 
             # Unified manifest table schema with enhanced features
             manifest_schema = '''
-            CREATE TABLE IF NOT EXISTS ingestion_manifest (
+            CREATE TABLE IF NOT EXISTS file_ingestion_manifest (
                 id SERIAL PRIMARY KEY,
                 table_name VARCHAR(100),
                 file_path TEXT NOT NULL,
@@ -140,13 +207,14 @@ class AuditService:
                 filesize BIGINT,
                 rows_processed INTEGER,
                 processed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                notes TEXT,
                 UNIQUE(file_path, processed_at)
             );
 
-            CREATE INDEX IF NOT EXISTS idx_manifest_filename ON ingestion_manifest(filename);
-            CREATE INDEX IF NOT EXISTS idx_manifest_status ON ingestion_manifest(status);
-            CREATE INDEX IF NOT EXISTS idx_manifest_processed_at ON ingestion_manifest(processed_at);
-            CREATE INDEX IF NOT EXISTS idx_manifest_table_name ON ingestion_manifest(table_name);
+            CREATE INDEX IF NOT EXISTS idx_manifest_filename ON file_ingestion_manifest(filename);
+            CREATE INDEX IF NOT EXISTS idx_manifest_status ON file_ingestion_manifest(status);
+            CREATE INDEX IF NOT EXISTS idx_manifest_processed_at ON file_ingestion_manifest(processed_at);
+            CREATE INDEX IF NOT EXISTS idx_manifest_table_name ON file_ingestion_manifest(table_name);
             '''
 
             with self.database.engine.begin() as conn:
@@ -157,33 +225,38 @@ class AuditService:
         except Exception as e:
             logger.warning(f"Could not create manifest table: {e}")
 
-    def _insert_manifest_entry(self, file_path: str, filename: str, status: str,
+    def _insert_manifest_entry(self, table_name: str, file_path: str, filename: str, status: str,
                               checksum: Optional[str], filesize: Optional[int],
-                              rows_processed: Optional[int], processed_at: datetime) -> None:
+                              rows_processed: Optional[int], processed_at: datetime, 
+                              notes: Optional[str] = None) -> None:
         """Insert manifest entry into database with upsert logic."""
         try:
             from sqlalchemy import text
 
             insert_query = '''
-            INSERT INTO ingestion_manifest
-            (file_path, filename, status, checksum, filesize, rows_processed, processed_at)
-            VALUES (:file_path, :filename, :status, :checksum, :filesize, :rows_processed, :processed_at)
+            INSERT INTO file_ingestion_manifest
+            (table_name, file_path, filename, status, checksum, filesize, rows_processed, processed_at, notes)
+            VALUES (:table_name, :file_path, :filename, :status, :checksum, :filesize, :rows_processed, :processed_at, :notes)
             ON CONFLICT (file_path, processed_at) DO UPDATE SET
+                table_name = EXCLUDED.table_name,
                 status = EXCLUDED.status,
                 checksum = EXCLUDED.checksum,
                 filesize = EXCLUDED.filesize,
-                rows_processed = EXCLUDED.rows_processed
+                rows_processed = EXCLUDED.rows_processed,
+                notes = EXCLUDED.notes
             '''
 
             with self.database.engine.begin() as conn:
                 conn.execute(text(insert_query), {
+                    'table_name': table_name,
                     'file_path': file_path,
                     'filename': filename,
                     'status': status,
                     'checksum': checksum,
                     'filesize': filesize,
                     'rows_processed': rows_processed,
-                    'processed_at': processed_at
+                    'processed_at': processed_at,
+                    'notes': notes
                 })
 
         except Exception as e:
@@ -196,7 +269,7 @@ class AuditService:
 
             query = '''
             SELECT file_path, filename, status, checksum, filesize, rows_processed, processed_at
-            FROM ingestion_manifest
+            FROM file_ingestion_manifest
             WHERE filename = :filename
             ORDER BY processed_at DESC
             '''
@@ -221,7 +294,7 @@ class AuditService:
             # Get stored checksum
             with self.database.engine.connect() as conn:
                 result = conn.execute(text('''
-                    SELECT checksum FROM ingestion_manifest
+                    SELECT checksum FROM file_ingestion_manifest
                     WHERE file_path = :file_path
                     ORDER BY processed_at DESC LIMIT 1
                 '''), {'file_path': str(file_path_obj)})
@@ -247,26 +320,58 @@ class AuditService:
             logger.error(f"Error verifying file integrity for {file_path}: {e}")
             return False
 
-    def update_manifest_table_name(self, file_path: str, table_name: str) -> None:
-        """Update manifest entry with table name."""
+    def update_manifest_notes(self, file_path: str, notes: str, append: bool = False) -> None:
+        """Update notes for an existing manifest entry."""
         if not self.manifest_enabled:
+            logger.debug("Manifest tracking disabled, skipping notes update")
             return
 
         try:
             from sqlalchemy import text
+            from pathlib import Path
+            file_path_obj = Path(file_path)
 
-            update_sql = '''
-            UPDATE ingestion_manifest
-            SET table_name = :table_name
-            WHERE file_path = :file_path
-            AND table_name IS NULL
-            '''
+            # Get current notes if appending
+            current_notes = None
+            if append:
+                with self.database.engine.connect() as conn:
+                    result = conn.execute(text('''
+                        SELECT notes FROM file_ingestion_manifest
+                        WHERE file_path = :file_path
+                        ORDER BY processed_at DESC LIMIT 1
+                    '''), {'file_path': str(file_path_obj)})
 
+                    row = result.fetchone()
+                    if row and row[0]:
+                        current_notes = row[0]
+
+            # Prepare new notes
+            if append and current_notes:
+                updated_notes = f"{current_notes}; {notes}"
+            else:
+                updated_notes = notes
+
+            # Update the notes
             with self.database.engine.begin() as conn:
-                conn.execute(text(update_sql), {
-                    'table_name': table_name,
-                    'file_path': file_path
+                conn.execute(text('''
+                    UPDATE file_ingestion_manifest
+                    SET notes = :notes, processed_at = :processed_at
+                    WHERE file_path = :file_path
+                    AND processed_at = (
+                        SELECT MAX(processed_at) FROM file_ingestion_manifest
+                        WHERE file_path = :file_path
+                    )
+                '''), {
+                    'file_path': str(file_path_obj),
+                    'notes': updated_notes,
+                    'processed_at': datetime.now()
                 })
 
+            logger.info(f"Updated notes for {file_path_obj.name}")
+
         except Exception as e:
-            logger.warning(f"Could not update manifest entry with table name: {e}")
+            logger.error(f"Failed to update manifest notes for {file_path}: {e}")
+
+
+
+

@@ -15,7 +15,7 @@ logging.basicConfig(level=logging.INFO)
 async def record_manifest(conn: asyncpg.Connection, filename: str, status: str, checksum: Optional[bytes], filesize: Optional[int], run_id: str, notes: Optional[str] = None, rows: Optional[int] = None):
     await conn.execute(
         """
-        INSERT INTO ingestion_manifest (filename, checksum, filesize, processed_at, rows, status, run_id, notes)
+        INSERT INTO file_ingestion_manifest (filename, checksum, filesize, processed_at, rows, status, run_id, notes)
         VALUES ($1, $2, $3, NOW(), $4, $5, $6, $7)
         ON CONFLICT (filename) DO UPDATE
           SET status = EXCLUDED.status,
@@ -39,12 +39,12 @@ async def async_upsert(
     primary_keys: List[str],
     batch_gen: Callable[[str, List[str], int], Iterable[List[Tuple]]],
     chunk_size: int = 50_000,
-    sub_batch_size: int = 5_000,  # NEW: size for internal sub-batches
+    sub_batch_size: int = 5_000,
     max_retries: int = 3,
     run_id: Optional[str] = None,
     types: dict = None,
-    enable_internal_parallelism: bool = False,  # NEW: Enable parallel sub-batch processing
-    internal_concurrency: int = 3  # NEW: Sub-batch concurrency within file
+    enable_internal_parallelism: bool = False,
+    internal_concurrency: int = 3
 ):
     # Generate unique run_id for this file processing session
     run_id = run_id or f"{uuid.uuid4().hex[:8]}_{os.getpid()}"
@@ -66,11 +66,8 @@ async def async_upsert(
         pass
 
     async with pool.acquire() as conn:
-        await conn.execute(base.ensure_table_sql(table, headers, base.map_types(headers, types), primary_keys))
-        # Ensure manifest table exists using centralized schema
-        await base.ensure_manifest_table(conn)
-        # Debug: Confirm table creation
-        logging.debug(f"[DEBUG] ensure_table_sql executed for {table}")
+        await conn.execute(
+            base.ensure_table_sql(table, headers, base.map_types(headers, types), primary_keys))
 
     async with pool.acquire() as conn:
         rows_total = 0

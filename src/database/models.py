@@ -4,8 +4,8 @@ from sqlalchemy import (
     String, 
     TIMESTAMP, 
     JSON, 
-    Text, 
-    Float, 
+    Text,  
+    Integer,
     Index, 
     ForeignKey
 )
@@ -56,6 +56,12 @@ class AuditDBSchema(BaseModel, Generic[T]):
     audi_metadata: Optional[dict[str, Any]] = Field(
         None, description="Metadata associated with the audit entry."
     )
+    audi_ingestion_year: int = Field(
+        default_factory=lambda: datetime.now().year, description="Year of ingestion (e.g., 2024)"
+    )
+    audi_ingestion_month: int = Field(
+        default_factory=lambda: datetime.now().month, description="Month of ingestion (1-12)"
+    )
 
     def to_audit_db(self) -> Any:
         """Convert AuditDBSchema to AuditDB model."""
@@ -69,7 +75,9 @@ class AuditDBSchema(BaseModel, Generic[T]):
             audi_downloaded_at=self.audi_downloaded_at,
             audi_processed_at=self.audi_processed_at,
             audi_inserted_at=self.audi_inserted_at,
-            audit_metadata=self.audi_metadata,
+            audi_metadata=self.audi_metadata,
+            audi_ingestion_year=self.audi_ingestion_year,
+            audi_ingestion_month=self.audi_ingestion_month,
         )
 
 
@@ -78,7 +86,7 @@ class AuditDB(AuditBase):
     """
     SQLAlchemy model for the audit table.
     """
-    __tablename__ = "audit"
+    __tablename__ = "table_ingestion_manifest"
 
     audi_id = Column(UUID(as_uuid=True), primary_key=True)
     audi_table_name = Column(String(255), nullable=False)
@@ -89,7 +97,10 @@ class AuditDB(AuditBase):
     audi_downloaded_at = Column(TIMESTAMP, nullable=True)
     audi_processed_at = Column(TIMESTAMP, nullable=True)
     audi_inserted_at = Column(TIMESTAMP, nullable=True)
-    audit_metadata = Column(JSON, nullable=True)
+    audi_metadata = Column(JSON, nullable=True)
+    audi_ingestion_year = Column(Integer, nullable=False, default=datetime.now().year)  # e.g., 2024
+    audi_ingestion_month = Column(Integer, nullable=False, default=datetime.now().month)  # e.g., 12
+    
     # Relationship to manifest entries (one audit can have many manifest records)
     manifests = relationship(
             "AuditManifest",
@@ -135,7 +146,8 @@ class AuditDB(AuditBase):
         table_name = f"audi_table_name={self.audi_table_name}"
         file_size = f"audi_file_size_bytes={self.audi_file_size_bytes}"
         filenames = f"audi_filenames={self.audi_filenames}"
-        file_info = f"{table_name}, {filenames}, {file_size}"
+        temporal = f"ingestion_year={self.audi_ingestion_year}, ingestion_month={self.audi_ingestion_month}"
+        file_info = f"{table_name}, {filenames}, {file_size}, {temporal}"
         args = f"audi_id={self.audi_id}, {file_info}, {timestamps}"
         return f"AuditDB({args})"
 
@@ -146,10 +158,10 @@ class AuditManifest(AuditBase):
     SQLAlchemy model for the ingestion manifest table.
     Centralizes file-level ingestion metadata for loader/audit integration.
     """
-    __tablename__ = "ingestion_manifest"
+    __tablename__ = "file_ingestion_manifest"
 
     manifest_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    audit_id = Column(UUID(as_uuid=True), ForeignKey('audit.audi_id'), nullable=True)
+    audit_id = Column(UUID(as_uuid=True), ForeignKey('table_ingestion_manifest.audi_id'), nullable=True)
     file_path = Column(Text, nullable=False)
     status = Column(String(64), nullable=False)
     checksum = Column(Text, nullable=True)
@@ -157,15 +169,21 @@ class AuditManifest(AuditBase):
     rows = Column(BigInteger, nullable=True)
     processed_at = Column(TIMESTAMP, nullable=True)
     file_metadata = Column(JSON, nullable=True)
+    table_name = Column(String(100), nullable=True)
+    notes = Column(Text, nullable=True)
 
     # Foreign key to AuditDB for lineage    
     audit = relationship("AuditDB", back_populates="manifests")
+
+    def __get_pydantic_core_schema__(self):
+        from ..core.schemas import AuditManifestSchema
+        return AuditManifestSchema
 
     def __repr__(self):
         return (
             f"AuditManifest(manifest_id={self.manifest_id}, file_path={self.file_path}, "
             f"status={self.status}, checksum={self.checksum}, filesize={self.filesize}, "
-            f"rows={self.rows}, processed_at={self.processed_at})"
+            f"rows={self.rows}, processed_at={self.processed_at}, table_name={self.table_name})"
         )
 
 
