@@ -172,7 +172,7 @@ class FullETLStrategy:
         
         # Run the ETL job
         try:
-            logger.info("[FULL-ETL] Starting data processing and upsert to production database...")
+            logger.info("[FULL-ETL] Starting data processing and upsert to database...")
             audit_metadata = pipeline.run(
                 year=year, 
                 month=month, 

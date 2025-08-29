@@ -50,6 +50,8 @@ class DatabaseConfig:
 @dataclass
 class ETLConfig:
     """ETL process configuration."""
+    year: int = 2024  # Default year for data processing
+    month: int = 12   # Default month for data processing
 
     delimiter: str = ";"
     chunk_size: int = 50000
@@ -61,8 +63,10 @@ class ETLConfig:
 
     # Development mode settings
     development_mode: bool = False
-    development_file_size_limit: int = 50000  # bytes
-    
+    development_file_size_limit: int = 50000  # bytes - Max file size for development mode filtering
+    development_max_files_per_table: int = 5  # Max files to process per table in development mode
+    development_sample_percentage: float = 0.1  # Percentage of files to sample (0.1 = 10%)
+
     # Enhanced loading settings - high-performance async processing
     sub_batch_size: int = 5000
     internal_concurrency: int = 3
@@ -109,7 +113,7 @@ class URLConfig:
 class ConfigurationService:
     """Centralized configuration management."""
 
-    def __init__(self, env_file: str = ".env"):
+    def __init__(self, month: int, year: int, env_file: str = ".env"):
         """
         Initialize configuration service.
 
@@ -117,6 +121,8 @@ class ConfigurationService:
             env_file: Path to the environment file
         """
         self.env_file = env_file
+        self.month = month
+        self.year = year
         self._load_configs()
 
     def _load_configs(self) -> None:
@@ -161,9 +167,18 @@ class ConfigurationService:
             "audit": self._load_audit_database_config(),
         }
 
-    def _load_etl_config(self) -> ETLConfig:
+    def _load_etl_config(self, ) -> ETLConfig:
         """Load ETL configuration from environment variables."""
+        from datetime import datetime
+
+        # Get current date for defaults
+        current_year = self.year
+        current_month = self.month
+
         return ETLConfig(
+            # Temporal settings - can be overridden by CLI args
+            year=int(current_year),
+            month=int(current_month),
             timezone=os.getenv("ETL_TIMEZONE", "America/Sao_Paulo"),
             delimiter=os.getenv("ETL_FILE_DELIMITER", ";"),
             chunk_size=int(os.getenv("ETL_CHUNK_SIZE", "50000")),
@@ -179,7 +194,7 @@ class ConfigurationService:
             # Enhanced loading settings (following ETL_ convention)
             sub_batch_size=int(os.getenv("ETL_SUB_BATCH_SIZE", "5000")),
             internal_concurrency=int(os.getenv("ETL_INTERNAL_CONCURRENCY", "3")),
-            manifest_tracking=os.getenv("ETL_MANIFEST_TRACKING", "false").lower() == "true",
+            manifest_tracking=os.getenv("ETL_MANIFEST_TRACKING", "true").lower() == "true",
             async_pool_min_size=int(os.getenv("ETL_ASYNC_POOL_MIN_SIZE", "1")),
             async_pool_max_size=int(os.getenv("ETL_ASYNC_POOL_MAX_SIZE", "10")),
         )
@@ -209,6 +224,30 @@ class ConfigurationService:
     def get_file_size_limit(self) -> int:
         """Get file size limit for development mode filtering."""
         return self.etl.development_file_size_limit
+
+    def get_max_files_per_table(self) -> int:
+        """Get maximum files per table for development mode."""
+        return self.etl.development_max_files_per_table
+
+    def get_sample_percentage(self) -> float:
+        """Get sample percentage for development mode."""
+        return self.etl.development_sample_percentage
+
+    def get_year(self) -> int:
+        """Get the configured year for data processing."""
+        return self.etl.year
+
+    def get_month(self) -> int:
+        """Get the configured month for data processing."""
+        return self.etl.month
+
+    def set_temporal_config(self, year: int = None, month: int = None) -> None:
+        """Update temporal configuration for data processing."""
+        if year is not None:
+            self.etl.year = year
+        if month is not None:
+            self.etl.month = month
+        logger.info(f"Updated temporal config: year={self.etl.year}, month={self.etl.month}")
 
     def reload(self) -> None:
         """Reload configuration from environment file."""
@@ -291,11 +330,17 @@ class ConfigurationService:
 _config_service: Optional[ConfigurationService] = None
 
 
-def get_config() -> ConfigurationService:
+def get_config(year: int = None, month: int = None) -> ConfigurationService:
     """Get the global configuration service instance."""
     global _config_service
     if _config_service is None:
-        _config_service = ConfigurationService()
+        # Use current date as defaults if not specified
+        if year is None or month is None:
+            from datetime import datetime
+            current = datetime.now()
+            year = year or current.year
+            month = month or current.month
+        _config_service = ConfigurationService(month=month, year=year)
     return _config_service
 
 

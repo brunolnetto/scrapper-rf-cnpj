@@ -47,14 +47,13 @@ class AuditManifestSchema(BaseModel):
     """
     manifest_id: Optional[UUID] = None
     audit_id: Optional[UUID] = None
+    table_name: Optional[str] = None
     file_path: str
     status: str
     checksum: Optional[str] = None
     filesize: Optional[int] = None
     rows: Optional[int] = None
-    processed_at: Optional[datetime] = None
-    file_metadata: Optional[Dict] = None
-    table_name: Optional[str] = None
+    processed_at: Optional[datetime] = None    
     notes: Optional[str] = None
 
     class Config:

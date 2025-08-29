@@ -98,8 +98,8 @@ class AuditDB(AuditBase):
     audi_processed_at = Column(TIMESTAMP, nullable=True)
     audi_inserted_at = Column(TIMESTAMP, nullable=True)
     audi_metadata = Column(JSON, nullable=True)
-    audi_ingestion_year = Column(Integer, nullable=False, default=datetime.now().year)  # e.g., 2024
-    audi_ingestion_month = Column(Integer, nullable=False, default=datetime.now().month)  # e.g., 12
+    audi_ingestion_year = Column(Integer, nullable=False, default=datetime.now().year)
+    audi_ingestion_month = Column(Integer, nullable=False, default=datetime.now().month)
     
     # Relationship to manifest entries (one audit can have many manifest records)
     manifests = relationship(
@@ -162,15 +162,20 @@ class AuditManifest(AuditBase):
 
     manifest_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     audit_id = Column(UUID(as_uuid=True), ForeignKey('table_ingestion_manifest.audi_id'), nullable=True)
+    table_name = Column(String(100), nullable=True)
     file_path = Column(Text, nullable=False)
     status = Column(String(64), nullable=False)
     checksum = Column(Text, nullable=True)
     filesize = Column(BigInteger, nullable=True)
-    rows = Column(BigInteger, nullable=True)
+    rows_processed = Column(BigInteger, nullable=True)
     processed_at = Column(TIMESTAMP, nullable=True)
-    file_metadata = Column(JSON, nullable=True)
-    table_name = Column(String(100), nullable=True)
     notes = Column(Text, nullable=True)
+    __table_args__ = (
+        Index("idx_manifest_status", "status"),
+        Index("idx_manifest_processed_at", "processed_at"),
+        Index("idx_manifest_table_name", "table_name"),
+        Index("idx_manifest_file_path", "file_path"),
+    )
 
     # Foreign key to AuditDB for lineage    
     audit = relationship("AuditDB", back_populates="manifests")
@@ -197,7 +202,9 @@ class Empresa(MainBase):
     capital_social = Column(Text, nullable=True)
     porte_empresa = Column(Text, nullable=True)
     ente_federativo_responsavel = Column(Text, nullable=True)
-    __table_args__ = (Index("empresa_cnpj_basico", "cnpj_basico"),)
+    __table_args__ = (
+        Index("empresa_cnpj_basico", "cnpj_basico"),
+    )
 
     # Relationships
     estabelecimentos = relationship("Estabelecimento", back_populates="empresa")
@@ -214,7 +221,9 @@ class SimplesNacional(MainBase):
     opcao_mei = Column(Text, nullable=True)
     data_opcao_mei = Column(Text, nullable=True)
     data_exclusao_mei = Column(Text, nullable=True)
-    __table_args__ = (Index("simples_cnpj_basico", "cnpj_basico"),)
+    __table_args__ = (
+        Index("simples_cnpj_basico", "cnpj_basico"),
+    )
 
     # Relationship to Empresa
     empresa = relationship("Empresa", back_populates="simples", primaryjoin="Empresa.cnpj_basico==SimplesNacional.cnpj_basico")
@@ -233,7 +242,9 @@ class Socios(MainBase):
     nome_do_representante = Column(Text, nullable=True)
     qualificacao_representante_legal = Column(Text, nullable=True)
     faixa_etaria = Column(Text, nullable=True)
-    __table_args__ = (Index("socios_cnpj_basico", "cnpj_basico"),)
+    __table_args__ = (
+        Index("socios_cnpj_basico", "cnpj_basico"),
+    )
 
     # Relationship to Empresa
     empresa = relationship("Empresa", back_populates="socios", primaryjoin="Empresa.cnpj_basico==Socios.cnpj_basico")

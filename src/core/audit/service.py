@@ -156,9 +156,6 @@ class AuditService:
                 
                 notes = "; ".join(notes_parts) if notes_parts else f"Status: {status}"
 
-            # Ensure manifest table exists
-            self._ensure_manifest_table()
-
             # Insert manifest entry
             self._insert_manifest_entry(
                 table_name=table_name,
@@ -190,41 +187,6 @@ class AuditService:
             logger.error(f"Failed to calculate checksum for {file_path}: {e}")
             return None
 
-    def _ensure_manifest_table(self) -> None:
-        """Ensure manifest table exists with unified schema."""
-        try:
-            from sqlalchemy import text
-
-            # Unified manifest table schema with enhanced features
-            manifest_schema = '''
-            CREATE TABLE IF NOT EXISTS file_ingestion_manifest (
-                id SERIAL PRIMARY KEY,
-                table_name VARCHAR(100),
-                file_path TEXT NOT NULL,
-                filename TEXT NOT NULL,
-                status TEXT NOT NULL,
-                checksum TEXT,
-                filesize BIGINT,
-                rows_processed INTEGER,
-                processed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                notes TEXT,
-                UNIQUE(file_path, processed_at)
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_manifest_filename ON file_ingestion_manifest(filename);
-            CREATE INDEX IF NOT EXISTS idx_manifest_status ON file_ingestion_manifest(status);
-            CREATE INDEX IF NOT EXISTS idx_manifest_processed_at ON file_ingestion_manifest(processed_at);
-            CREATE INDEX IF NOT EXISTS idx_manifest_table_name ON file_ingestion_manifest(table_name);
-            '''
-
-            with self.database.engine.begin() as conn:
-                conn.execute(text(manifest_schema))
-
-            logger.debug("Unified manifest table schema ensured")
-
-        except Exception as e:
-            logger.warning(f"Could not create manifest table: {e}")
-
     def _insert_manifest_entry(self, table_name: str, file_path: str, filename: str, status: str,
                               checksum: Optional[str], filesize: Optional[int],
                               rows_processed: Optional[int], processed_at: datetime, 
@@ -235,15 +197,8 @@ class AuditService:
 
             insert_query = '''
             INSERT INTO file_ingestion_manifest
-            (table_name, file_path, filename, status, checksum, filesize, rows_processed, processed_at, notes)
-            VALUES (:table_name, :file_path, :filename, :status, :checksum, :filesize, :rows_processed, :processed_at, :notes)
-            ON CONFLICT (file_path, processed_at) DO UPDATE SET
-                table_name = EXCLUDED.table_name,
-                status = EXCLUDED.status,
-                checksum = EXCLUDED.checksum,
-                filesize = EXCLUDED.filesize,
-                rows_processed = EXCLUDED.rows_processed,
-                notes = EXCLUDED.notes
+            (table_name, file_path, status, checksum, filesize, rows_processed, processed_at, notes)
+            VALUES (:table_name, :file_path, :status, :checksum, :filesize, :rows_processed, :processed_at, :notes)
             '''
 
             with self.database.engine.begin() as conn:

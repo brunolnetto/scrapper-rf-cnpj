@@ -16,20 +16,27 @@ from ...core.schemas import FileGroupInfo, AuditMetadata, AuditDBSchema
 
 
 def create_new_audit(
-    table_name: str, filenames: List[str], size_bytes: int, update_at: datetime
+    table_name: str, filenames: List[str], size_bytes: int, update_at: datetime,
+    year: int = None, month: int = None
 ) -> AuditDB:
     """
-    Creates a new audit entry.
+    Creates a new audit entry with temporal tracking fields.
 
     Args:
         table_name (str): The name of the table.
         filenames (List[str]): List of filenames.
         size_bytes (int): The size of the file in bytes.
         update_at (datetime): The datetime when the source was last updated.
+        year (int, optional): Year for temporal tracking. Defaults to current year.
+        month (int, optional): Month for temporal tracking. Defaults to current month.
 
     Returns:
-        AuditDB: An audit entry object.
+        AuditDB: An audit entry object with temporal fields populated.
     """
+    # Set default temporal values if not provided
+    current_year = year if year is not None else datetime.now().year
+    current_month = month if month is not None else datetime.now().month
+
     return AuditDB(
         audi_id=str(uuid4()),
         audi_created_at=datetime.now(),
@@ -40,6 +47,8 @@ def create_new_audit(
         audi_downloaded_at=None,
         audi_processed_at=None,
         audi_inserted_at=None,
+        audi_ingestion_year=current_year,    # FIXED: Add temporal year
+        audi_ingestion_month=current_month   # FIXED: Add temporal month
     )
 
 
@@ -59,7 +68,7 @@ def create_audit(
     if database.engine:
         # Define raw SQL query
         sql_query = text(f"""SELECT max(audi_source_updated_at) 
-            FROM public.audit 
+            FROM public.table_ingestion_manifest 
             WHERE audi_table_name = \'{file_group_info.table_name}\';""")
 
         # Execute query with parameters (optional)
@@ -118,6 +127,7 @@ def create_audit(
             file_group_info.elements,
             file_group_info.size_bytes,
             file_group_info.date_range[1],
+            # Temporal fields will use current date defaults
         )
     elif file_group_info.date_range[1] > latest_updated_at:
         # New entry: source updated_at is greater
@@ -126,6 +136,7 @@ def create_audit(
             file_group_info.elements,
             file_group_info.size_bytes,
             file_group_info.date_range[1],
+            # Temporal fields will use current date defaults
         )
     elif file_group_info.date_diff() > 7:
         return None

@@ -44,10 +44,28 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             # Check Parquet first (maintain existing priority)
             parquet_file = path_config.conversion_path / f"{table_name}.parquet"
             if parquet_file.exists():
+                # Centralized Parquet filtering
+                from ...core.utils.development_filter import DevelopmentFilter
+                dev_filter = DevelopmentFilter(self.config)
+
+                if not dev_filter.filter_parquet_file_by_size(parquet_file):
+                    return True, f"Skipped large file in development mode", 0
+
                 logger.info(f"[LoadingStrategy] Loading Parquet file: {parquet_file.name}")
                 return self._create_manifest_and_load(loader, table_info, parquet_file, table_name)
-            
+
             elif table_files:
+                # Centralized CSV filtering
+                from ...core.utils.development_filter import DevelopmentFilter
+                dev_filter = DevelopmentFilter(self.config)
+
+                # Apply table limit filtering first
+                table_files = dev_filter.filter_csv_files_by_table_limit(table_files, table_name)
+
+                if not table_files:
+                    logger.info(f"[LoadingStrategy] No files to load for table '{table_name}' after filtering")
+                    return True, "No files to load after development filtering", 0
+
                 logger.info(f"[LoadingStrategy] Loading {len(table_files)} CSV files for table: {table_name}")
                 return self._load_csv_files(loader, table_info, path_config, table_files, table_name)
             

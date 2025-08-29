@@ -394,7 +394,8 @@ def convert_csvs_to_parquet_deterministic(
     if config is None:
         # Get configuration from service or use defaults
         try:
-            config_service = ConfigurationService()
+            from ..setup.config import get_config
+            config_service = get_config()
             etl_config = config_service.etl
             config = ProcessingConfig(
                 max_memory_mb=getattr(etl_config, 'conversion_max_memory_mb', 1024),

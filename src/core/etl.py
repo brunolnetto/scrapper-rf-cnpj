@@ -169,13 +169,18 @@ class ReceitaCNPJPipeline(Pipeline):
 
         audits = self.audit_service.create_audits_from_files(files_info)
 
-        # Development mode filtering
+        # Apply development mode filtering using centralized filter
         if self.config.is_development_mode():
-            audits = [
-                audit
-                for audit in sorted(audits, key=lambda x: x.audi_file_size_bytes)
-                if audit.audi_file_size_bytes < self.config.get_file_size_limit()
-            ]
+            from ..core.utils.development_filter import DevelopmentFilter
+            dev_filter = DevelopmentFilter(self.config)
+            original_count = len(audits)
+
+            # Filter by file size and table limits
+            audits = dev_filter.filter_audits_by_size(audits)
+            audits = dev_filter.filter_audits_by_table_limit(audits)
+
+            # Log filtering summary
+            dev_filter.log_filtering_summary(original_count, len(audits), "audit files")
 
         return audits
 
@@ -208,10 +213,10 @@ class ReceitaCNPJPipeline(Pipeline):
         from ..utils.misc import makedir
         from ..utils.conversion import convert_csvs_to_parquet
 
-        num_workers=self.config.etl.parallel_workers
-        delimiter=self.config.etl.delimiter
+        num_workers = self.config.etl.parallel_workers
+        delimiter = self.config.etl.delimiter
         output_dir = Path(self.config.paths.conversion_path)
-        
+
         makedir(output_dir)
 
         audit_map = {}
@@ -223,13 +228,31 @@ class ReceitaCNPJPipeline(Pipeline):
                 audit_map[table_name] = {}
 
             for zip_filename, csv_files in zipfile_to_files.items():
+                # Development mode filtering - filter CSV files by size
+                if self.config.is_development_mode():
+                    from ..core.utils.development_filter import DevelopmentFilter
+                    dev_filter = DevelopmentFilter(self.config)
+
+                    # Convert string filenames to Path objects for filtering
+                    csv_paths = [Path(self.config.paths.extract_path) / csv_file for csv_file in csv_files]
+                    filtered_csv_paths = dev_filter.filter_csv_files_by_size(csv_paths, self.config.paths.extract_path)
+
+                    # Convert back to string filenames
+                    csv_files = [path.name for path in filtered_csv_paths]
+
                 audit_map[table_name][zip_filename] = csv_files
 
         logger.info("Converting CSV files to Parquet format...")
         logger.info(f"Output directory: {output_dir}")
         logger.info(f"Processing {len(audit_map)} tables with {num_workers} workers")
+
+        # Centralized conversion summary logging
+        from ..core.utils.development_filter import DevelopmentFilter
+        dev_filter = DevelopmentFilter(self.config)
+        dev_filter.log_conversion_summary(audit_map)
+
         extract_path = Path(self.config.paths.extract_path)
-        
+
         convert_csvs_to_parquet(audit_map, extract_path, output_dir, num_workers, delimiter)
         logger.info(f"Parquet conversion completed. Files saved to: {output_dir}")
 
@@ -238,10 +261,10 @@ class ReceitaCNPJPipeline(Pipeline):
     def create_audit_metadata_from_existing_csvs(self) -> Optional[AuditMetadata]:
         """
         Create audit metadata from existing CSV files in EXTRACTED_FILES directory.
-        
+
         This reuses the existing audit metadata infrastructure but creates synthetic
         entries that point to existing CSV files instead of downloaded/extracted ones.
-        
+
         Returns:
             AuditMetadata: Compatible audit metadata for existing CSV files, or None if no files found
         """
@@ -251,41 +274,53 @@ class ReceitaCNPJPipeline(Pipeline):
         from ..database.models import AuditDBSchema
         from datetime import datetime
         from uuid import uuid4
-        
+
         extract_path = Path(self.config.paths.extract_path)
         if not extract_path.exists():
             logger.warning(f"Extract path does not exist: {extract_path}")
             return None
-        
+
         # Get all CSV files in extract directory using robust detection
         csv_files = self._detect_csv_files(extract_path)
-        
+
         if not csv_files:
             logger.warning(f"No CSV files found in: {extract_path}")
             return None
-        
+
         logger.info(f"Found {len(csv_files)} CSV files in {extract_path}")
+
+        # Development mode filtering - filter CSV files by size
+        if self.config.is_development_mode():
+            from ..core.utils.development_filter import DevelopmentFilter
+            dev_filter = DevelopmentFilter(self.config)
+            original_count = len(csv_files)
+
+            csv_files = dev_filter.filter_csv_files_by_size(csv_files, extract_path)
+
+            # Log filtering summary
+            dev_filter.log_filtering_summary(original_count, len(csv_files), "CSV files")
+
         for csv_file in csv_files:
             logger.debug(f"Detected CSV file: {csv_file.name}")
-        
+
         # Map CSV files to table names using expression patterns
         tablename_to_files = {}
         for table_name, table_info in TABLES_INFO_DICT.items():
             expression = table_info.get("expression")
             if not expression:
                 continue
-                
+
             # Find CSV files matching this table's expression
             matching_files = [f.name for f in csv_files if expression in f.name]
-            
+
             if matching_files:
                 tablename_to_files[table_name] = matching_files
                 logger.info(f"Table '{table_name}': Found {len(matching_files)} CSV files")
-        
+
         if not tablename_to_files:
             logger.warning("No CSV files matched any known table patterns")
             return None
-        
+
         # Create synthetic audit metadata compatible with existing convert_to_parquet method
         # We use "synthetic_conversion" as a fake zipfile name since the existing structure expects
         # a tablename -> zipfile -> files mapping

@@ -12,7 +12,12 @@ from . import base
 
 logging.basicConfig(level=logging.INFO)
 
-async def record_manifest(conn: asyncpg.Connection, filename: str, status: str, checksum: Optional[bytes], filesize: Optional[int], run_id: str, notes: Optional[str] = None, rows: Optional[int] = None):
+async def record_manifest(
+    conn: asyncpg.Connection, 
+    filename: str, status: str, checksum: Optional[bytes], 
+    filesize: Optional[int], run_id: str, 
+    notes: Optional[str] = None, rows_processed: Optional[int] = None
+):
     await conn.execute(
         """
         INSERT INTO file_ingestion_manifest (filename, checksum, filesize, processed_at, rows, status, run_id, notes)
@@ -23,7 +28,7 @@ async def record_manifest(conn: asyncpg.Connection, filename: str, status: str, 
               processed_at = NOW(),
               rows = EXCLUDED.rows;
         """,
-        filename, checksum, filesize, rows, status, run_id, notes
+        filename, checksum, filesize, rows_processed, status, run_id, notes
     )
 
 def emit_log(event: str, **kwargs):
@@ -100,9 +105,14 @@ async def async_upsert(
                 )
             rows_total += rows_processed
             batch_idx += 1
-        emit_log("file_completed", run_id=run_id, filename=filename, rows=rows_total,
-                parallel_mode=enable_internal_parallelism)
-        await record_manifest(conn, filename, "success", checksum, filesize, run_id, rows=rows_total)
+        emit_log(
+            "file_completed", 
+            run_id=run_id, filename=filename, rows_processed=rows_total,
+            parallel_mode=enable_internal_parallelism)
+        await record_manifest(
+            conn, filename, "success", 
+            checksum, filesize, run_id, rows_processed=rows_total
+        )
     return rows_total  # Return the total number of rows processed
 
 

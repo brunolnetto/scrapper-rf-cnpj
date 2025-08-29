@@ -12,7 +12,7 @@ from . import base
 
 logging.basicConfig(level=logging.INFO)
 
-async def record_manifest(conn: asyncpg.Connection, filename: str, status: str, checksum: Optional[bytes], filesize: Optional[int], run_id: str, notes: Optional[str] = None, rows: Optional[int] = None):
+async def record_manifest(conn: asyncpg.Connection, filename: str, status: str, checksum: Optional[bytes], filesize: Optional[int], run_id: str, notes: Optional[str] = None, rows_processed: Optional[int] = None):
     await conn.execute(
         """
         INSERT INTO ingestion_manifest (filename, checksum, filesize, processed_at, rows, status, run_id, notes)
@@ -95,7 +95,7 @@ async def async_upsert(
 
         emit_log("file_completed", run_id=run_id, filename=filename, rows=rows_total,
                 parallel_mode=enable_internal_parallelism)
-        await record_manifest(conn, filename, "success", checksum, filesize, run_id, rows=rows_total)
+        await record_manifest(conn, filename, "success", checksum, filesize, run_id, rows_processed=rows_total)
     
     return rows_total  # Return the total number of rows processed
 

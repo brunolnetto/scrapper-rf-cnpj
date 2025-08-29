@@ -47,6 +47,24 @@ def validate_cli_arguments(args):
             "Database operations require loading data to database."
         )
 
+    are_both_not_none=args.year is not None and args.month is not None
+    are_both_none=args.year is None and args.month is None
+    both_or_none=not( are_both_not_none or are_both_none )
+    
+    if both_or_none:
+        errors.append("Either both or none of year and month must be specified.")
+    
+    if are_both_not_none:
+        valid_temporal_values=args.year <= 2000 or (args.month < 1 or args.month > 12)    
+        if valid_temporal_values:
+            errors.append("Invalid year or month specified.")
+
+    # Either both or none must be specified. If none, set to current
+    if not args.year and not args.month:
+        from datetime import datetime
+        args.year = datetime.now().year
+        args.month = datetime.now().month
+
     # Print errors and exit if any found
     if errors:
         print("❌ Invalid CLI argument combinations detected:")
@@ -122,7 +140,7 @@ Default (no flags): Full ETL (111)
     validate_cli_arguments(args)
 
     # Create configuration and pipeline
-    config_service = ConfigurationService()
+    config_service = ConfigurationService(month=args.month, year=args.year)
     pipeline = ReceitaCNPJPipeline(config_service)
 
     # Create strategy based on boolean flags

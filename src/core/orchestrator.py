@@ -23,6 +23,13 @@ class PipelineOrchestrator:
         logger.info(f"Pipeline: {self.pipeline.get_name()}")
         logger.info(f"Strategy: {self.strategy.get_name()}")
         
+        # Handle temporal configuration (year/month)
+        year = kwargs.get('year')
+        month = kwargs.get('month')
+        if year is not None or month is not None:
+            self.config_service.set_temporal_config(year=year, month=month)
+            logger.info(f"Configured temporal settings: year={self.config_service.get_year()}, month={self.config_service.get_month()}")
+        
         # Validate pipeline configuration
         if not self.pipeline.validate_config():
             logger.error(f"[ERROR] Invalid configuration for pipeline: {self.pipeline.get_name()}")
