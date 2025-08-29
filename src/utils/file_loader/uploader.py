@@ -20,15 +20,10 @@ async def record_manifest(
 ):
     await conn.execute(
         """
-        INSERT INTO file_ingestion_manifest (filename, checksum, filesize, processed_at, rows, status, run_id, notes)
-        VALUES ($1, $2, $3, NOW(), $4, $5, $6, $7)
-        ON CONFLICT (filename) DO UPDATE
-          SET status = EXCLUDED.status,
-              notes = EXCLUDED.notes,
-              processed_at = NOW(),
-              rows = EXCLUDED.rows;
+        INSERT INTO file_ingestion_manifest (manifest_id, file_path, status, checksum, filesize, rows_processed, processed_at, notes)
+        VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7)
         """,
-        filename, checksum, filesize, rows_processed, status, run_id, notes
+        str(uuid.uuid4()), filename, status, checksum, filesize, rows_processed, notes
     )
 
 def emit_log(event: str, **kwargs):

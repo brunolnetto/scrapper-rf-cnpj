@@ -194,18 +194,19 @@ class AuditService:
         """Insert manifest entry into database with upsert logic."""
         try:
             from sqlalchemy import text
+            import uuid
 
             insert_query = '''
             INSERT INTO file_ingestion_manifest
-            (table_name, file_path, status, checksum, filesize, rows_processed, processed_at, notes)
-            VALUES (:table_name, :file_path, :status, :checksum, :filesize, :rows_processed, :processed_at, :notes)
+            (manifest_id, table_name, file_path, status, checksum, filesize, rows_processed, processed_at, notes)
+            VALUES (:manifest_id, :table_name, :file_path, :status, :checksum, :filesize, :rows_processed, :processed_at, :notes)
             '''
 
             with self.database.engine.begin() as conn:
                 conn.execute(text(insert_query), {
+                    'manifest_id': str(uuid.uuid4()),
                     'table_name': table_name,
                     'file_path': file_path,
-                    'filename': filename,
                     'status': status,
                     'checksum': checksum,
                     'filesize': filesize,
