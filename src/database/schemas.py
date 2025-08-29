@@ -15,15 +15,3 @@ class Database:
 
     def __repr__(self):
         return f"Database(engine={self.engine}, session_maker={self.session_maker}, base={self.base})"
-
-
-class TableIndex:
-    """
-    This class represents a table index object.
-    It contains two attributes:
-    - table_name: A string that represents the table name.
-    - index_name: A string that represents the index name.
-    """
-
-    table_name: str
-    index_name: str

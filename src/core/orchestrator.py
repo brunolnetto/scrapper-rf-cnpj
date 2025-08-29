@@ -4,7 +4,7 @@ from datetime import datetime
 from ..setup.logging import logger
 from .interfaces import Pipeline, OrchestrationStrategy
 
-class GenericOrchestrator:
+class PipelineOrchestrator:
     def __init__(self, pipeline: Pipeline, strategy: OrchestrationStrategy, config_service):
         self.pipeline = pipeline
         self.strategy = strategy

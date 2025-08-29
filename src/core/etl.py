@@ -18,9 +18,10 @@ from .interfaces import Pipeline
 from .schemas import FileInfo, AuditMetadata
 from .audit.service import AuditService
 from .loading.strategies import DataLoadingStrategy
+from .interfaces import Pipeline
 from .constants import TABLES_INFO_DICT
 
-class CNPJ_ETL:
+class ReceitaCNPJPipeline(Pipeline):
     def __init__(self, config_service: ConfigurationService = None) -> None:
         from .download.service import FileDownloadService
 
@@ -350,7 +351,7 @@ class CNPJ_ETL:
     
     def get_name(self) -> str:
         """Return pipeline name for logging."""
-        return "CNPJ_ETL"
+        return "ReceitaCNPJPipeline"
     
     def run(self, **kwargs) -> Optional[AuditMetadata]:
         from ..utils.misc import remove_folder

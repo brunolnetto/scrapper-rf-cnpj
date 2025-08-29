@@ -47,40 +47,6 @@ class AuditMetadata(BaseModel):
         return f"AuditMetadata({args})"
 
 
-class TableIndexInfo(BaseModel):
-    """
-    Represents information about a table index.
-    """
-
-    table_name: str
-    columns: List[str]
-    algorithm: str = "btree"
-
-    def __index_name(self, column: str) -> str:
-        """
-        Returns the name of the index for a given column.
-        """
-        return f"{self.table_name}_{column}_idx"
-
-    def index_names(self) -> List[str]:
-        """
-        Returns the list of index names for the columns.
-        """
-        return [self.__index_name(column) for column in self.columns]
-
-    def query(self) -> str:
-        """
-        Returns the SQL query to create the index.
-        """
-        columns = ", ".join(self.columns)
-        index_names = ", ".join(self.index_names())
-        return f"CREATE INDEX {index_names} ON {self.table_name} ({columns}) USING {self.algorithm}; COMMIT;"
-
-    def __repr__(self) -> str:
-        args = f"table_name={self.table_name}, columns={self.columns}, algorithm={self.algorithm}"
-        return f"TableIndexInfo({args})"
-
-
 class TableInfo(NamedTuple):
     """
     Represents information about a table.

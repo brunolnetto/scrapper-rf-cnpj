@@ -10,8 +10,7 @@ from ...setup.logging import logger
 
 
 async def create_asyncpg_pool_from_sqlalchemy(
-    database: Database, 
-    config: ConfigurationService
+    database: Database, config: ConfigurationService
 ) -> asyncpg.Pool:
     """
     Create asyncpg connection pool from SQLAlchemy database configuration.
@@ -38,7 +37,7 @@ async def create_asyncpg_pool_from_sqlalchemy(
     
     logger.info(f"[ConnectionFactory] Creating asyncpg pool (min: {min_size}, max: {max_size})")
     logger.debug(f"[ConnectionFactory] DSN: {dsn.split('@')[0]}@***")  # Hide credentials in logs
-    
+
     try:
         pool = await asyncpg.create_pool(
             dsn,
@@ -46,7 +45,7 @@ async def create_asyncpg_pool_from_sqlalchemy(
             max_size=max_size,
             command_timeout=60,  # 60 second timeout for commands
             server_settings={
-                'application_name': 'cnpj_etl_loader'
+                'application_name': 'receita_cnpj_loader'
             }
         )
         logger.info("[ConnectionFactory] AsyncPG pool created successfully")

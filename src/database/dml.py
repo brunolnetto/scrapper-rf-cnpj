@@ -41,6 +41,77 @@ from ..utils.file_loader.connection_factory import (
     get_column_types_mapping
 )
 
+
+class BaseFileLoader:
+    """Base class with common file processing functionality."""
+
+    def __init__(self, logger_prefix: str = "BaseLoader"):
+        self.logger_prefix = logger_prefix
+
+    def _validate_file(self, file_path: Union[str, Path]) -> Optional[Path]:
+        """Validate file exists and return Path object."""
+        file_path = Path(file_path)
+        if not file_path.exists():
+            return None
+        return file_path
+
+    def _get_encoding(self, table_info: TableInfo) -> str:
+        """Extract encoding from table_info with fallback to utf-8."""
+        encoding = getattr(table_info, 'encoding', None)
+        if encoding and hasattr(encoding, 'value'):
+            return encoding.value
+        return 'utf-8'
+
+    def _create_file_loader(self, file_path: Path, encoding: str) -> FileLoader:
+        """Create and return configured FileLoader."""
+        return FileLoader(str(file_path), encoding=encoding)
+
+    def _detect_format(self, file_loader: FileLoader, file_path: Path) -> str:
+        """Detect and log file format."""
+        detected_format = file_loader.get_format()
+        logger.info(f"[{self.logger_prefix}] Detected format: {detected_format} for {file_path.name}")
+        return detected_format
+
+
+def apply_transforms_to_batch(table_info: TableInfo, batch: List[Tuple], headers: List[str]) -> List[Tuple]:
+    """Apply row-level transforms to a batch of data."""
+    transform_func = getattr(table_info, 'transform_map', None)
+
+    # Import default transform for proper identity comparison
+    from ..core.constants import default_transform_map
+
+    if not transform_func or transform_func is default_transform_map:
+        # No transforms needed, return batch as-is
+        return batch
+
+    # Apply transforms to each row
+    logger.debug(f"[TransformUtil] Applying {transform_func.__name__} transforms to batch")
+    transformed_batch = []
+
+    for row_tuple in batch:
+        try:
+            # Convert tuple to dictionary
+            row_dict = dict(zip(headers, row_tuple))
+
+            # Apply transform function
+            transformed_dict = transform_func(row_dict)
+
+            # Convert back to tuple in correct order
+            transformed_tuple = tuple(
+                transformed_dict.get(header, row_tuple[i])
+                for i, header in enumerate(headers)
+            )
+
+            transformed_batch.append(transformed_tuple)
+
+        except Exception as e:
+            # On transform error, use original row and log warning
+            logger.warning(f"[TransformUtil] Transform failed for row in {table_info.table_name}: {e}")
+            transformed_batch.append(row_tuple)
+
+    return transformed_batch
+
+
 def get_table_model(table_name: str, base=None):
     """Get the SQLAlchemy model class for a given table name.
     
@@ -120,10 +191,10 @@ def get_primary_key_columns(table_name: str, base=None, table_model=None) -> Lis
     return inspect_primary_keys(table_class)
 
 
-class UnifiedLoader:
+class UnifiedLoader(BaseFileLoader):
     """
     Enhanced unified data loader replacing pandas/polars-based UnifiedLoader.
-    
+
     Features:
     - Robust 4-layer file format detection
     - High-performance async processing with internal parallelism
@@ -132,8 +203,9 @@ class UnifiedLoader:
     - Configurable encoding for CSV files
     - Complete audit trail with checksums
     """
-    
+
     def __init__(self, database: Database, config=None):
+        BaseFileLoader.__init__(self, logger_prefix="UnifiedLoader")
         self.database = database
         self.config = config
         logger.info("[UnifiedLoader] Initialized with async support")
@@ -182,31 +254,7 @@ class UnifiedLoader:
             error_msg = f"Failed to load {Path(file_path).name}: {e}"
             logger.error(f"[UnifiedLoader] {error_msg}")
             return False, error_msg, 0
-    
-    def _validate_file(self, file_path: Union[str, Path]) -> Optional[Path]:
-        """Validate file exists and return Path object."""
-        file_path = Path(file_path)
-        if not file_path.exists():
-            return None
-        return file_path
-    
-    def _get_encoding(self, table_info: TableInfo) -> str:
-        """Extract encoding from table_info with fallback to utf-8."""
-        encoding = getattr(table_info, 'encoding', None)
-        if encoding and hasattr(encoding, 'value'):
-            return encoding.value
-        return 'utf-8'
-    
-    def _create_file_loader(self, file_path: Path, encoding: str) -> FileLoader:
-        """Create and return configured FileLoader."""
-        return FileLoader(str(file_path), encoding=encoding)
-    
-    def _detect_format(self, file_loader: FileLoader, file_path: Path) -> str:
-        """Detect and log file format."""
-        detected_format = file_loader.get_format()
-        logger.info(f"[UnifiedLoader] Detected format: {detected_format} for {file_path.name}")
-        return detected_format
-    
+
     def _execute_load(
         self,
         table_info: TableInfo,
@@ -313,44 +361,21 @@ class UnifiedLoader:
     def _apply_transforms_to_batches(self, batch_generator, table_info: TableInfo, headers: List[str]):
         """Apply row-level transforms from table_info.transform_map to each batch."""
         transform_func = getattr(table_info, 'transform_map', None)
-        
+
         # Import default transform for proper identity comparison
         from ..core.constants import default_transform_map
-        
+
         if not transform_func or transform_func is default_transform_map:
             # No transforms needed, yield batches as-is
             logger.debug(f"[UnifiedLoader] No transforms for table {table_info.table_name}")
             for batch in batch_generator:
                 yield batch
         else:
-            # Apply transforms to each row
+            # Apply transforms to each row using shared utility
             logger.info(f"[UnifiedLoader] ✅ APPLYING TRANSFORMS: {transform_func.__name__} to {table_info.table_name}")
-            
+
             for batch in batch_generator:
-                transformed_batch = []
-                
-                for row_tuple in batch:
-                    try:
-                        # Convert tuple to dictionary
-                        row_dict = dict(zip(headers, row_tuple))
-                        
-                        # Apply transform function
-                        transformed_dict = transform_func(row_dict)
-                        
-                        # Convert back to tuple in correct order
-                        transformed_tuple = tuple(
-                            transformed_dict.get(header, row_tuple[i]) 
-                            for i, header in enumerate(headers)
-                        )
-                        
-                        transformed_batch.append(transformed_tuple)
-                        
-                    except Exception as e:
-                        # On transform error, use original row and log warning
-                        logger.warning(f"[UnifiedLoader] Transform failed for row in {table_info.table_name}: {e}")
-                        transformed_batch.append(row_tuple)
-                
-                yield transformed_batch
+                yield apply_transforms_to_batch(table_info, batch, headers)
     
     # Compatibility methods for existing code that expects specific method names
     def load_csv_file(
@@ -382,7 +407,7 @@ class UnifiedLoader:
         return self.load_file(table_info, parquet_file, chunk_size, max_retries)
 
 
-class LargeFileLoader:
+class LargeFileLoader(BaseFileLoader):
     """
     Memory-efficient synchronous loader for large files (4GB+).
 
@@ -399,6 +424,7 @@ class LargeFileLoader:
     """
 
     def __init__(self, database: Database, config=None):
+        BaseFileLoader.__init__(self, logger_prefix="LargeFileLoader")
         self.database = database
         self.config = config
         logger.info("[LargeFileLoader] Initialized with memory-safe synchronous processing")
@@ -447,31 +473,7 @@ class LargeFileLoader:
             error_msg = f"Failed to load {Path(file_path).name}: {e}"
             logger.error(f"[LargeFileLoader] {error_msg}")
             return False, error_msg, 0
-    
-    def _validate_file(self, file_path: Union[str, Path]) -> Optional[Path]:
-        """Validate file exists and return Path object."""
-        file_path = Path(file_path)
-        if not file_path.exists():
-            return None
-        return file_path
-    
-    def _get_encoding(self, table_info: TableInfo) -> str:
-        """Extract encoding from table_info with fallback to utf-8."""
-        encoding = getattr(table_info, 'encoding', None)
-        if encoding and hasattr(encoding, 'value'):
-            return encoding.value
-        return 'utf-8'
-    
-    def _create_file_loader(self, file_path: Path, encoding: str) -> FileLoader:
-        """Create and return configured FileLoader."""
-        return FileLoader(str(file_path), encoding=encoding)
-    
-    def _detect_format(self, file_loader: FileLoader, file_path: Path) -> str:
-        """Detect and log file format."""
-        detected_format = file_loader.get_format()
-        logger.info(f"[LargeFileLoader] Detected format: {detected_format}")
-        return detected_format
-    
+
     def _log_large_file_config(self, file_path: Path, chunk_size: int, apply_transforms: bool):
         """Log large file loading configuration."""
         logger.info(f"[LargeFileLoader] Loading file: {file_path.name}")
@@ -529,42 +531,8 @@ class LargeFileLoader:
             return False, str(e), total_rows
 
     def _apply_transforms_to_batch(self, table_info: TableInfo, batch: List[Tuple]) -> List[Tuple]:
-        """Apply row-level transforms to a batch."""
-        transform_func = getattr(table_info, 'transform_map', None)
-
-        # Import default transform for proper identity comparison
-        from ..core.constants import default_transform_map
-
-        if not transform_func or transform_func is default_transform_map:
-            # No transforms needed, return batch as-is
-            return batch
-
-        # Apply transforms to each row
-        logger.debug(f"[LargeFileLoader] Applying {transform_func.__name__} transforms to batch")
-        transformed_batch = []
-
-        for row_tuple in batch:
-            try:
-                # Convert tuple to dictionary
-                row_dict = dict(zip(table_info.columns, row_tuple))
-
-                # Apply transform function
-                transformed_dict = transform_func(row_dict)
-
-                # Convert back to tuple in correct order
-                transformed_tuple = tuple(
-                    transformed_dict.get(header, row_tuple[i])
-                    for i, header in enumerate(table_info.columns)
-                )
-
-                transformed_batch.append(transformed_tuple)
-
-            except Exception as e:
-                # On transform error, use original row and log warning
-                logger.warning(f"[LargeFileLoader] Transform failed for row in {table_info.table_name}: {e}")
-                transformed_batch.append(row_tuple)
-
-        return transformed_batch
+        """Apply row-level transforms to a batch using shared utility."""
+        return apply_transforms_to_batch(table_info, batch, table_info.columns)
 
     def _insert_batch_synchronously(self, table_info: TableInfo, batch: List[Tuple]):
         """Insert a batch of rows synchronously with proper SQL formatting and UPSERT logic."""

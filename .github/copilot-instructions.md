@@ -4,7 +4,7 @@
 Production ETL pipeline that processes Brazilian Federal Revenue public CNPJ data (~17GB uncompressed) into PostgreSQL. Features high-performance async processing, comprehensive auditing, incremental loading, and robust file detection.
 
 ## Core Architecture
-- **Main Flow**: `src/main.py` → `ETLOrchestrator` → `CNPJ_ETL` → Download/Extract/Convert/Load
+- **Main Flow**: `src/main.py` → `PipelineOrchestrator` → `Pipeline` (Download/Extract/Convert/Load)
 - **Configuration**: `ConfigurationService` in `src/setup/config.py` - single source of truth
 - **Dual Databases**: Production (`MainBase`) + Audit (`AuditBase`) with separate SQLAlchemy bases
 - **Enhanced Loading**: `EnhancedUnifiedLoader` with async processing and 4-layer file detection
@@ -23,7 +23,7 @@ etl_config = config_service.etl  # ETL_CHUNK_SIZE, etc.
 
 ### Resource Initialization (Lazy Loading)
 ```python
-# Mandatory pattern in CNPJ_ETL - avoids unnecessary connections
+# Mandatory pattern in ReceitaCNPJPipeline - avoids unnecessary connections
 @property
 def database(self):
     if self._database is None:

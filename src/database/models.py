@@ -1,4 +1,14 @@
-from sqlalchemy import Column, BigInteger, String, TIMESTAMP, JSON, Text, Float, Index, ForeignKey
+from sqlalchemy import (
+    Column, 
+    BigInteger, 
+    String, 
+    TIMESTAMP, 
+    JSON, 
+    Text, 
+    Float, 
+    Index, 
+    ForeignKey
+)
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import UUID
 from typing import Optional, Generic, TypeVar, List, Any

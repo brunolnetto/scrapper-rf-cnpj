@@ -4,8 +4,8 @@ import argparse
 import sys
 
 # Find time bottleneck between calls
-from .core.orchestrator import GenericOrchestrator
-from .core.etl import CNPJ_ETL
+from .core.orchestrator import PipelineOrchestrator
+from .core.etl import ReceitaCNPJPipeline
 from .core.strategies import StrategyFactory
 from .setup.config import ConfigurationService
 
@@ -21,7 +21,7 @@ def validate_cli_arguments(args):
         SystemExit: If invalid argument combinations are detected
     """
     errors = []
-    
+
     # Check for valid strategy combinations
     strategy_key = (args.download, args.convert, args.load)
     valid_combinations = [
@@ -32,21 +32,21 @@ def validate_cli_arguments(args):
         (False, True, True),   # Convert and Load
         (True, True, True),    # Full ETL
     ]
-    
+
     if strategy_key not in valid_combinations:
         errors.append(
             f"Invalid strategy combination: download={args.download}, convert={args.convert}, load={args.load}. "
             "Valid combinations: 100 (download only), 110 (download+convert), 010 (convert only), "
             "001 (load only), 011 (convert+load), 111 (full ETL)."
         )
-    
+
     # Check for database-related options with non-database modes
     if not args.load and (args.full_refresh or args.clear_tables):
         errors.append(
             "Cannot use --full-refresh or --clear-tables without --load flag. "
             "Database operations require loading data to database."
         )
-    
+
     # Print errors and exit if any found
     if errors:
         print("❌ Invalid CLI argument combinations detected:")
@@ -120,20 +120,20 @@ Default (no flags): Full ETL (111)
 
     # Validate CLI argument combinations
     validate_cli_arguments(args)
-    
+
     # Create configuration and pipeline
     config_service = ConfigurationService()
-    pipeline = CNPJ_ETL(config_service)
-    
+    pipeline = ReceitaCNPJPipeline(config_service)
+
     # Create strategy based on boolean flags
     strategy = StrategyFactory.create_strategy(
         download=args.download,
         convert=args.convert,
         load=args.load
     )
-    
+
     # Create orchestrator with strategy
-    orchestrator = GenericOrchestrator(pipeline, strategy, config_service)
+    orchestrator = PipelineOrchestrator(pipeline, strategy, config_service)
 
     # Run with parameters
     orchestrator.run(
