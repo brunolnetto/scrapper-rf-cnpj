@@ -28,8 +28,8 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
         # Keep for compatibility but simplified
         self.parallel_enabled = config.etl.is_parallel
         self.internal_concurrency = config.etl.internal_concurrency
-        logger.info("Loading strategy initialized (simplified architecture)")
-        
+        logger.info("Loading strategy initialized")
+
     def load_table(self, database: Database, table_name: str, path_config: PathConfig, 
                    table_files: Optional[List[str]] = None) -> Tuple[bool, Optional[str], int]:
         """Load table using EnhancedUnifiedLoader only."""
