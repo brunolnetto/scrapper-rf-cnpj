@@ -48,6 +48,19 @@ class DatabaseConfig:
 
 
 @dataclass
+class ConversionConfig:
+    """Enhanced processing configuration with memory management."""
+    chunk_size: int = 50_000
+    max_memory_mb: int = 1024  # Maximum additional memory above baseline
+    baseline_buffer_mb: int = 200  # Buffer for baseline calculations
+    row_group_size: int = 50_000
+    workers: int = 1
+    compression: str = "snappy"
+    memory_check_interval: float = 5.0  # Seconds between memory checks
+    cleanup_threshold_ratio: float = 0.8  # Trigger cleanup at 80% of limit
+
+
+@dataclass
 class ETLConfig:
     """ETL process configuration."""
     year: int = 2024  # Default year for data processing

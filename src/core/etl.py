@@ -207,11 +207,9 @@ class ReceitaCNPJPipeline(Pipeline):
 
         return audits
 
-    
-
     def convert_to_parquet(self, audit_metadata: AuditMetadata) -> Path:
         from ..utils.misc import makedir
-        from ..utils.conversion import convert_csvs_to_parquet
+        from .conversion.service import convert_csvs_to_parquet
 
         num_workers = self.config.etl.parallel_workers
         delimiter = self.config.etl.delimiter
@@ -253,7 +251,7 @@ class ReceitaCNPJPipeline(Pipeline):
 
         extract_path = Path(self.config.paths.extract_path)
 
-        convert_csvs_to_parquet(audit_map, extract_path, output_dir, num_workers, delimiter)
+        convert_csvs_to_parquet(audit_map, extract_path, output_dir)
         logger.info(f"Parquet conversion completed. Files saved to: {output_dir}")
 
         return output_dir
