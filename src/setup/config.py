@@ -182,7 +182,6 @@ class ConfigurationService:
 
     def _load_etl_config(self, ) -> ETLConfig:
         """Load ETL configuration from environment variables."""
-        from datetime import datetime
 
         # Get current date for defaults
         current_year = self.year

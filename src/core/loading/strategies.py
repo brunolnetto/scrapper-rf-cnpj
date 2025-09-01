@@ -49,7 +49,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                 dev_filter = DevelopmentFilter(self.config)
 
                 if not dev_filter.filter_parquet_file_by_size(parquet_file):
-                    return True, f"Skipped large file in development mode", 0
+                    return True, "Skipped large file in development mode", 0
 
                 logger.info(f"[LoadingStrategy] Loading Parquet file: {parquet_file.name}")
                 return self._create_manifest_and_load(loader, table_info, parquet_file, table_name)
@@ -124,7 +124,6 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
         if self.audit_service and hasattr(self.audit_service, 'create_file_manifest'):
             try:
                 from pathlib import Path
-                from datetime import datetime
                 file_path_obj = Path(file_path)
                 
                 # Calculate file info if file exists

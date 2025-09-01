@@ -18,8 +18,6 @@ from .interfaces import Pipeline
 from .schemas import FileInfo, AuditMetadata
 from .audit.service import AuditService
 from .loading.strategies import DataLoadingStrategy
-from .interfaces import Pipeline
-from .constants import TABLES_INFO_DICT
 
 class ReceitaCNPJPipeline(Pipeline):
     def __init__(self, config_service: ConfigurationService = None) -> None:

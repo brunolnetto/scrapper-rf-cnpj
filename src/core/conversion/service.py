@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import gc
 import time
-from typing import List, Dict, Optional, Callable, Any
+from typing import List, Dict, Optional, Callable
 from dataclasses import dataclass
 import threading
 
@@ -786,7 +786,7 @@ def convert_csvs_to_parquet_v2(
     final_status = global_monitor.get_status_report()
     total_mb = total_bytes_processed / (1024 * 1024)
     
-    logger.info(f"🎉 Conversion Summary:")
+    logger.info("🎉 Conversion Summary:")
     logger.info(f"   ✅ Successful: {success_count} tables")
     logger.info(f"   ❌ Failed: {error_count} tables")
     logger.info(f"   📊 Total processed: {total_bytes_processed:,} bytes ({total_mb:.1f}MB)")
