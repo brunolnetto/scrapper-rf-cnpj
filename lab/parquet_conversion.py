@@ -251,6 +251,7 @@ def infer_optimal_schema(csv_path: Path, delimiter: str, sample_size: int = 1000
         sample_df = pl.read_csv(
             str(csv_path),
             separator=delimiter,
+            quote_char='"',
             n_rows=sample_size,
             encoding="utf8-lossy",
             ignore_errors=True,
@@ -773,6 +774,7 @@ def estimate_memory_requirements(csv_path: Path, delimiter: str = ";") -> Dict[s
         sample = pl.read_csv(
             str(csv_path),
             separator=delimiter,
+            quote_char='"',
             n_rows=1000,
             encoding="utf8-lossy",
             ignore_errors=True
@@ -823,6 +825,7 @@ def split_large_csv_file(
         header_df = pl.read_csv(
             str(csv_path),
             separator=delimiter,
+            quote_char='"',
             n_rows=1,
             encoding="utf8-lossy"
         )
@@ -842,6 +845,7 @@ def split_large_csv_file(
                 chunk = pl.read_csv(
                     str(csv_path),
                     separator=delimiter,
+                    quote_char='"',
                     skip_rows=offset,
                     n_rows=rows_per_chunk,
                     encoding="utf8-lossy",
@@ -932,7 +936,7 @@ def process_extremely_large_table(
     # derive schema (same as before)
     try:
         sample_rows = 10000
-        sample_df = pl.read_csv(str(inputs[0]), separator=delimiter, n_rows=sample_rows, encoding="utf8-lossy", ignore_errors=True)
+        sample_df = pl.read_csv(str(inputs[0]), separator=delimiter, quote_char='"', n_rows=sample_rows, encoding="utf8-lossy", ignore_errors=True)
         if len(sample_df) > 0:
             pa_schema = sample_df.to_arrow().schema
         else:
@@ -941,7 +945,7 @@ def process_extremely_large_table(
         gc.collect()
     except Exception:
         try:
-            sample_pd = pd.read_csv(str(inputs[0]), sep=delimiter, nrows=1000, dtype=str, on_bad_lines="skip")
+            sample_pd = pd.read_csv(str(inputs[0]), sep=delimiter, quotechar='"', nrows=1000, dtype=str, on_bad_lines="skip")
             pa_schema = pa.Table.from_pandas(sample_pd, preserve_index=False).schema
             del sample_pd
             gc.collect()
