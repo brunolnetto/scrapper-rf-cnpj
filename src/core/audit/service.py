@@ -6,6 +6,10 @@ Includes comprehensive manifest tracking and file integrity verification capabil
 """
 
 import hashlib
+<<<<<<< HEAD
+=======
+import os
+>>>>>>> 8a568e6 (Normalization)
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -177,6 +181,14 @@ class AuditService:
     def _calculate_file_checksum(self, file_path: Path, algorithm: str = 'sha256') -> str:
         """Calculate file checksum for integrity verification."""
         try:
+            # Skip checksum for very large files (> 1GB) to avoid performance issues
+            filesize = file_path.stat().st_size
+            checksum_threshold = int(os.getenv("ETL_CHECKSUM_THRESHOLD_BYTES", "1000000000"))  # 1GB default
+            
+            if filesize > checksum_threshold:
+                logger.info(f"[PERFORMANCE] Skipping checksum calculation for large file {file_path.name}: {filesize:,} bytes (> {checksum_threshold:,})")
+                return None
+            
             hash_func = hashlib.new(algorithm)
             with open(file_path, 'rb') as f:
                 # Read in chunks to handle large files

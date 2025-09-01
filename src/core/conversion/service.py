@@ -16,13 +16,7 @@ import polars as pl
 from ...setup.config import ConversionConfig
 from ...setup.logging import logger
 
-try:
-    import psutil
-    PSUTIL_AVAILABLE = True
-except ImportError:
-    PSUTIL_AVAILABLE = False
-    psutil = None
-
+import psutil
 
 @dataclass
 class MemorySnapshot:
@@ -49,18 +43,17 @@ class MemoryMonitor:
         self.lock = threading.Lock()
         self.last_cleanup_time = 0
         
-        if PSUTIL_AVAILABLE:
-            try:
-                self.process = psutil.Process()
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                logger.warning("Cannot monitor process memory - using fallback mode")
+        try:
+            self.process = psutil.Process()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            logger.warning("Cannot monitor process memory - using fallback mode")
         
         # Establish baseline immediately
         self._establish_baseline()
 
     def _get_current_memory_info(self) -> MemorySnapshot:
         """Get current comprehensive memory information."""
-        if self.process and PSUTIL_AVAILABLE:
+        if self.process:
             try:
                 proc_info = self.process.memory_info()
                 sys_info = psutil.virtual_memory()
@@ -201,13 +194,13 @@ class MemoryMonitor:
             pass
             
         # Stage 4: OS-level hints
-        if PSUTIL_AVAILABLE and hasattr(os, 'sync'):
-            try:
-                os.sync()  # Flush OS buffers
-            except:
-                pass
+        try:
+            os.sync()  # Flush OS buffers
+        except:
+            pass
         
-        time.sleep(0.1)  # Brief pause for cleanup to take effect
+        # Brief pause for cleanup to take effect
+        time.sleep(0.1)
         
         after_snapshot = self._get_current_memory_info()
         cleanup_stats["after_mb"] = after_snapshot.process_rss_mb
@@ -414,7 +407,7 @@ def process_csv_with_memory(
         memory_monitor.perform_aggressive_cleanup()
         raise e
 
-def convert_table_csvs_v2(
+def convert_table_csvs(
     table_name: str,
     csv_paths: List[Path],
     output_dir: Path,
@@ -633,13 +626,12 @@ def convert_csvs_to_parquet(
     logger.info(f"Configuration: {config.max_memory_mb}MB memory limit above baseline")
 
     # Enhanced system info logging
-    if PSUTIL_AVAILABLE:
-        try:
-            memory = psutil.virtual_memory()
-            logger.info(f"System Memory: {memory.total/(1024**3):.2f}GB total, "
-                       f"{memory.available/(1024**3):.2f}GB available")
-        except:
-            pass
+    try:
+        memory = psutil.virtual_memory()
+        logger.info(f"System Memory: {memory.total/(1024**3):.2f}GB total, "
+                    f"{memory.available/(1024**3):.2f}GB available")
+    except:
+        pass
 
     # Create global memory monitor
     global_monitor = MemoryMonitor(config)
@@ -697,11 +689,11 @@ def convert_csvs_to_parquet(
                 tasks = {}
                 
                 for table_name, zip_map, csv_paths, total_bytes in table_work:
-                    from ...utils.model_utils import get_table_columns
+                    from ...utils.models import get_table_columns
                     expected_columns = get_table_columns(table_name)
 
                     task = executor.submit(
-                        convert_table_csvs_v2,
+                        convert_table_csvs,
                         table_name,
                         csv_paths,
                         output_dir,
@@ -756,10 +748,10 @@ def convert_csvs_to_parquet(
                     time.sleep(1.0)
                 
                 try:
-                    from ...utils.model_utils import get_table_columns
+                    from ...utils.models import get_table_columns
                     expected_columns = get_table_columns(table_name)
                     
-                    result = convert_table_csvs_v2(
+                    result = convert_table_csvs(
                         table_name,
                         csv_paths,
                         output_dir,
@@ -794,7 +786,7 @@ def convert_csvs_to_parquet(
     logger.info(f"   📁 Output directory: {output_dir}")
 
 
-# IMPROVEMENT 12: Additional utility functions for handling very large files
+# Additional utility functions for handling very large files
 
 def estimate_memory_requirements(csv_path: Path, delimiter: str = ";") -> Dict[str, float]:
     """
@@ -966,22 +958,22 @@ def process_extremely_large_table(
     if not inputs:
         return f"[ERROR] No processable files for '{table_name}'"
 
-    # Try imports
-    try:
-        import pandas as pd
-        import pyarrow as pa
-        import pyarrow.parquet as pq
-    except Exception as imp_err:
-        logger.warning(f"pyarrow/pandas not available ({imp_err}). Falling back to CSV-splitting flow.")
-        # fallback: keep original splitting behavior (omitted here for brevity)
-        # ... call previous split+convert_table_csvs_v2 flow ...
-        # (you already have fallback code in your file; keep it)
-        return "[ERROR] pandas/pyarrow not available - fallback path not shown here"
+    import pandas as pd
+    import pyarrow as pa
+    import pyarrow.parquet as pq
 
     # derive schema (same as before)
     try:
         sample_rows = 10000
-        sample_df = pl.read_csv(str(inputs[0]), separator=delimiter, quote_char='"', n_rows=sample_rows, encoding="utf8-lossy", ignore_errors=True, has_header=False)
+        sample_df = pl.read_csv(
+            str(inputs[0]), 
+            separator=delimiter, 
+            quote_char='"', 
+            n_rows=sample_rows, 
+            encoding="utf8-lossy", 
+            ignore_errors=True, 
+            has_header=False
+        )
         if len(sample_df) > 0:
             pa_schema = sample_df.to_arrow().schema
         else:
@@ -990,7 +982,15 @@ def process_extremely_large_table(
         gc.collect()
     except Exception:
         try:
-            sample_pd = pd.read_csv(str(inputs[0]), sep=delimiter, quotechar='"', nrows=1000, dtype=str, on_bad_lines="skip", header=None)
+            sample_pd = pd.read_csv(
+                str(inputs[0]), 
+                sep=delimiter, 
+                quotechar='"', 
+                nrows=1000, 
+                dtype=str, 
+                on_bad_lines="skip", 
+                header=None
+            )
             pa_schema = pa.Table.from_pandas(sample_pd, preserve_index=False).schema
             del sample_pd
             gc.collect()
@@ -1013,7 +1013,11 @@ def process_extremely_large_table(
 
     writer = None
     total_rows_written = 0
-    default_chunksize = getattr(config, "default_chunksize", None) or getattr(config, "chunk_rows", None) or 500_000
+    default_chunksize = getattr(
+        config, 
+        "default_chunksize", None) or \
+        getattr(config, "chunk_rows", None) or \
+        500_000
     chunksize = int(default_chunksize)
 
     try:
@@ -1022,7 +1026,9 @@ def process_extremely_large_table(
         for csv_path in inputs:
             fsize_mb = csv_path.stat().st_size / (1024 * 1024)
             if fsize_mb > max_file_size_mb:
-                local_chunksize = max(50_000, int(chunksize / max(1, int(fsize_mb // max_file_size_mb))))
+                local_chunksize = max(\
+                    50_000, int(chunksize / max(1, int(fsize_mb // max_file_size_mb)))
+                )
             else:
                 local_chunksize = chunksize
 
@@ -1183,8 +1189,6 @@ def process_extremely_large_table(
         return f"[ERROR] Failed extremely large table '{table_name}': {e}"
 
 
-# IMPROVEMENT 13: Configuration adjustments for your specific use case
-
 class LargeDatasetConfig(ConversionConfig):
     """
     Specialized configuration for very large datasets like yours.
@@ -1210,7 +1214,7 @@ class LargeDatasetConfig(ConversionConfig):
         self.chunk_processing_delay = 0.5  # Pause between chunks
 
 
-# IMPROVEMENT 14: Smart processing strategy selector
+# Smart processing strategy selector
 
 def select_processing_strategy(audit_map: dict, unzip_dir: Path) -> str:
     """
@@ -1285,7 +1289,7 @@ def convert_csvs_to_parquet(
             if not valid_paths:
                 continue
                 
-            from ...utils.model_utils import get_table_columns
+            from ...utils.models import get_table_columns
             expected_columns = get_table_columns(table_name)
             
             result = process_extremely_large_table(
@@ -1307,6 +1311,3 @@ def convert_csvs_to_parquet(
             config,
             delimiter
         )
-
-
-    

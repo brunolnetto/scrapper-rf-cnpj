@@ -57,15 +57,23 @@ async def async_upsert(
     # MEMORY-EFFICIENT: Calculate file size and checksum without loading entire file into memory
     try:
         filesize = os.path.getsize(file_path)
-        # Calculate checksum in chunks to avoid memory issues
-        sha256 = hashlib.sha256()
-        with open(file_path, "rb") as f:
-            for chunk in iter(lambda: f.read(8192), b""):
-                sha256.update(chunk)
-        checksum = sha256.digest()
-        logging.info(f"[MEMORY] File {filename}: {filesize:,} bytes, checksum calculated efficiently")
+        
+        # Skip checksum for very large files (> 1GB) to avoid performance issues
+        checksum_threshold = int(os.getenv("ETL_CHECKSUM_THRESHOLD_BYTES", "1000000000"))  # 1GB default
+        if filesize > checksum_threshold:
+            logging.info(f"[PERFORMANCE] Skipping checksum for large file {filename}: {filesize:,} bytes (> {checksum_threshold:,})")
+            checksum = None
+        else:
+            # Calculate checksum in chunks to avoid memory issues
+            sha256 = hashlib.sha256()
+            with open(file_path, "rb") as f:
+                for chunk in iter(lambda: f.read(8192), b""):
+                    sha256.update(chunk)
+            checksum = sha256.digest()
+            logging.info(f"[MEMORY] File {filename}: {filesize:,} bytes, checksum calculated efficiently")
     except Exception as e:
         logging.warning(f"Could not calculate checksum for {filename}: {e}")
+        checksum = None
 
     # Memory monitoring for large files
     if filesize and filesize > 1_000_000_000:  # > 1GB
@@ -119,10 +127,7 @@ async def async_upsert(
             "file_completed", 
             run_id=run_id, filename=filename, rows_processed=rows_total,
             parallel_mode=enable_internal_parallelism)
-        await record_manifest(
-            conn, filename, "success", 
-            checksum, filesize, run_id, rows_processed=rows_total
-        )
+
     return rows_total  # Return the total number of rows processed
 
 

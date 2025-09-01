@@ -48,19 +48,6 @@ class DatabaseConfig:
 
 
 @dataclass
-class ConversionConfig:
-    """Enhanced processing configuration with memory management."""
-    chunk_size: int = 50_000
-    max_memory_mb: int = 1024  # Maximum additional memory above baseline
-    baseline_buffer_mb: int = 200  # Buffer for baseline calculations
-    row_group_size: int = 50_000
-    workers: int = 1
-    compression: str = "snappy"
-    memory_check_interval: float = 5.0  # Seconds between memory checks
-    cleanup_threshold_ratio: float = 0.8  # Trigger cleanup at 80% of limit
-
-
-@dataclass
 class ETLConfig:
     """ETL process configuration."""
     year: int = 2024  # Default year for data processing
@@ -87,6 +74,9 @@ class ETLConfig:
     manifest_tracking: bool = True
     async_pool_min_size: int = 2
     async_pool_max_size: int = 10
+    
+    # Performance optimization settings
+    checksum_threshold_bytes: int = 1_000_000_000  # Skip checksum for files > 1GB
 
     # CSV to Parquet conversion settings
     conversion_chunk_size: int = 100000  # Rows per chunk during conversion
@@ -182,6 +172,7 @@ class ConfigurationService:
 
     def _load_etl_config(self, ) -> ETLConfig:
         """Load ETL configuration from environment variables."""
+        from datetime import datetime
 
         # Get current date for defaults
         current_year = self.year
@@ -209,6 +200,7 @@ class ConfigurationService:
             manifest_tracking=os.getenv("ETL_MANIFEST_TRACKING", "true").lower() == "true",
             async_pool_min_size=int(os.getenv("ETL_ASYNC_POOL_MIN_SIZE", "1")),
             async_pool_max_size=int(os.getenv("ETL_ASYNC_POOL_MAX_SIZE", "10")),
+            checksum_threshold_bytes=int(os.getenv("ETL_CHECKSUM_THRESHOLD_BYTES", "1000000000")),
         )
 
     def _load_path_config(self) -> PathConfig:

@@ -575,7 +575,7 @@ def convert_table_csvs_v2(
         logger.error(f"Conversion failed for '{table_name}': {e}")
         return f"[ERROR] Failed '{table_name}': {e}"
 
-def convert_csvs_to_parquet_v2(
+def convert_csvs_to_parquet(
     audit_map: dict,
     unzip_dir: Path,
     output_dir: Path,
@@ -663,7 +663,7 @@ def convert_csvs_to_parquet_v2(
                 tasks = {}
                 
                 for table_name, zip_map, csv_paths, total_bytes in table_work:
-                    from ...utils.model_utils import get_table_columns
+                    from ...utils.models import get_table_columns
                     expected_columns = get_table_columns(table_name)
 
                     task = executor.submit(
@@ -722,7 +722,7 @@ def convert_csvs_to_parquet_v2(
                     time.sleep(1.0)
                 
                 try:
-                    from ...utils.model_utils import get_table_columns
+                    from ...utils.models import get_table_columns
                     expected_columns = get_table_columns(table_name)
                     
                     result = convert_table_csvs_v2(
@@ -1227,7 +1227,7 @@ def convert_csvs_to_parquet(
             if not valid_paths:
                 continue
                 
-            from ...utils.model_utils import get_table_columns
+            from ...utils.models import get_table_columns
             expected_columns = get_table_columns(table_name)
             
             result = process_extremely_large_table(
@@ -1242,7 +1242,7 @@ def convert_csvs_to_parquet(
             logger.info(result)
     else:
         # Use improved standard processing
-        convert_csvs_to_parquet_v2(
+        convert_csvs_to_parquet(
             audit_map,
             unzip_dir,
             output_dir,

@@ -26,12 +26,11 @@ from pathlib import Path
 from typing import Tuple, Optional, Union, List
 from sqlalchemy import text, inspect
 
+from lab.refactored_fileloader.src import base
 
 from ..setup.logging import logger
 from ..core.constants import TABLES_INFO_DICT
 from ..core.schemas import TableInfo
-from ..utils.model_utils import get_table_columns
-from .schemas import Database
 from ..core.loading.file_loader.file_loader import FileLoader
 from ..core.loading.file_loader.uploader import async_upsert
 from ..core.loading.file_loader.connection_factory import (
@@ -39,6 +38,8 @@ from ..core.loading.file_loader.connection_factory import (
     extract_primary_keys,
     get_column_types_mapping
 )
+from ..utils.models import get_table_columns
+from .schemas import Database
 
 
 class BaseFileLoader:
@@ -313,12 +314,22 @@ class UnifiedLoader(BaseFileLoader):
         return await create_asyncpg_pool_from_sqlalchemy(self.database, self.config)
     
     def _get_config_params(self, chunk_size: Optional[int]) -> dict:
-        """Get configuration parameters with defaults."""
+        """Get configuration parameters with defaults and memory optimization."""
+        base_chunk_size = chunk_size or getattr(self.config.etl, 'chunk_size', 50000)
+        
+        # Memory optimization for large files
+        if hasattr(self, 'database') and self.config:
+            # Check if we're dealing with a large file by looking at recent file operations
+            # This is a heuristic - in production you might want more sophisticated detection
+            if base_chunk_size > 25000:
+                base_chunk_size = min(base_chunk_size, 25000)
+                logger.info(f"[MEMORY] Reduced chunk_size to {base_chunk_size} for memory efficiency")
+        
         return {
-            'chunk_size': chunk_size or getattr(self.config.etl, 'chunk_size', 50000),
+            'chunk_size': base_chunk_size,
             'sub_batch_size': getattr(self.config.etl, 'sub_batch_size', 5000),
             'enable_parallelism': getattr(self.config.etl, 'enable_internal_parallelism', True),
-            'internal_concurrency': getattr(self.config.etl, 'internal_concurrency', 3)
+            'internal_concurrency': min(getattr(self.config.etl, 'internal_concurrency', 3), 2)  # Cap at 2 for safety
         }
     
     def _log_config_params(self, config_params: dict):

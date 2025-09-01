@@ -361,7 +361,7 @@ if args.year <= 2000 or (args.month < 1 or args.month > 12):
 ### Utilities (`src/utils/`)
 - **`conversion.py`**: CSV to Parquet conversion utilities
 - **`file_loader.py`**: Robust file detection and streaming
-- **`model_utils.py`**: Table schema utilities
+- **`models.py`**: Table schema utilities
 
 ### Development & Analysis (`lab/`)
 - **`main.ipynb`**: Jupyter notebook for data exploration
