@@ -372,72 +372,275 @@ if args.year <= 2000 or (args.month < 1 or args.month > 12):
 ### Examples (`examples/`)
 - **`loading_example.py`**: Demonstrates data loading patterns
 
-## Key Architectural Patterns
+## Development Workflow & Testing
 
-### Protocol-Based Design
-- **Pipeline Protocol**: Ensures all pipelines implement `run()`, `validate_config()`, `get_name()`
-- **Strategy Protocol**: Enables pluggable execution strategies
-- **Benefits**: Loose coupling, testability, extensibility
+### Justfile Commands (Essential for Productivity)
+```bash
+# Core development cycle
+just install          # Install dependencies with uv (fast package manager)
+just lint            # Auto-fix linting issues (ruff F + ARG rules)
+just run             # Run ETL for current date
+just run-etl 2024 12 # Run ETL for specific year/month
 
-### Factory Pattern for Loading
-```python
-# UnifiedLoader factory creates appropriate loader based on context
-loader = UnifiedLoader(database, config)  # Returns EnhancedUnifiedLoader
+# Code maintenance
+just search "token"  # Search codebase (excludes venv/.git)
+just replace "old" "new"  # Replace across codebase
+just clean          # Remove logs and cache files
+
+# Quality assurance
+just check           # Lint check without fixes
 ```
 
-### Lazy Initialization
-- **Database connections**: Only established when first accessed
-- **Services**: AuditService, DataLoadingService initialized on-demand
-- **Benefits**: Faster startup, reduced resource usage
-
-### Configuration Hierarchy
-1. **Environment variables** (.env file)
-2. **CLI parameters** (year, month, strategy flags)
-3. **Runtime configuration** (ConfigurationService methods)
-4. **Validation** (Pydantic models and CLI validation)
-
-### Error Handling Patterns
+### Testing Patterns
 ```python
-# Use tenacity for retry logic with exponential backoff
+# Use lab/ directory for data exploration and testing
+# Examples in lab/refactored_fileloader/tools/:
+# - benchmark_socios_ingestion.py: Performance benchmarking
+# - analyze_socios_uniqueness.py: Data quality analysis
+# - deep_socios_analysis.py: Source vs DB comparison
+
+# Run analysis tools for data validation
+cd lab/
+python tools/analyze_socios_uniqueness.py
+python tools/benchmark_socios_ingestion.py
+```
+
+### Environment Management
+```bash
+# Development mode automatically enables:
+# - File size filtering (development_file_size_limit)
+# - Reduced parallelism for debugging
+# - Structured JSON logging to logs/YYYY-MM-DD/HH_MM/
+
+# Switch environments by editing .env:
+ENVIRONMENT=development  # For development/testing
+ENVIRONMENT=production   # For production runs
+```
+
+## Advanced Architectural Patterns
+
+### Dual Database Architecture
+```python
+# Separate bases for production and audit data
+from sqlalchemy.ext.declarative import declarative_base
+
+AuditBase = declarative_base()  # Audit tables
+MainBase = declarative_base()   # Production tables
+
+class AuditDB(AuditBase):
+    __tablename__ = "table_ingestion_manifest"
+    # Audit-specific fields...
+
+class Empresa(MainBase):
+    __tablename__ = "empresa"
+    # Production data fields...
+```
+
+### Robust File Detection System
+```python
+# 4-layer validation in FileLoader._detect_format():
+# 1. File existence and accessibility
+# 2. Extension-based detection (.csv, .parquet, .txt, .dat)
+# 3. Content-based validation (magic bytes, delimiter detection)
+# 4. Encoding fallback mechanisms
+
+# Usage pattern:
+loader = FileLoader(file_path, encoding='utf-8')
+format = loader.get_format()  # 'csv' or 'parquet'
+batch_gen = loader.get_batch_generator(headers, chunk_size)
+```
+
+### Memory-Efficient Processing
+```python
+# Never load entire files into memory
+from src.utils.conversion import ProcessingConfig
+
+config = ProcessingConfig(
+    chunk_size=50000,        # Process in batches
+    max_memory_mb=1024,      # Hard memory limits
+    row_group_size=50000     # Parquet optimization
+)
+
+# Streaming processing for 17GB+ datasets
+for batch_df in csv_stream_processor(file_path, config):
+    process_batch(batch_df)  # Each batch is manageable
+```
+
+### Brazilian Number Format Transformation
+```python
+# Critical for empresa.capital_social field
+def empresa_transform_map(row_dict: Dict[str, str]) -> Dict[str, str]:
+    """Convert Brazilian format '1.234.567,89' to '1234567.89'"""
+    if "capital_social" in row_dict and row_dict["capital_social"]:
+        value = row_dict["capital_social"]
+        if "," in value:
+            parts = value.split(",")
+            if len(parts) == 2:
+                # Remove thousand separators and swap decimal separator
+                integer_part = parts[0].replace(".", "")
+                decimal_part = parts[1]
+                row_dict["capital_social"] = f"{integer_part}.{decimal_part}"
+    return row_dict
+```
+
+### Structured Logging with Context
+```python
+# JSON logging with comprehensive metadata
+logger.info("Processing started", extra={
+    "table_name": table_name,
+    "file_path": file_path,
+    "rows_processed": count,
+    "processing_time_ms": duration,
+    "memory_usage_mb": memory_mb
+})
+
+# Logs automatically saved to: logs/YYYY-MM-DD/HH_MM/
+# Include process, thread, module, function context
+```
+
+## Data Integrity & Validation
+
+### Primary Key Patterns
+```python
+# CNPJ relationships (8-digit base + order + check digit)
+# empresa: PRIMARY KEY (cnpj_basico)
+# estabelecimento: PRIMARY KEY (cnpj_basico, cnpj_ordem, cnpj_dv)
+# socios: PRIMARY KEY (cnpj_basico, identificador_socio)
+
+# Note: socios uses composite key due to ~47% duplicates in source
+# UPSERT operations handle deduplication automatically
+```
+
+### Manifest Tracking System
+```python
+# Every file operation creates audit trail
+from src.core.audit.service import AuditService
+
+audit_service = AuditService(database, config)
+audit_service.create_file_manifest(
+    file_path=file_path,
+    status="PROCESSING",  # PROCESSING, SUCCESS, FAILED
+    checksum=checksum,
+    filesize=filesize,
+    rows=rows_processed,
+    table_name=table_name
+)
+```
+
+## Performance Optimization Patterns
+
+### Async Processing Configuration
+```bash
+# .env performance tuning
+ETL_CHUNK_SIZE=50000                    # Main batch size
+ETL_SUB_BATCH_SIZE=5000                # Internal sub-batch size  
+ETL_INTERNAL_CONCURRENCY=3             # Parallel sub-batches per file
+ETL_ASYNC_POOL_MIN_SIZE=2              # Connection pool minimum
+ETL_ASYNC_POOL_MAX_SIZE=10             # Connection pool maximum
+```
+
+### Connection Pool Management
+```python
+# Async connection pooling for high-throughput loading
+engine = create_engine(
+    uri,
+    poolclass=pool.QueuePool,
+    pool_size=20,              # Connection pool size
+    max_overflow=10,           # Max overflow connections
+    pool_recycle=3600,         # Recycle connections hourly
+)
+```
+
+### Error Recovery Patterns
+```python
+# Tenacity for automatic retry with exponential backoff
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=10)
+)
 def download_file(url, destination):
     # Network operations with automatic retry
     pass
-
-# Structured error logging with context
-try:
-    process_data(file_path)
-except Exception as e:
-    logger.error("Data processing failed", extra={
-        "file_path": file_path,
-        "error_type": type(e).__name__,
-        "error_message": str(e)
-    })
-    raise
 ```
 
-## Performance Testing
+## Troubleshooting Quick Reference
+
+### Common Issues & Solutions
+- **Connection errors**: Verify `.env` database credentials and dual database setup
+- **Download timeouts**: gov.br scraping can fail - uses tenacity for auto-retry
+- **Memory issues**: Reduce `ETL_CHUNK_SIZE` (default 50000) or increase system RAM
+- **Invalid format**: `FileLoader` auto-detects CSV/Parquet with fallback mechanisms
+- **Strategy validation**: Use valid CLI combinations (see CLI Validation section)
+- **Temporal errors**: Ensure year > 2000 and month 1-12
+- **Disk space**: Monitor `data/` directory (~50GB required)
+- **Manifest tracking**: Ensure `ETL_MANIFEST_TRACKING=true` in `.env`
+
+### Debug Commands
 ```bash
-# Comprehensive performance analysis for real CNPJ data
-cd lab/
-python tools/benchmark_socios_ingestion.py  # Multi-config benchmark
-python tools/analyze_socios_uniqueness.py   # PK analysis
-python tools/deep_socios_analysis.py        # Source vs DB comparison
+# Check database connections
+python -c "from src.setup.config import get_config; print(get_config().databases)"
+
+# Verify file detection
+python -c "from src.utils.file_loader import FileLoader; print(FileLoader('file.csv').get_format())"
+
+# Check ETL configuration
+python -c "from src.setup.config import get_config; print(get_config().etl)"
 ```
 
-## Troubleshooting
-- **Connection errors**: Check `.env` and dual database setup
-- **Download timeouts**: gov.br web scraping can fail - auto retry with tenacity
-- **Memory issues**: Adjust `ETL_CHUNK_SIZE` (default 50000) and `ETL_MAX_MEMORY_MB`
-- **Invalid format**: `UnifiedLoader` robustly detects CSV/Parquet with fallback
-- **Strategy validation errors**: Use valid CLI flag combinations (see CLI Validation section)
-- **Temporal parameter errors**: Ensure year > 2000 and month 1-12
-- **Configuration errors**: Use `ConfigurationService(year=X, month=Y)` constructor pattern
-- **Disk space**: Monitor `data/` (~50GB needed) and use `just clean` for maintenance
-- **File detection issues**: Check encoding parameter (default 'utf-8') for CSV files
-- **Manifest tracking**: Ensure `ETL_MANIFEST_TRACKING=true` in .env for audit logging
+## Code Quality Standards
+
+### Linting & Formatting
+```bash
+# Ruff configuration in pyproject.toml
+[tool.ruff]
+lint.select = ["F", "ARG"]  # Pyflakes + unused arguments
+lint.ignore = []           # No ignores for maximum code quality
+
+# Auto-fix common issues
+just lint  # Applies fixes automatically
+```
+
+### Import Organization
+```python
+# Standard library imports first
+import os
+from pathlib import Path
+from typing import Dict, List, Optional
+
+# Third-party imports
+import sqlalchemy as sa
+from pydantic import BaseModel
+
+# Local imports (grouped by package)
+from ..setup.config import ConfigurationService
+from ..database.schemas import Database
+from .interfaces import Pipeline
+```
+
+### Type Hints & Documentation
+```python
+# Use comprehensive type hints
+def process_batch(
+    batch: List[Tuple[str, ...]], 
+    table_name: str,
+    config: ConfigurationService
+) -> Tuple[bool, str, int]:
+    """
+    Process a batch of records for loading.
+    
+    Args:
+        batch: List of tuples containing row data
+        table_name: Target table name
+        config: Configuration service instance
+        
+    Returns:
+        Tuple of (success: bool, error_message: str, rows_processed: int)
+    """
+```
+
+This comprehensive guide covers the essential patterns and conventions that will help AI agents be immediately productive in this CNPJ ETL codebase. The patterns emphasize robust error handling, performance optimization, and maintainable architecture specific to large-scale data processing pipelines.
 
 ### Enhanced Data Loading
 ```python
