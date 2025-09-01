@@ -31,15 +31,15 @@ from lab.refactored_fileloader.src import base
 from ..setup.logging import logger
 from ..core.constants import TABLES_INFO_DICT
 from ..core.schemas import TableInfo
-from ..core.loading.file_loader.file_loader import FileLoader
-from ..core.loading.file_loader.uploader import async_upsert
-from ..core.loading.file_loader.connection_factory import (
+from ..core.services.loading.file_loader.file_loader import FileLoader
+from ..core.services.loading.file_loader.uploader import async_upsert
+from ..core.services.loading.file_loader.connection_factory import (
     create_asyncpg_pool_from_sqlalchemy,
     extract_primary_keys,
     get_column_types_mapping
 )
 from ..utils.models import get_table_columns
-from .schemas import Database
+from .engine import Database
 
 
 class BaseFileLoader:

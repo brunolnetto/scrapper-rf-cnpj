@@ -6,9 +6,7 @@ from sqlalchemy_utils import database_exists, create_database
 from sqlalchemy import text
 
 from .config import DatabaseConfig
-from ..database.schemas import Database
-from ..database.engine import create_database_instance as create_db_engine
-
+from ..database.engine import create_database_instance as create_db_engine, Database
 from .logging import logger
 
 def load_environment_variables(env_file: str = ".env") -> None:
