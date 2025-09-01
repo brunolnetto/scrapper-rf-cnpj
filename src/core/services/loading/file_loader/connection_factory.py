@@ -4,9 +4,9 @@ Simple factory to create asyncpg pools from SQLAlchemy database connections.
 Provides clean separation between SQLAlchemy ORM and high-performance asyncpg loading.
 """
 import asyncpg
-from ....database.schemas import Database
-from ....setup.config import ConfigurationService
-from ....setup.logging import logger
+from .....database.engine import Database
+from .....setup.config import ConfigurationService
+from .....setup.logging import logger
 
 
 async def create_asyncpg_pool_from_sqlalchemy(

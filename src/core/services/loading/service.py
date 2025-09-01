@@ -8,7 +8,7 @@ from datetime import datetime
 
 from ...setup.config import PathConfig
 from ...setup.logging import logger
-from ...database.schemas import Database
+from ...database.engine import Database
 from ..schemas import AuditMetadata
 from .strategies import BaseDataLoadingStrategy
 

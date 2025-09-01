@@ -6,16 +6,13 @@ Includes comprehensive manifest tracking and file integrity verification capabil
 """
 
 import hashlib
-<<<<<<< HEAD
-=======
 import os
->>>>>>> 8a568e6 (Normalization)
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
 from ...setup.logging import logger
-from ...database.schemas import Database
+from ...database.engine import Database
 from ...database.models import AuditDB
 from ...database.utils.models import create_audits, create_audit_metadata, insert_audit
 from ..schemas import AuditMetadata, FileInfo, FileGroupInfo
