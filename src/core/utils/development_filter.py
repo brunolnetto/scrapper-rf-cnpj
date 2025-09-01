@@ -4,6 +4,7 @@ Extracts all filtering logic from strategies.py and etl.py for better maintainab
 """
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
+
 from ...setup.config import ConfigurationService
 from ...setup.logging import logger
 from ...database.models import AuditDB
