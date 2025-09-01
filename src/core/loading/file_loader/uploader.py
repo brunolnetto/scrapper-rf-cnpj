@@ -53,17 +53,32 @@ async def async_upsert(
     checksum = None
 
     emit_log("file_processing_started", run_id=run_id, filename=filename, file_path=file_path)
+
+    # MEMORY-EFFICIENT: Calculate file size and checksum without loading entire file into memory
+    try:
+        filesize = os.path.getsize(file_path)
+        # Calculate checksum in chunks to avoid memory issues
+        sha256 = hashlib.sha256()
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                sha256.update(chunk)
+        checksum = sha256.digest()
+        logging.info(f"[MEMORY] File {filename}: {filesize:,} bytes, checksum calculated efficiently")
+    except Exception as e:
+        logging.warning(f"Could not calculate checksum for {filename}: {e}")
+
+    # Memory monitoring for large files
+    if filesize and filesize > 1_000_000_000:  # > 1GB
+        logging.warning(f"[MEMORY] Large file detected: {filename} ({filesize/1_000_000_000:.1f}GB)")
+        # Reduce parallelism for large files to prevent memory issues
+        if enable_internal_parallelism:
+            internal_concurrency = min(internal_concurrency, 2)
+            logging.info(f"[MEMORY] Reduced internal concurrency to {internal_concurrency} for large file")
+
     # Debug: Log headers and types
     logging.debug(f"[DEBUG] Table: {table}, Headers: {headers}")
     if types:
         logging.debug(f"[DEBUG] Types mapping: {types}")
-    try:
-        with open(file_path, "rb") as f:
-            data = f.read()
-            filesize = len(data)
-            checksum = hashlib.sha256(data).digest()
-    except Exception:
-        pass
 
     async with pool.acquire() as conn:
         await conn.execute(

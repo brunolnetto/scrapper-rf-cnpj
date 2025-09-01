@@ -609,7 +609,7 @@ def convert_table_csvs_v2(
         logger.error(f"Conversion failed for '{table_name}': {e}")
         return f"[ERROR] Failed '{table_name}': {e}"
 
-def convert_csvs_to_parquet_v2(
+def convert_csvs_to_parquet(
     audit_map: dict,
     unzip_dir: Path,
     output_dir: Path,
@@ -1300,7 +1300,7 @@ def convert_csvs_to_parquet(
             logger.info(result)
     else:
         # Use improved standard processing
-        convert_csvs_to_parquet_v2(
+        convert_csvs_to_parquet(
             audit_map,
             unzip_dir,
             output_dir,
