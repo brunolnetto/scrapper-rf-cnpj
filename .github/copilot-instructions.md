@@ -615,7 +615,7 @@ from pydantic import BaseModel
 
 # Local imports (grouped by package)
 from ..setup.config import ConfigurationService
-from ..database.schemas import Database
+from ..database.engine import Database
 from .interfaces import Pipeline
 ```
 
