@@ -31,7 +31,7 @@ class ReceitaCNPJPipeline(Pipeline):
         self._initialized = False
 
         # Initialize file downloader and uploader (these are fast)
-        self.file_downloader = FileDownloadService()
+        self.file_downloader = FileDownloadService(config=config_service)
         self.loading_strategy = DataLoadingStrategy(self.config)  # Use consolidated strategy
         # Note: data_loader will be initialized when database is ready
 

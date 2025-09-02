@@ -38,7 +38,7 @@ from ..core.services.loading.file_loader.connection_factory import (
     extract_primary_keys,
     get_column_types_mapping
 )
-from ..utils.models import get_table_columns
+from ..core.utils.models import get_table_columns
 from .engine import Database
 
 

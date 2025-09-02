@@ -65,6 +65,7 @@ class ETLConfig:
     development_mode: bool = False
     development_file_size_limit: int = 50000  # bytes - Max file size for development mode filtering
     development_max_files_per_table: int = 5  # Max files to process per table in development mode
+    development_max_files_per_blob: int = 3  # Max files to extract per ZIP blob in development mode
     development_sample_percentage: float = 0.1  # Percentage of files to sample (0.1 = 10%)
 
     # Enhanced loading settings - high-performance async processing
@@ -194,6 +195,12 @@ class ConfigurationService:
             development_file_size_limit=int(
                 os.getenv("ETL_DEV_FILE_SIZE_LIMIT", "50000")
             ),
+            development_max_files_per_table=int(
+                os.getenv("ETL_DEV_MAX_FILES_PER_TABLE", "5")
+            ),
+            development_max_files_per_blob=int(
+                os.getenv("ETL_DEV_MAX_FILES_PER_BLOB", "3")
+            ),
             # Enhanced loading settings (following ETL_ convention)
             sub_batch_size=int(os.getenv("ETL_SUB_BATCH_SIZE", "5000")),
             internal_concurrency=int(os.getenv("ETL_INTERNAL_CONCURRENCY", "3")),
@@ -217,8 +224,8 @@ class ConfigurationService:
     def _load_url_config(self) -> URLConfig:
         """Load URL configuration from environment variables."""
         return URLConfig(
-            base_url=os.getenv("RF_BASE_URL"), 
-            layout_url=os.getenv("RF_LAYOUT_URL")
+            base_url=os.getenv("URL_RF_BASE"), 
+            layout_url=os.getenv("URL_RF_LAYOUT")
         )
 
     def is_development_mode(self) -> bool:
@@ -232,6 +239,10 @@ class ConfigurationService:
     def get_max_files_per_table(self) -> int:
         """Get maximum files per table for development mode."""
         return self.etl.development_max_files_per_table
+
+    def get_max_files_per_blob(self) -> int:
+        """Get maximum files per ZIP blob for development mode."""
+        return self.etl.development_max_files_per_blob
 
     def get_sample_percentage(self) -> float:
         """Get sample percentage for development mode."""

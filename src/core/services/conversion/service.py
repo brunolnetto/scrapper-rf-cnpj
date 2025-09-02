@@ -689,7 +689,7 @@ def convert_csvs_to_parquet(
                 tasks = {}
                 
                 for table_name, zip_map, csv_paths, total_bytes in table_work:
-                    from ...utils.models import get_table_columns
+                    from ....utils.models import get_table_columns
                     expected_columns = get_table_columns(table_name)
 
                     task = executor.submit(
@@ -1202,7 +1202,7 @@ class LargeDatasetConfig(ConversionConfig):
         self.baseline_buffer_mb = 512  # More conservative system memory buffer
         
         # Optimize for large files
-        self.row_group_size = 25000  # Smaller row groups for better memory control
+        self.row_group_size = 75000  # Smaller row groups for better memory control
         self.compression = "snappy"  # Faster compression for large datasets
         
         # Conservative worker count for large files

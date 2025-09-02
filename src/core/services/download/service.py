@@ -7,13 +7,15 @@ from tqdm import tqdm
 
 from ...database.models import AuditDB
 from ...setup.logging import logger
+from ...setup.config import ConfigurationService
 from ...utils.misc import get_file_size, get_max_workers
 from ...utils.zip import extract_zip_file
 
 
 class FileDownloadService:
-    def __init__(self, max_workers: int = None):
+    def __init__(self, max_workers: int = None, config: ConfigurationService = None):
         self.max_workers = max_workers or get_max_workers()
+        self.config = config
 
     def download_and_extract(
         self,
@@ -154,7 +156,13 @@ class FileDownloadService:
         full_path = os.path.join(download_path, zip_filename)
         try:
             logger.info(f"Extracting file {zip_filename}...")
-            extract_zip_file(full_path, extract_path)
+            # Check if we're in development mode and limit files per blob
+            max_files = None
+            if hasattr(self, 'config') and self.config and self.config.is_development_mode():
+                max_files = self.config.get_max_files_per_blob()
+                logger.debug(f"[DEV-MODE] Limiting extraction to {max_files} files per blob for {zip_filename}")
+            
+            extract_zip_file(full_path, extract_path, max_files)
         except Exception as e:
             logger.error(f"Error extracting file {zip_filename}: {e}")
         finally:
