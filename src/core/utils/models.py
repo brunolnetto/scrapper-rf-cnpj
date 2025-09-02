@@ -4,7 +4,7 @@ Utility functions to derive table information from SQLAlchemy models.
 
 from typing import List, Dict, Set
 from sqlalchemy.ext.declarative import DeclarativeMeta
-from ..database.models import MainBase
+from ...database.models import MainBase
 
 
 def get_model_by_table_name(table_name: str) -> DeclarativeMeta:

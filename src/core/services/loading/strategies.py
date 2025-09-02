@@ -5,10 +5,10 @@ All complexity removed - now just a clean interface to EnhancedUnifiedLoader.
 from abc import ABC, abstractmethod
 from typing import List, Tuple, Optional
 
-from ...database.schemas import Database
-from ...setup.logging import logger
-from ...setup.config import PathConfig
-from ...database.dml import table_name_to_table_info
+from ....database.engine import Database
+from ....setup.logging import logger
+from ....setup.config import PathConfig
+from ....database.dml import table_name_to_table_info
 
 class BaseDataLoadingStrategy(ABC):
     """Abstract base class for data loading strategies."""
@@ -38,14 +38,14 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
         
         try:
             table_info = table_name_to_table_info(table_name)
-            from ...database.dml import UnifiedLoader
+            from ....database.dml import UnifiedLoader
             loader = UnifiedLoader(database, self.config)
             
             # Check Parquet first (maintain existing priority)
             parquet_file = path_config.conversion_path / f"{table_name}.parquet"
             if parquet_file.exists():
                 # Centralized Parquet filtering
-                from ...core.utils.development_filter import DevelopmentFilter
+                from ....core.utils.development_filter import DevelopmentFilter
                 dev_filter = DevelopmentFilter(self.config)
 
                 if not dev_filter.filter_parquet_file_by_size(parquet_file):
@@ -56,7 +56,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
 
             elif table_files:
                 # Centralized CSV filtering
-                from ...core.utils.development_filter import DevelopmentFilter
+                from ....core.utils.development_filter import DevelopmentFilter
                 dev_filter = DevelopmentFilter(self.config)
 
                 # Apply table limit filtering first

@@ -5,11 +5,11 @@ from datetime import datetime
 from tenacity import retry, stop_after_attempt, wait_exponential
 from tqdm import tqdm
 
-from ...database.models import AuditDB
-from ...setup.logging import logger
-from ...setup.config import ConfigurationService
-from ...utils.misc import get_file_size, get_max_workers
-from ...utils.zip import extract_zip_file
+from ....database.models import AuditDB
+from ....setup.logging import logger
+from ....setup.config import ConfigurationService
+from ....utils.misc import get_file_size, get_max_workers
+from ....utils.zip import extract_zip_file
 
 
 class FileDownloadService:

@@ -321,8 +321,8 @@ class UnifiedLoader(BaseFileLoader):
         if hasattr(self, 'database') and self.config:
             # Check if we're dealing with a large file by looking at recent file operations
             # This is a heuristic - in production you might want more sophisticated detection
-            if base_chunk_size > 25000:
-                base_chunk_size = min(base_chunk_size, 25000)
+            if base_chunk_size > 50000:
+                base_chunk_size = min(base_chunk_size, 50000)
                 logger.info(f"[MEMORY] Reduced chunk_size to {base_chunk_size} for memory efficiency")
         
         return {

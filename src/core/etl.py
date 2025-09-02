@@ -16,12 +16,12 @@ from .interfaces import Pipeline
 
 
 from .schemas import FileInfo, AuditMetadata
-from .audit.service import AuditService
-from .loading.strategies import DataLoadingStrategy
+from .services.audit.service import AuditService
+from .services.loading.strategies import DataLoadingStrategy
 
 class ReceitaCNPJPipeline(Pipeline):
     def __init__(self, config_service: ConfigurationService = None) -> None:
-        from .download.service import FileDownloadService
+        from .services.download.service import FileDownloadService
 
         self.config = config_service
 
@@ -52,7 +52,7 @@ class ReceitaCNPJPipeline(Pipeline):
     @property
     def data_loader(self):
         """Lazy data loader initialization."""
-        from .loading.service import DataLoadingService
+        from .services.loading.service import DataLoadingService
 
         if not hasattr(self, '_data_loader') or self._data_loader is None:
             self._data_loader = DataLoadingService(
@@ -207,7 +207,7 @@ class ReceitaCNPJPipeline(Pipeline):
 
     def convert_to_parquet(self, audit_metadata: AuditMetadata) -> Path:
         from ..utils.misc import makedir
-        from .conversion.service import convert_csvs_to_parquet
+        from .services.conversion.service import convert_csvs_to_parquet
 
         num_workers = self.config.etl.parallel_workers
         delimiter = self.config.etl.delimiter
