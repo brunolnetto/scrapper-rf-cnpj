@@ -25,8 +25,6 @@ class AuditService:
     def __init__(self, database: Database, config=None):
         self.database = database
         self.config = config
-        self.manifest_enabled = config.etl.manifest_tracking if config else False
-        logger.info(f"Audit service initialized (manifest: {self.manifest_enabled})")
 
     def create_audits_from_files(self, files_info: List[FileInfo]) -> List[AuditDB]:
         """
@@ -56,15 +54,13 @@ class AuditService:
                 insert_audit(self.database, audit.to_audit_db())
 
                 # ✅ SUCCESS: Create manifest entry for successful insertion
-                if self.manifest_enabled:
-                    self._create_audit_manifest_entry(audit, "success")
+                self._create_audit_manifest_entry(audit, "success")
 
                 logger.info(f"Successfully inserted audit for {audit.audi_table_name}")
 
             except Exception as e:
                 # ❌ FAILURE: Create manifest entry for failed insertion
-                if self.manifest_enabled:
-                    self._create_audit_manifest_entry(audit, "failed", error_message=str(e))
+                self._create_audit_manifest_entry(audit, "failed", error_message=str(e))
 
                 logger.error(f"Failed to insert audit for {audit.audi_table_name}: {e}")
 
@@ -125,9 +121,6 @@ class AuditService:
                            filesize: Optional[int] = None, rows: Optional[int] = None,
                            table_name: str = 'unknown', notes: Optional[str] = None) -> None:
         """Create manifest entry for processed file."""
-        if not self.manifest_enabled:
-            logger.debug(f"Manifest tracking disabled, skipping {Path(file_path).name}")
-            return
 
         try:
             file_path_obj = Path(file_path)
@@ -249,9 +242,6 @@ class AuditService:
 
     def verify_file_integrity(self, file_path: str) -> bool:
         """Verify file integrity against stored manifest."""
-        if not self.manifest_enabled:
-            return True
-
         try:
             from sqlalchemy import text
             file_path_obj = Path(file_path)
@@ -287,10 +277,6 @@ class AuditService:
 
     def update_manifest_notes(self, file_path: str, notes: str, append: bool = False) -> None:
         """Update notes for an existing manifest entry."""
-        if not self.manifest_enabled:
-            logger.debug("Manifest tracking disabled, skipping notes update")
-            return
-
         try:
             from sqlalchemy import text
             from pathlib import Path
