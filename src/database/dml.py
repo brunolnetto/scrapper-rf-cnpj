@@ -26,8 +26,6 @@ from pathlib import Path
 from typing import Tuple, Optional, Union, List
 from sqlalchemy import text, inspect
 
-from lab.refactored_fileloader.src import base
-
 from ..setup.logging import logger
 from ..core.constants import TABLES_INFO_DICT
 from ..core.schemas import TableInfo
@@ -244,8 +242,8 @@ class UnifiedLoader(BaseFileLoader):
             encoding = self._get_encoding(table_info)
             file_loader = self._create_file_loader(file_path, encoding)
             
-            # Detect format
-            detected_format = self._detect_format(file_loader, file_path)
+            # Detect format (not used in this flow)
+            self._detect_format(file_loader, file_path)
             
             # Execute load
             return self._execute_load(table_info, file_path, file_loader, chunk_size, max_retries)
@@ -338,10 +336,10 @@ class UnifiedLoader(BaseFileLoader):
                    f"sub_batch_size={config_params['sub_batch_size']}, "
                    f"parallelism={config_params['enable_parallelism']}")
     
-    def _create_batch_generator(self, file_path: Path, file_loader: FileLoader, 
+    def _create_batch_generator(self, _file_path: Path, file_loader: FileLoader, 
                                table_info: TableInfo, chunk_size: int):
         """Create batch generator function with transforms."""
-        def create_batch_gen(file_path: str, headers: List[str], chunk_size: int):
+        def create_batch_gen(_file_path: str, headers: List[str], _chunk_size: int):
             return self._apply_transforms_to_batches(
                 file_loader.batch_generator(headers, chunk_size), 
                 table_info, 
@@ -473,7 +471,7 @@ class LargeFileLoader(BaseFileLoader):
             
             # Create file loader and detect format
             file_loader = self._create_file_loader(file_path, encoding)
-            detected_format = self._detect_format(file_loader, file_path)
+            self._detect_format(file_loader, file_path)
             
             # Execute synchronous load
             return self._execute_sync_load(table_info, file_path, file_loader, 

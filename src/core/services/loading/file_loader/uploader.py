@@ -15,7 +15,7 @@ logging.basicConfig(level=logging.INFO)
 async def record_manifest(
     conn: asyncpg.Connection, 
     filename: str, status: str, checksum: Optional[bytes], 
-    filesize: Optional[int], run_id: str, 
+    filesize: Optional[int], 
     notes: Optional[str] = None, rows_processed: Optional[int] = None
 ):
     await conn.execute(
@@ -50,7 +50,6 @@ async def async_upsert(
     run_id = run_id or f"{uuid.uuid4().hex[:8]}_{os.getpid()}"
     filename = os.path.basename(file_path)
     filesize = None
-    checksum = None
 
     emit_log("file_processing_started", run_id=run_id, filename=filename, file_path=file_path)
 
@@ -58,22 +57,19 @@ async def async_upsert(
     try:
         filesize = os.path.getsize(file_path)
         
-        # Skip checksum for very large files (> 1GB) to avoid performance issues
+        # Skip checksum calculation for very large files (> 1GB) to avoid performance issues
         checksum_threshold = int(os.getenv("ETL_CHECKSUM_THRESHOLD_BYTES", "1000000000"))  # 1GB default
         if filesize > checksum_threshold:
             logging.info(f"[PERFORMANCE] Skipping checksum for large file {filename}: {filesize:,} bytes (> {checksum_threshold:,})")
-            checksum = None
         else:
             # Calculate checksum in chunks to avoid memory issues
             sha256 = hashlib.sha256()
             with open(file_path, "rb") as f:
                 for chunk in iter(lambda: f.read(8192), b""):
                     sha256.update(chunk)
-            checksum = sha256.digest()
             logging.info(f"[MEMORY] File {filename}: {filesize:,} bytes, checksum calculated efficiently")
     except Exception as e:
         logging.warning(f"Could not calculate checksum for {filename}: {e}")
-        checksum = None
 
     # Memory monitoring for large files
     if filesize and filesize > 1_000_000_000:  # > 1GB

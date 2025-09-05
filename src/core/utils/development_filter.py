@@ -53,7 +53,7 @@ class DevelopmentFilter:
         logger.debug(f"[DEV-MODE] Table limit filtering: {len(audits)} → {len(filtered_audits)} audits")
         return filtered_audits
 
-    def filter_csv_files_by_size(self, csv_files: List[Path], extract_path: Path) -> List[Path]:
+    def filter_csv_files_by_size(self, csv_files: List[Path]) -> List[Path]:
         """Filter CSV files by size limit."""
         if not self.is_enabled:
             return csv_files

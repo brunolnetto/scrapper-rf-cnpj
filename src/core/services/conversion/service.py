@@ -1259,7 +1259,7 @@ def select_processing_strategy(audit_map: dict, unzip_dir: Path) -> str:
 
 # IMPROVEMENT 15: Main entry point with strategy selection
 
-def convert_csvs_to_parquet(
+def convert_csvs_to_parquet_smart(
     audit_map: dict,
     unzip_dir: Path,
     output_dir: Path,

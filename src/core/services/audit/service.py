@@ -64,7 +64,7 @@ class AuditService:
 
                 logger.error(f"Failed to insert audit for {audit.audi_table_name}: {e}")
 
-    def _create_audit_manifest_entry(self, audit, status: str, error_message: str = None) -> None:
+    def _create_audit_manifest_entry(self, audit, status: str) -> None:
         """Create a manifest entry for an audit insertion attempt."""
         try:
             # Extract file information from audit
@@ -84,7 +84,6 @@ class AuditService:
             self._insert_manifest_entry(
                 table_name=table_name,
                 file_path=file_path,
-                filename=Path(file_path).name if file_path != "unknown" else f"audit_{table_name}",
                 status=status,
                 checksum=None,  # Audits don't have checksums
                 filesize=int(filesize),
@@ -154,7 +153,6 @@ class AuditService:
             self._insert_manifest_entry(
                 table_name=table_name,
                 file_path=str(file_path_obj),
-                filename=file_path_obj.name,
                 status=status,
                 checksum=checksum,
                 filesize=filesize,
@@ -189,7 +187,7 @@ class AuditService:
             logger.error(f"Failed to calculate checksum for {file_path}: {e}")
             return None
 
-    def _insert_manifest_entry(self, table_name: str, file_path: str, filename: str, status: str,
+    def _insert_manifest_entry(self, table_name: str, file_path: str, status: str,
                               checksum: Optional[str], filesize: Optional[int],
                               rows_processed: Optional[int], processed_at: datetime, 
                               notes: Optional[str] = None) -> None:

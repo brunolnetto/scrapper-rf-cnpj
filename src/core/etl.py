@@ -207,10 +207,9 @@ class ReceitaCNPJPipeline(Pipeline):
 
     def convert_to_parquet(self, audit_metadata: AuditMetadata) -> Path:
         from ..utils.misc import makedir
-        from .services.conversion.service import convert_csvs_to_parquet
+        from .services.conversion.service import convert_csvs_to_parquet_smart
 
         num_workers = self.config.etl.parallel_workers
-        delimiter = self.config.etl.delimiter
         output_dir = Path(self.config.paths.conversion_path)
 
         makedir(output_dir)
@@ -231,7 +230,7 @@ class ReceitaCNPJPipeline(Pipeline):
 
                     # Convert string filenames to Path objects for filtering
                     csv_paths = [Path(self.config.paths.extract_path) / csv_file for csv_file in csv_files]
-                    filtered_csv_paths = dev_filter.filter_csv_files_by_size(csv_paths, self.config.paths.extract_path)
+                    filtered_csv_paths = dev_filter.filter_csv_files_by_size(csv_paths)
 
                     # Convert back to string filenames
                     csv_files = [path.name for path in filtered_csv_paths]
@@ -249,7 +248,7 @@ class ReceitaCNPJPipeline(Pipeline):
 
         extract_path = Path(self.config.paths.extract_path)
 
-        convert_csvs_to_parquet(audit_map, extract_path, output_dir)
+        convert_csvs_to_parquet_smart(audit_map, extract_path, output_dir)
         logger.info(f"Parquet conversion completed. Files saved to: {output_dir}")
 
         return output_dir
@@ -291,7 +290,7 @@ class ReceitaCNPJPipeline(Pipeline):
             dev_filter = DevelopmentFilter(self.config)
             original_count = len(csv_files)
 
-            csv_files = dev_filter.filter_csv_files_by_size(csv_files, extract_path)
+            csv_files = dev_filter.filter_csv_files_by_size(csv_files)
 
             # Log filtering summary
             dev_filter.log_filtering_summary(original_count, len(csv_files), "CSV files")

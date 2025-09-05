@@ -16,10 +16,10 @@ class DownloadOnlyStrategy:
     def get_name(self) -> str:
         return "Download Only"
     
-    def validate_parameters(self, **kwargs) -> bool:
+    def validate_parameters(self) -> bool:
         return True  # No specific parameters required
     
-    def execute(self, pipeline: Pipeline, config_service, **kwargs) -> Optional[Any]:
+    def execute(self, pipeline: Pipeline, config_service) -> Optional[Any]:
         logger.info("[DOWNLOAD-ONLY] Running in download-only mode...")
         
         if not hasattr(pipeline, 'retrieve_data'):
@@ -45,10 +45,10 @@ class DownloadAndConvertStrategy:
     def get_name(self) -> str:
         return "Download and Convert"
     
-    def validate_parameters(self, **kwargs) -> bool:
+    def validate_parameters(self) -> bool:
         return True  # No specific parameters required
     
-    def execute(self, pipeline: Pipeline, config_service, **kwargs) -> Optional[Any]:
+    def execute(self, pipeline: Pipeline, config_service) -> Optional[Any]:
         logger.info("[DOWNLOAD-CONVERT] Running in download-and-convert mode...")
         
         required_methods = ['retrieve_data', 'convert_to_parquet', 'audit_service']
@@ -90,10 +90,10 @@ class ConvertOnlyStrategy:
     def get_name(self) -> str:
         return "Convert Only"
     
-    def validate_parameters(self, **kwargs) -> bool:
+    def validate_parameters(self) -> bool:
         return True  # No specific parameters required
     
-    def execute(self, pipeline: Pipeline, config_service, **kwargs) -> Optional[Any]:
+    def execute(self, pipeline: Pipeline, _config_service) -> Optional[Any]:
         logger.info("[CONVERT-ONLY] Running in convert-only mode...")
         
         if not hasattr(pipeline, 'convert_existing_csvs_to_parquet'):
@@ -120,7 +120,7 @@ class FullETLStrategy:
     def get_name(self) -> str:
         return "Full ETL"
     
-    def validate_parameters(self, **kwargs) -> bool:
+    def validate_parameters(self, **_kwargs) -> bool:
         # Validate that year and month are provided or can be defaulted
         return True
     
@@ -261,10 +261,10 @@ class LoadOnlyStrategy:
     def get_name(self) -> str:
         return "Load Only"
     
-    def validate_parameters(self, **kwargs) -> bool:
+    def validate_parameters(self) -> bool:
         return True  # No specific parameters required
     
-    def execute(self, pipeline: Pipeline, config_service, **kwargs) -> Optional[Any]:
+    def execute(self, pipeline: Pipeline, _config_service) -> Optional[Any]:
         logger.info("[LOAD-ONLY] Running in load-only mode...")
         
         # For load-only, we need to create synthetic audit metadata from existing files
@@ -299,10 +299,10 @@ class ConvertAndLoadStrategy:
     def get_name(self) -> str:
         return "Convert and Load"
     
-    def validate_parameters(self, **kwargs) -> bool:
+    def validate_parameters(self) -> bool:
         return True  # No specific parameters required
     
-    def execute(self, pipeline: Pipeline, config_service, **kwargs) -> Optional[Any]:
+    def execute(self, pipeline: Pipeline, _config_service) -> Optional[Any]:
         logger.info("[CONVERT-LOAD] Running in convert-and-load mode...")
         
         required_methods = ['create_audit_metadata_from_existing_csvs', 'convert_to_parquet', 'data_loader']
