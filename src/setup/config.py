@@ -46,6 +46,20 @@ class DatabaseConfig:
             f"maintenance_db={self.maintenance_db})"
         )
 
+@dataclass
+class ConversionConfig:
+    """Configuration for CSV to Parquet conversion."""
+    max_memory_mb: int = 1024
+    cleanup_threshold_ratio: float = 0.7
+    baseline_buffer_mb: int = 256
+    row_group_size: int = 100000
+    compression: str = "zstd"
+    workers: int = 2
+    enable_file_splitting: bool = False
+    max_file_size_mb: int = 1000
+    chunk_processing_delay: float = 0.0
+    default_chunksize: int = 500_000
+
 
 @dataclass
 class ETLStageConfig:

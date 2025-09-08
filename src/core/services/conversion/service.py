@@ -689,7 +689,7 @@ def convert_csvs_to_parquet(
                 tasks = {}
                 
                 for table_name, zip_map, csv_paths, total_bytes in table_work:
-                    from ....utils.models import get_table_columns
+                    from ...utils.models import get_table_columns
                     expected_columns = get_table_columns(table_name)
 
                     task = executor.submit(

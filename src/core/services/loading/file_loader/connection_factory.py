@@ -67,7 +67,7 @@ def extract_primary_keys(table_info) -> list[str]:
     """
     try:
         # Try to get primary keys from SQLAlchemy model
-        from ....utils.models import get_model_by_table_name
+        from src.core.utils.models import get_model_by_table_name
         model = get_model_by_table_name(table_info.table_name)
         pk_columns = [col.name for col in model.__table__.primary_key.columns]
         if pk_columns:
@@ -87,7 +87,7 @@ def get_column_types_mapping(table_info) -> dict[str, str]:
         Dictionary mapping column names to PostgreSQL types
     """
     try:
-        from ....utils.models import get_model_by_table_name
+        from src.core.utils.models import get_model_by_table_name
         model = get_model_by_table_name(table_info.table_name)
         
         types = {}
