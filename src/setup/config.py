@@ -48,43 +48,104 @@ class DatabaseConfig:
 
 
 @dataclass
-class ETLConfig:
-    """ETL process configuration."""
-    year: int = 2024  # Default year for data processing
-    month: int = 12   # Default month for data processing
-
-    delimiter: str = ";"
-    chunk_size: int = 50000
+class ETLStageConfig:
+    """Base configuration for ETL stages."""
+    enabled: bool = True
     max_retries: int = 3
-    parallel_workers: int = 4
-    delete_files: bool = True
-    is_parallel: bool = True
-    timezone: str = "America/Sao_Paulo"
+    timeout_seconds: int = 300
 
+<<<<<<< HEAD
     # Development mode settings
     development_mode: bool = False
     development_file_size_limit: int = 50000  # bytes - Max file size for development mode filtering
     development_max_files_per_table: int = 5  # Max files to process per table in development mode
     development_max_files_per_blob: int = 3  # Max files to extract per ZIP blob in development mode
     development_sample_percentage: float = 0.1  # Percentage of files to sample (0.1 = 10%)
+=======
+>>>>>>> 434f202 (refactor() development, config and pandas removal)
 
-    # Enhanced loading settings - high-performance async processing
+@dataclass
+class DownloadConfig(ETLStageConfig):
+    """Download stage configuration."""
+    base_url: str = ""
+    workers: int = 4
+    chunk_size_mb: int = 50
+    verify_checksums: bool = True
+    checksum_threshold_bytes: int = 1_000_000_000  # Skip checksum for files > 1GB
+
+
+@dataclass
+class ConversionConfig(ETLStageConfig):
+    """Conversion stage configuration."""
+    chunk_size: int = 50000
+    max_memory_mb: int = 1024
+    compression: str = "snappy"
+    row_group_size: int = 100000
+    flush_threshold: int = 10
+    auto_fallback: bool = True
+    row_estimation_factor: int = 8000
+
+
+@dataclass
+class LoadingConfig(ETLStageConfig):
+    """Loading stage configuration."""
+    batch_size: int = 50000
+    max_batch_size: int = 500000
+    min_batch_size: int = 10000
+    batch_size_mb: int = 100
     sub_batch_size: int = 5000
+    parallel_workers: int = 3
     internal_concurrency: int = 3
+    use_copy: bool = True
     enable_internal_parallelism: bool = True
     manifest_tracking: bool = True
     async_pool_min_size: int = 2
     async_pool_max_size: int = 10
-    
-    # Performance optimization settings
-    checksum_threshold_bytes: int = 1_000_000_000  # Skip checksum for files > 1GB
 
-    # CSV to Parquet conversion settings
-    conversion_chunk_size: int = 100000  # Rows per chunk during conversion
-    conversion_max_memory_mb: int = 1024  # Max memory usage in MB
-    conversion_flush_threshold: int = 10   # Chunks to accumulate before flushing
-    conversion_auto_fallback: bool = True  # Auto fallback to pyarrow on polars failure
-    conversion_row_estimation_factor: int = 8000  # Rows per MB for estimation
+
+@dataclass
+class DevelopmentConfig:
+    """Development mode configuration."""
+    enabled: bool = False
+    file_size_limit_mb: int = 1000
+    max_files_per_table: int = 3
+    row_limit_percent: float = 0.1
+    max_blob_size_mb: int = 500
+    sample_percentage: float = 0.1
+
+
+@dataclass
+class ETLConfig:
+    """Unified ETL pipeline configuration with stage-specific settings."""
+    download: DownloadConfig
+    conversion: ConversionConfig
+    loading: LoadingConfig
+    development: DevelopmentConfig
+    
+    # Global ETL settings
+    year: int = 2024
+    month: int = 12
+    delimiter: str = ";"
+    timezone: str = "America/Sao_Paulo"
+    delete_files: bool = True
+    is_parallel: bool = True
+    
+    def get_stage_config(self, stage_name: str) -> ETLStageConfig:
+        """Get configuration for a specific stage."""
+        stage_map = {
+            "download": self.download,
+            "conversion": self.conversion,
+            "loading": self.loading
+        }
+        
+        if stage_name not in stage_map:
+            raise ValueError(f"Unknown stage: {stage_name}. Available: {list(stage_map.keys())}")
+        
+        return stage_map[stage_name]
+    
+    def is_development_mode(self) -> bool:
+        """Check if development mode is enabled."""
+        return self.development.enabled
 
 
 @dataclass
@@ -171,19 +232,77 @@ class ConfigurationService:
             "audit": self._load_audit_database_config(),
         }
 
-    def _load_etl_config(self, ) -> ETLConfig:
+    def _load_etl_config(self) -> ETLConfig:
         """Load ETL configuration from environment variables."""
+<<<<<<< HEAD
 
         # Get current date for defaults
         current_year = self.year
         current_month = self.month
+=======
+        
+        # Create stage-specific configurations
+        download_config = DownloadConfig(
+            enabled=os.getenv("ETL_DOWNLOAD_ENABLED", "true").lower() == "true",
+            max_retries=int(os.getenv("ETL_MAX_RETRIES", "3")),
+            timeout_seconds=int(os.getenv("ETL_DOWNLOAD_TIMEOUT", "300")),
+            base_url=os.getenv("URL_RF_BASE", "https://dadosabertos.rfb.gov.br/CNPJ"),
+            workers=int(os.getenv("ETL_WORKERS", "4")),
+            chunk_size_mb=int(os.getenv("ETL_DOWNLOAD_CHUNK_SIZE_MB", "50")),
+            verify_checksums=os.getenv("ETL_CHECKSUM_VERIFICATION", "true").lower() == "true",
+            checksum_threshold_bytes=int(os.getenv("ETL_CHECKSUM_THRESHOLD_BYTES", "1000000000"))
+        )
+        
+        conversion_config = ConversionConfig(
+            enabled=os.getenv("ETL_CONVERSION_ENABLED", "true").lower() == "true",
+            max_retries=int(os.getenv("ETL_MAX_RETRIES", "3")),
+            timeout_seconds=int(os.getenv("ETL_CONVERSION_TIMEOUT", "3600")),
+            chunk_size=int(os.getenv("ETL_CHUNK_SIZE", "50000")),
+            max_memory_mb=int(os.getenv("ETL_MAX_MEMORY_MB", "1024")),
+            compression=os.getenv("ETL_COMPRESSION", "snappy"),
+            row_group_size=int(os.getenv("ETL_ROW_GROUP_SIZE", "100000")),
+            flush_threshold=int(os.getenv("ETL_CONVERSION_FLUSH_THRESHOLD", "10")),
+            auto_fallback=os.getenv("ETL_CONVERSION_AUTO_FALLBACK", "true").lower() == "true",
+            row_estimation_factor=int(os.getenv("ETL_CONVERSION_ROW_ESTIMATION_FACTOR", "8000"))
+        )
+        
+        loading_config = LoadingConfig(
+            enabled=os.getenv("ETL_LOADING_ENABLED", "true").lower() == "true",
+            max_retries=int(os.getenv("ETL_MAX_RETRIES", "3")),
+            timeout_seconds=int(os.getenv("ETL_LOADING_TIMEOUT", "3600")),
+            batch_size=int(os.getenv("ETL_CHUNK_SIZE", "50000")),
+            max_batch_size=int(os.getenv("ETL_MAX_BATCH_SIZE", "500000")),
+            min_batch_size=int(os.getenv("ETL_MIN_BATCH_SIZE", "10000")),
+            batch_size_mb=int(os.getenv("ETL_BATCH_SIZE_MB", "100")),
+            sub_batch_size=int(os.getenv("ETL_SUB_BATCH_SIZE", "5000")),
+            parallel_workers=int(os.getenv("ETL_WORKERS", "4")),
+            internal_concurrency=int(os.getenv("ETL_INTERNAL_CONCURRENCY", "3")),
+            use_copy=os.getenv("ETL_USE_COPY", "true").lower() == "true",
+            enable_internal_parallelism=os.getenv("ETL_ENABLE_INTERNAL_PARALLELISM", "true").lower() == "true",
+            manifest_tracking=os.getenv("ETL_MANIFEST_TRACKING", "true").lower() == "true",
+            async_pool_min_size=int(os.getenv("ETL_ASYNC_POOL_MIN_SIZE", "2")),
+            async_pool_max_size=int(os.getenv("ETL_ASYNC_POOL_MAX_SIZE", "10"))
+        )
+        
+        development_config = DevelopmentConfig(
+            enabled=os.getenv("ENVIRONMENT", "development").lower() == "development",
+            file_size_limit_mb=int(os.getenv("ETL_DEV_FILE_SIZE_LIMIT_MB", "1000")),
+            max_files_per_table=int(os.getenv("ETL_DEV_MAX_FILES_PER_TABLE", "3")),
+            row_limit_percent=float(os.getenv("ETL_DEV_ROW_LIMIT_PERCENT", "0.1")),
+            max_blob_size_mb=int(os.getenv("ETL_DEV_MAX_BLOB_SIZE_MB", "500")),
+            sample_percentage=float(os.getenv("ETL_DEV_SAMPLE_PERCENTAGE", "0.1"))
+        )
+>>>>>>> 434f202 (refactor() development, config and pandas removal)
 
         return ETLConfig(
-            # Temporal settings - can be overridden by CLI args
-            year=int(current_year),
-            month=int(current_month),
-            timezone=os.getenv("ETL_TIMEZONE", "America/Sao_Paulo"),
+            download=download_config,
+            conversion=conversion_config,
+            loading=loading_config,
+            development=development_config,
+            year=int(self.year),
+            month=int(self.month),
             delimiter=os.getenv("ETL_FILE_DELIMITER", ";"),
+<<<<<<< HEAD
             chunk_size=int(os.getenv("ETL_CHUNK_SIZE", "50000")),
             max_retries=int(os.getenv("ETL_MAX_RETRIES", "3")),
             parallel_workers=int(os.getenv("ETL_WORKERS", "4")),
@@ -206,6 +325,11 @@ class ConfigurationService:
             async_pool_min_size=int(os.getenv("ETL_ASYNC_POOL_MIN_SIZE", "1")),
             async_pool_max_size=int(os.getenv("ETL_ASYNC_POOL_MAX_SIZE", "10")),
             checksum_threshold_bytes=int(os.getenv("ETL_CHECKSUM_THRESHOLD_BYTES", "1000000000")),
+=======
+            timezone=os.getenv("ETL_TIMEZONE", "America/Sao_Paulo"),
+            delete_files=os.getenv("ETL_DELETE_FILES", "true").lower() == "true",
+            is_parallel=os.getenv("ETL_IS_PARALLEL", "true").lower() == "true"
+>>>>>>> 434f202 (refactor() development, config and pandas removal)
         )
 
     def _load_path_config(self) -> PathConfig:
@@ -227,16 +351,16 @@ class ConfigurationService:
         )
 
     def is_development_mode(self) -> bool:
-        """Check if running in development mode."""
-        return self.etl.development_mode
+        """Check if development mode is enabled."""
+        return self.etl.development.enabled
 
     def get_file_size_limit(self) -> int:
-        """Get file size limit for development mode filtering."""
-        return self.etl.development_file_size_limit
+        """Get file size limit for development mode (in bytes)."""
+        return self.etl.development.file_size_limit_mb * 1024 * 1024
 
     def get_max_files_per_table(self) -> int:
         """Get maximum files per table for development mode."""
-        return self.etl.development_max_files_per_table
+        return self.etl.development.max_files_per_table
 
     def get_max_files_per_blob(self) -> int:
         """Get maximum files per ZIP blob for development mode."""
@@ -244,7 +368,7 @@ class ConfigurationService:
 
     def get_sample_percentage(self) -> float:
         """Get sample percentage for development mode."""
-        return self.etl.development_sample_percentage
+        return self.etl.development.sample_percentage
 
     def get_year(self) -> int:
         """Get the configured year for data processing."""
@@ -383,3 +507,18 @@ def get_path_config() -> PathConfig:
 def get_url_config() -> URLConfig:
     """Get URL configuration (backward compatibility)."""
     return get_config().urls
+
+
+def get_etl_configuration(year: Optional[int] = None, month: Optional[int] = None) -> ETLConfig:
+    """
+    Get unified ETL configuration with temporal context.
+    
+    Args:
+        year: Year for temporal configuration
+        month: Month for temporal configuration
+        
+    Returns:
+        ETLConfig: Unified configuration object with stage-specific settings
+    """
+    config_service = get_config(year, month)
+    return config_service.etl

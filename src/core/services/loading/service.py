@@ -5,29 +5,41 @@ This service uses the strategy pattern to load data into the database using the 
 """
 
 from datetime import datetime
+from pathlib import Path
+from typing import Dict, Any
 
 from ....setup.config import PathConfig
+from ....setup.config import ETLConfig
 from ....setup.logging import logger
 from ....database.engine import Database
 from ...schemas import AuditMetadata
+from ...utils.batch_optimizer import BatchSizeOptimizer
 from .strategies import BaseDataLoadingStrategy
 
 
 class DataLoadingService:
-    """Unified service for data loading operations."""
+    """Unified service for data loading operations with dynamic batch optimization."""
 
     def __init__(
         self,
         database: Database,
         path_config: PathConfig,
         strategy: BaseDataLoadingStrategy,
-        config=None,
+        config: ETLConfig,
         audit_service=None
     ):
         self.database = database
         self.path_config = path_config
         self.config = config
         self.audit_service = audit_service  # Store audit service
+        
+        # Initialize batch optimizer if we have ETL configuration
+        if isinstance(config, ETLConfig):
+            self.batch_optimizer = BatchSizeOptimizer(config)
+            logger.debug("Initialized BatchSizeOptimizer with ETL configuration")
+        else:
+            self.batch_optimizer = None
+            logger.debug("No ETL configuration provided, batch optimization disabled")
         
         # Always use enhanced strategy (replace legacy implementation)
         if config:
@@ -41,6 +53,38 @@ class DataLoadingService:
         else:
             # Fallback if no config provided
             self.strategy = strategy
+
+    def get_batch_configurations(self, file_paths: Dict[str, Path]) -> Dict[str, Any]:
+        """Get optimized batch configurations for multiple files."""
+        if not self.batch_optimizer:
+            logger.debug("Batch optimizer not available, using default configurations")
+            return {}
+        
+        try:
+            configurations = self.batch_optimizer.get_batch_configurations_for_files(file_paths)
+            self.batch_optimizer.log_optimization_summary(configurations)
+            return configurations
+        except Exception as e:
+            logger.warning(f"Batch optimization failed, using defaults: {e}")
+            return {}
+
+    def get_batch_configuration_for_table(self, file_path: Path, table_name: str) -> Dict[str, Any]:
+        """Get optimized batch configuration for a single table."""
+        if not self.batch_optimizer:
+            return {"batch_size": 50000, "parallel_workers": 1, "use_streaming": False}
+        
+        try:
+            config = self.batch_optimizer.get_batch_configuration_for_file(file_path, table_name)
+            return {
+                "batch_size": config.batch_size,
+                "parallel_workers": config.parallel_workers,
+                "use_streaming": config.use_streaming,
+                "estimated_batches": config.estimated_batches,
+                "optimization_reason": config.optimization_reason
+            }
+        except Exception as e:
+            logger.warning(f"Batch optimization failed for {table_name}, using defaults: {e}")
+            return {"batch_size": 50000, "parallel_workers": 1, "use_streaming": False}
 
     def load_data(self, audit_metadata: AuditMetadata) -> AuditMetadata:
         """

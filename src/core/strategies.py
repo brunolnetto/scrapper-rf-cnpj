@@ -39,6 +39,80 @@ class DownloadOnlyStrategy:
             raise
 
 
+class DownloadAndLoadStrategy:
+    """Strategy for downloading and loading data directly, skipping conversion."""
+    
+    def get_name(self) -> str:
+        return "Download+Load"
+    
+    def validate_parameters(self, **kwargs) -> bool:
+        return True  # No specific parameters required
+    
+    def execute(self, pipeline: Pipeline, config_service, **kwargs) -> Optional[Any]:
+        logger.info("[DOWNLOAD+LOAD] Running download+load strategy (skip conversion)...")
+        
+        # Check if pipeline supports direct CSV loading
+        if not hasattr(pipeline, 'load_csv_files_directly'):
+            logger.warning("[DOWNLOAD+LOAD] Pipeline doesn't have direct CSV loading, using standard flow")
+            return self._execute_standard_flow(pipeline, config_service, **kwargs)
+        
+        try:
+            # Step 1: Download files
+            logger.info("[DOWNLOAD+LOAD] Step 1: Downloading files...")
+            downloaded_files = pipeline.retrieve_data()
+            if not downloaded_files:
+                logger.error("[DOWNLOAD+LOAD] No files were downloaded")
+                return None
+            
+            logger.info(f"[DOWNLOAD+LOAD] Downloaded {len(downloaded_files)} files")
+            
+            # Step 2: Extract files (if they're compressed)
+            logger.info("[DOWNLOAD+LOAD] Step 2: Extracting files...")
+            extracted_files = pipeline.extract_downloaded_files()
+            if not extracted_files:
+                logger.warning("[DOWNLOAD+LOAD] No files were extracted, using downloaded files directly")
+                extracted_files = downloaded_files
+            
+            # Step 3: Load CSV files directly to database
+            logger.info("[DOWNLOAD+LOAD] Step 3: Loading CSV files directly to database...")
+            loading_result = pipeline.load_csv_files_directly(extracted_files, config_service, **kwargs)
+            
+            if loading_result:
+                logger.info("[DOWNLOAD+LOAD] Strategy completed successfully")
+                logger.info("[DOWNLOAD+LOAD] Files processed directly without conversion step")
+            else:
+                logger.error("[DOWNLOAD+LOAD] Direct CSV loading failed")
+            
+            return loading_result
+            
+        except Exception as e:
+            logger.error(f"[DOWNLOAD+LOAD] Strategy failed: {e}")
+            logger.info("[DOWNLOAD+LOAD] Falling back to standard ETL flow...")
+            return self._execute_standard_flow(pipeline, config_service, **kwargs)
+    
+    def _execute_standard_flow(self, pipeline: Pipeline, config_service, **kwargs) -> Optional[Any]:
+        """Fallback to standard download -> convert -> load flow."""
+        try:
+            # Download
+            downloaded_files = pipeline.retrieve_data()
+            if not downloaded_files:
+                return None
+            
+            # Convert
+            converted_files = pipeline.convert_existing_csvs_to_parquet()
+            if not converted_files:
+                logger.warning("[DOWNLOAD+LOAD] Conversion failed in fallback")
+                return None
+            
+            # Load
+            loading_result = pipeline.load_parquet_files(config_service, **kwargs)
+            return loading_result
+            
+        except Exception as e:
+            logger.error(f"[DOWNLOAD+LOAD] Fallback strategy failed: {e}")
+            raise
+
+
 class DownloadAndConvertStrategy:
     """Strategy for download and convert to Parquet mode."""
     
@@ -360,6 +434,7 @@ class StrategyFactory:
         strategy_map = {
             (True, False, False): DownloadOnlyStrategy(),        # 100
             (True, True, False):  DownloadAndConvertStrategy(),  # 110
+            (True, False, True):  DownloadAndLoadStrategy(),        # 101
             (False, True, False): ConvertOnlyStrategy(),         # 010
             (False, False, True): LoadOnlyStrategy(),            # 001
             (False, True, True):  ConvertAndLoadStrategy(),      # 011

@@ -23,6 +23,8 @@ def validate_cli_arguments(args):
     errors = []
 
     # Check for valid strategy combinations
+
+    # Regular strategy combinations
     strategy_key = (args.download, args.convert, args.load)
     valid_combinations = [
         (True, False, False),  # Download Only
@@ -36,7 +38,7 @@ def validate_cli_arguments(args):
     if strategy_key not in valid_combinations:
         errors.append(
             f"Invalid strategy combination: download={args.download}, convert={args.convert}, load={args.load}. "
-            "Valid combinations: 100 (download only), 110 (download+convert), 010 (convert only), "
+            "Valid combinations: 100 (download only), 110 (download+convert), 101 (download+load), 010 (convert only), "
             "001 (load only), 011 (convert+load), 111 (full ETL)."
         )
 
@@ -95,11 +97,11 @@ Examples:
   
   %(prog)s --download --convert --load --year 2024 --month 12
     Full ETL pipeline (111)
-  
+    
   %(prog)s --download --convert --load --full-refresh --year 2024 --month 12
     Full ETL with database table refresh
 
-Valid combinations: 100, 110, 010, 001, 011, 111
+Valid combinations: 100, 110, 101, 010, 001, 011 or 111
 Default (no flags): Full ETL (111)
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter
@@ -143,7 +145,7 @@ Default (no flags): Full ETL (111)
     config_service = ConfigurationService(month=args.month, year=args.year)
     pipeline = ReceitaCNPJPipeline(config_service)
 
-    # Create strategy based on boolean flags
+    # Create strategy based on flags
     strategy = StrategyFactory.create_strategy(
         download=args.download,
         convert=args.convert,

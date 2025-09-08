@@ -13,8 +13,8 @@ import threading
 
 import polars as pl
 
-from ...setup.config import ConversionConfig
-from ...setup.logging import logger
+from ....setup.config import ConversionConfig
+from ....setup.logging import logger
 
 import psutil
 
@@ -958,11 +958,10 @@ def process_extremely_large_table(
     if not inputs:
         return f"[ERROR] No processable files for '{table_name}'"
 
-    import pandas as pd
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    # derive schema (same as before)
+    # derive schema using polars-only approach
     try:
         sample_rows = 10000
         sample_df = pl.read_csv(
@@ -972,34 +971,37 @@ def process_extremely_large_table(
             n_rows=sample_rows, 
             encoding="utf8-lossy", 
             ignore_errors=True, 
-            has_header=False
+            has_header=False,
+            try_parse_dates=False,  # Performance optimization
+            infer_schema_length=min(1000, sample_rows)  # Limit inference for speed
         )
         if len(sample_df) > 0:
             pa_schema = sample_df.to_arrow().schema
+            logger.debug(f"Schema derived using polars for {inputs[0]}")
         else:
-            raise RuntimeError("Polars sample empty")
+            raise RuntimeError("Polars sample empty - no valid rows found")
         del sample_df
         gc.collect()
-    except Exception:
-        try:
-            sample_pd = pd.read_csv(
-                str(inputs[0]), 
-                sep=delimiter, 
-                quotechar='"', 
-                nrows=1000, 
-                dtype=str, 
-                on_bad_lines="skip", 
-                header=None
-            )
-            pa_schema = pa.Table.from_pandas(sample_pd, preserve_index=False).schema
-            del sample_pd
-            gc.collect()
-        except Exception:
-            if expected_columns:
-                fields = [pa.field(c, pa.string()) for c in expected_columns]
-                pa_schema = pa.schema(fields)
-            else:
-                pa_schema = pa.schema([pa.field("col_0", pa.string())])
+    except Exception as e:
+        # Fail-fast: provide clear guidance for fixing polars issues
+        error_msg = (
+            f"Polars schema generation failed for {inputs[0]}. "
+            f"Error: {e}. "
+            f"Suggestions: "
+            f"1) Check file encoding (try utf8-lossy or latin1), "
+            f"2) Verify delimiter (current: '{delimiter}'), "
+            f"3) Inspect file for malformed rows, "
+            f"4) Consider preprocessing the file."
+        )
+        logger.error(error_msg)
+        
+        # Only fallback to expected_columns if available, otherwise fail completely
+        if expected_columns:
+            logger.warning(f"Using expected columns as fallback schema for {inputs[0]}")
+            fields = [pa.field(c, pa.string()) for c in expected_columns]
+            pa_schema = pa.schema(fields)
+        else:
+            raise ValueError(error_msg) from e
 
     if expected_columns:
         existing_names = set(pa_schema.names)
@@ -1026,125 +1028,95 @@ def process_extremely_large_table(
         for csv_path in inputs:
             fsize_mb = csv_path.stat().st_size / (1024 * 1024)
             if fsize_mb > max_file_size_mb:
-                local_chunksize = max(\
+                local_chunksize = max(
                     50_000, int(chunksize / max(1, int(fsize_mb // max_file_size_mb)))
                 )
             else:
                 local_chunksize = chunksize
 
-            # ------------------- Robust CSV reader creation -------------------
-            # Strategy:
-            # 1) Try utf-8 with encoding_errors='replace' (if pandas supports it)
-            # 2) If TypeError (older pandas), try utf-8 with engine='python' (tolerant but slower)
-            # 3) If UnicodeDecodeError still occurs, fall back to latin1
-            reader = None
+            # ------------------- Polars-only CSV processing -------------------
             try:
-                # pandas >= 1.5 supports encoding_errors
-                reader = pd.read_csv(
+                # Use polars streaming approach instead of pandas chunking
+                lazy_frame = pl.scan_csv(
                     str(csv_path),
-                    sep=delimiter,
-                    quotechar='"',
-                    dtype=str,
-                    chunksize=local_chunksize,
-                    encoding="utf-8",
-                    encoding_errors="replace",
-                    on_bad_lines="skip",
-                    low_memory=True,
-                    header=None
+                    separator=delimiter,
+                    quote_char='"',
+                    encoding="utf8-lossy",  # Handle encoding issues gracefully
+                    ignore_errors=True,     # Skip malformed rows instead of failing
+                    has_header=False,
+                    try_parse_dates=False,  # Performance optimization
+                    schema_overrides={col: pl.Utf8 for col in (expected_columns or pa_schema.names)}
                 )
-                logger.debug(f"Using utf-8 (with replace) reader for {csv_path.name}")
-            except TypeError:
-                # older pandas doesn't support encoding_errors; try utf-8 with python engine
-                try:
-                    reader = pd.read_csv(
-                        str(csv_path),
-                        sep=delimiter,
-                        quotechar='"',
-                        dtype=str,
-                        chunksize=local_chunksize,
-                        encoding="utf-8",
-                        on_bad_lines="skip",
-                        low_memory=True,
-                        engine="python",
-                        header=None
-                    )
-                    logger.debug(f"Using utf-8 (python engine) reader for {csv_path.name}")
-                except UnicodeDecodeError:
-                    logger.warning(f"utf-8 decode failed for {csv_path.name} with python engine; falling back to latin1")
-                    reader = pd.read_csv(
-                        str(csv_path),
-                        sep=delimiter,
-                        quotechar='"',
-                        dtype=str,
-                        chunksize=local_chunksize,
-                        encoding="latin1",
-                        on_bad_lines="skip",
-                        low_memory=True,
-                        header=None
-                    )
-            except UnicodeDecodeError:
-                # utf-8 with replace should not usually raise, but be defensive
-                logger.warning(f"utf-8 decode failed for {csv_path.name}; falling back to latin1")
-                reader = pd.read_csv(
-                    str(csv_path),
-                    sep=delimiter,
-                    quotechar='"',
-                    dtype=str,
-                    chunksize=local_chunksize,
-                    encoding="latin1",
-                    on_bad_lines="skip",
-                    low_memory=True,
-                    header=None
-                )
-            # -----------------------------------------------------------------
-
-            # Prepare column rename mapping once per file (not per chunk)
-            column_rename_map = None
-            if expected_columns:
-                column_rename_map = {i: expected_columns[i] for i in range(len(expected_columns))}
-                logger.debug(f"Prepared column rename mapping: {list(column_rename_map.values())}")
-
-            # iterate chunks (reader is an iterator)
-            for df_chunk in reader:
-                # FIX: Rename numeric columns to expected column names for headerless CSV
-                if column_rename_map and len(df_chunk.columns) == len(expected_columns):
-                    df_chunk = df_chunk.rename(columns=column_rename_map)
                 
-                # align columns to expected_columns or pa_schema (same logic you had)
+                # Apply column renaming if needed
                 if expected_columns:
-                    missing = [c for c in expected_columns if c not in df_chunk.columns]
-                    for c in missing:
-                        df_chunk[c] = None
-                    df_chunk = df_chunk.reindex(columns=expected_columns)
-                else:
-                    missing = [n for n in pa_schema.names if n not in df_chunk.columns]
-                    for c in missing:
-                        df_chunk[c] = None
-                    df_chunk = df_chunk.reindex(columns=pa_schema.names)
-
-                # convert to Arrow table, cast to schema if needed (same as before)
-                try:
-                    table = pa.Table.from_pandas(df_chunk, preserve_index=False)
-                    if table.schema != pa_schema:
-                        table = table.select(pa_schema.names)
-                        table = table.cast(pa_schema)
-                except Exception:
-                    logger.debug("Chunk -> pyarrow conversion failed; coercing to strings")
-                    for col in df_chunk.columns:
-                        df_chunk[col] = df_chunk[col].astype("string")
-                    table = pa.Table.from_pandas(df_chunk, preserve_index=False)
-                    if table.schema != pa_schema:
-                        table = table.select(pa_schema.names)
-
-                writer.write_table(table)
-                total_rows_written += table.num_rows
-
-                if memory_monitor and memory_monitor.should_prevent_processing():
+                    # For headerless CSV files, rename numbered columns to expected names
+                    current_columns = lazy_frame.columns
+                    if len(current_columns) == len(expected_columns):
+                        column_mapping = {f"column_{i+1}": expected_columns[i] for i in range(len(expected_columns))}
+                        # Handle both potential column naming patterns
+                        for old_pattern, new_name in zip(current_columns, expected_columns):
+                            column_mapping[old_pattern] = new_name
+                        lazy_frame = lazy_frame.rename(column_mapping)
+                    
+                    # Ensure all expected columns exist
+                    existing_cols = set(lazy_frame.columns)
+                    for col in expected_columns:
+                        if col not in existing_cols:
+                            lazy_frame = lazy_frame.with_columns(pl.lit(None).alias(col))
+                    
+                    # Select and reorder columns
+                    lazy_frame = lazy_frame.select(expected_columns)
+                
+                logger.debug(f"Processing {csv_path.name} with polars streaming (chunk size: {local_chunksize})")
+                
+                # Process in chunks using polars streaming
+                for batch_df in lazy_frame.iter_slices(n_rows=local_chunksize):
+                    # Convert to arrow and write
                     try:
-                        gc.collect()
-                        time.sleep(0.05)
-                    except Exception:
-                        pass
+                        table = batch_df.to_arrow()
+                        if table.schema != pa_schema:
+                            # Cast to expected schema
+                            table = table.select(pa_schema.names)
+                            table = table.cast(pa_schema)
+                        writer.write_table(table)
+                        total_rows_written += table.num_rows
+                        
+                    except Exception as conversion_error:
+                        logger.debug(f"Batch conversion failed: {conversion_error}. Falling back to string casting")
+                        # Convert all columns to string and retry
+                        string_batch = batch_df.with_columns([
+                            pl.col(col).cast(pl.Utf8, strict=False).alias(col) 
+                            for col in batch_df.columns
+                        ])
+                        table = string_batch.to_arrow()
+                        if table.schema != pa_schema:
+                            table = table.select(pa_schema.names)
+                        writer.write_table(table)
+                        total_rows_written += table.num_rows
+
+                    # Memory management
+                    if memory_monitor and memory_monitor.should_prevent_processing():
+                        try:
+                            gc.collect()
+                            time.sleep(0.05)
+                        except Exception:
+                            pass
+
+            except Exception as polars_error:
+                # Fail-fast: provide clear error message for polars issues
+                error_msg = (
+                    f"Polars processing failed for {csv_path.name}. "
+                    f"Error: {polars_error}. "
+                    f"File size: {fsize_mb:.1f}MB. "
+                    f"Suggestions: "
+                    f"1) Check file encoding and format, "
+                    f"2) Verify delimiter ('{delimiter}') is correct, "
+                    f"3) Inspect file for malformed rows, "
+                    f"4) Consider preprocessing the file to fix format issues."
+                )
+                logger.error(error_msg)
+                raise ValueError(error_msg) from polars_error
 
         # close writer and move temp file to final location
         writer.close()
@@ -1259,7 +1231,11 @@ def select_processing_strategy(audit_map: dict, unzip_dir: Path) -> str:
 
 # IMPROVEMENT 15: Main entry point with strategy selection
 
+<<<<<<< HEAD
 def convert_csvs_to_parquet_smart(
+=======
+def convert_csvs_to_parquet_with_strategy_selection(
+>>>>>>> 434f202 (refactor() development, config and pandas removal)
     audit_map: dict,
     unzip_dir: Path,
     output_dir: Path,
