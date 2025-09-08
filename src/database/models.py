@@ -7,7 +7,8 @@ from sqlalchemy import (
     Text,  
     Integer,
     Index, 
-    ForeignKey
+    ForeignKey,
+    Enum
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import UUID
@@ -17,12 +18,29 @@ from datetime import datetime
 from uuid import uuid4
 from functools import reduce
 from sqlalchemy.ext.declarative import declarative_base
+import enum
 
 # Separate bases for audit and main tables
 AuditBase = declarative_base()
 MainBase = declarative_base()
 
 T = TypeVar("T", bound=BaseModel)
+
+# Define status enums for batch tracking
+class BatchStatus(enum.Enum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING" 
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+class SubbatchStatus(enum.Enum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED" 
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+    SKIPPED = "SKIPPED"
 
 
 class AuditDBSchema(BaseModel, Generic[T]):
@@ -161,7 +179,9 @@ class AuditManifest(AuditBase):
     __tablename__ = "file_ingestion_manifest"
 
     manifest_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    audit_id = Column(UUID(as_uuid=True), ForeignKey('table_ingestion_manifest.audi_id'), nullable=True)
+    audit_id = Column(UUID(as_uuid=True), ForeignKey('table_ingestion_manifest.audi_id'), nullable=False)  # FIXED: Required audit_id
+    batch_id = Column(UUID(as_uuid=True), ForeignKey('batch_ingestion_manifest.batch_id'), nullable=True)
+    subbatch_id = Column(UUID(as_uuid=True), ForeignKey('subbatch_ingestion_manifest.subbatch_id'), nullable=True)
     table_name = Column(String(100), nullable=True)
     file_path = Column(Text, nullable=False)
     status = Column(String(64), nullable=False)
@@ -175,10 +195,14 @@ class AuditManifest(AuditBase):
         Index("idx_manifest_processed_at", "processed_at"),
         Index("idx_manifest_table_name", "table_name"),
         Index("idx_manifest_file_path", "file_path"),
+        Index("idx_manifest_batch_id", "batch_id"),
+        Index("idx_manifest_subbatch_id", "subbatch_id"),
     )
 
-    # Foreign key to AuditDB for lineage    
+    # Foreign key relationships with explicit foreign_keys to avoid ambiguity
     audit = relationship("AuditDB", back_populates="manifests")
+    batch = relationship("BatchIngestionManifest", back_populates="file_manifests", foreign_keys=[batch_id])
+    subbatch = relationship("SubbatchIngestionManifest", back_populates="file_manifests", foreign_keys=[subbatch_id])
 
     def __get_pydantic_core_schema__(self):
         from ..core.schemas import AuditManifestSchema
@@ -188,7 +212,88 @@ class AuditManifest(AuditBase):
         return (
             f"AuditManifest(manifest_id={self.manifest_id}, file_path={self.file_path}, "
             f"status={self.status}, checksum={self.checksum}, filesize={self.filesize}, "
-            f"rows={self.rows}, processed_at={self.processed_at}, table_name={self.table_name})"
+            f"rows={self.rows_processed}, processed_at={self.processed_at}, table_name={self.table_name})"
+        )
+
+
+# Batch tracking models for hierarchical ETL observability
+class BatchIngestionManifest(AuditBase):
+    """
+    SQLAlchemy model for batch-level tracking in ETL processes.
+    Tracks high-level batch execution for a single target table.
+    """
+    __tablename__ = "batch_ingestion_manifest"
+
+    batch_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    batch_name = Column(String(200), nullable=False)
+    target_table = Column(String(100), nullable=False)  # Single table name
+    primary_file_manifest_id = Column(UUID(as_uuid=True), ForeignKey('file_ingestion_manifest.manifest_id'), nullable=True)  # ADDED: Reference to primary file manifest
+    status = Column(Enum(BatchStatus), nullable=False, default=BatchStatus.PENDING)
+    started_at = Column(TIMESTAMP, nullable=False, default=datetime.now)
+    completed_at = Column(TIMESTAMP, nullable=True)
+    description = Column(Text, nullable=True)
+    error_message = Column(Text, nullable=True)
+    
+    __table_args__ = (
+        Index("idx_batch_status", "status"),
+        Index("idx_batch_target_table", "target_table"),
+        Index("idx_batch_started_at", "started_at"),
+        Index("idx_batch_completed_at", "completed_at"),
+        Index("idx_batch_primary_file_manifest", "primary_file_manifest_id"),  # ADDED: Index for file manifest reference
+    )
+
+    # Relationships with explicit foreign_keys to avoid ambiguity
+    subbatches = relationship("SubbatchIngestionManifest", back_populates="batch", cascade="all, delete-orphan")
+    file_manifests = relationship("AuditManifest", back_populates="batch", cascade="all, delete-orphan", foreign_keys="AuditManifest.batch_id")
+    primary_file_manifest = relationship("AuditManifest", foreign_keys=[primary_file_manifest_id], post_update=True)  # ADDED: Reference to primary file manifest
+
+    def __repr__(self):
+        return (
+            f"BatchIngestionManifest(batch_id={self.batch_id}, batch_name={self.batch_name}, "
+            f"target_table={self.target_table}, status={self.status.value}, "
+            f"started_at={self.started_at}, completed_at={self.completed_at})"
+        )
+
+
+class SubbatchIngestionManifest(AuditBase):
+    """
+    SQLAlchemy model for subbatch-level tracking in ETL processes.
+    Tracks individual processing steps within a batch.
+    """
+    __tablename__ = "subbatch_ingestion_manifest"
+
+    subbatch_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    batch_id = Column(UUID(as_uuid=True), ForeignKey('batch_ingestion_manifest.batch_id'), nullable=False)
+    table_name = Column(String(100), nullable=False)
+    status = Column(Enum(SubbatchStatus), nullable=False, default=SubbatchStatus.PENDING)
+    started_at = Column(TIMESTAMP, nullable=False, default=datetime.now)
+    completed_at = Column(TIMESTAMP, nullable=True)
+    files_processed = Column(Integer, nullable=True, default=0)
+    rows_processed = Column(BigInteger, nullable=True, default=0)
+    description = Column(Text, nullable=True)
+    error_message = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)
+    
+    __table_args__ = (
+        Index("idx_subbatch_batch_id", "batch_id"),
+        Index("idx_subbatch_table_name", "table_name"),
+        Index("idx_subbatch_status", "status"),
+        Index("idx_subbatch_started_at", "started_at"),
+        Index("idx_subbatch_completed_at", "completed_at"),
+    )
+
+    # Relationship to parent batch
+    batch = relationship("BatchIngestionManifest", back_populates="subbatches")
+    
+    # Relationship to file manifests
+    file_manifests = relationship("AuditManifest", back_populates="subbatch", cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return (
+            f"SubbatchIngestionManifest(subbatch_id={self.subbatch_id}, batch_id={self.batch_id}, "
+            f"table_name={self.table_name}, status={self.status.value}, "
+            f"files_processed={self.files_processed}, rows_processed={self.rows_processed}, "
+            f"started_at={self.started_at}, completed_at={self.completed_at})"
         )
 
 

@@ -65,18 +65,33 @@ class ConversionConfig:
 class ETLStageConfig:
     """Base configuration for ETL stages."""
     enabled: bool = True
+
+@dataclass
+class BatchTrackingConfig(ETLStageConfig):
+    """Configuration for batch tracking system."""
+    accumulation_enabled: bool = True  # Enable in-memory accumulation
+    log_level: str = "INFO"  # Logging level for batch tracking
+    metric_buffer_size: int = 1000  # Size of metric accumulation buffer
+    update_threshold: int = 100  # Update metrics every N files
+    update_interval: int = 30  # Update metrics every N seconds
+    enable_bulk_updates: bool = True  # Enable bulk database updates
+    enable_temporal_context: bool = True  # Include year/month in batch names
+    default_batch_size: int = 20_000  # Default processing batch size
+    retention_days: int = 30  # Keep batch records for N days
+    enable_monitoring: bool = True  # Enable batch monitoring features
+
+
+@dataclass
+class ETLConfig:
+    """ETL process configuration."""
+    year: int = 2024  # Default year for data processing
+    month: int = 12   # Default month for data processing
+
+    delimiter: str = ";"
+    chunk_size: int = 50000
     max_retries: int = 3
     timeout_seconds: int = 300
 
-<<<<<<< HEAD
-    # Development mode settings
-    development_mode: bool = False
-    development_file_size_limit: int = 50000  # bytes - Max file size for development mode filtering
-    development_max_files_per_table: int = 5  # Max files to process per table in development mode
-    development_max_files_per_blob: int = 3  # Max files to extract per ZIP blob in development mode
-    development_sample_percentage: float = 0.1  # Percentage of files to sample (0.1 = 10%)
-=======
->>>>>>> 434f202 (refactor() development, config and pandas removal)
 
 @dataclass
 class DownloadConfig(ETLStageConfig):
@@ -212,11 +227,27 @@ class ConfigurationService:
         self.etl = self._load_etl_config()
         self.paths = self._load_path_config()
         self.urls = self._load_url_config()
+        self._batch_config = None  # Lazy-loaded
 
         # Skip directory creation during init - create them lazily when needed
         self.paths.ensure_directories_exist()
 
         logger.info("Configuration loaded successfully")
+
+    @property
+    def batch_config(self) -> BatchTrackingConfig:
+        """Lazy-loaded batch tracking configuration."""
+        if self._batch_config is None:
+            self._batch_config = BatchTrackingConfig(
+                update_threshold=int(os.getenv("BATCH_UPDATE_THRESHOLD", "100")),
+                update_interval=int(os.getenv("BATCH_UPDATE_INTERVAL", "30")),
+                enable_bulk_updates=os.getenv("ENABLE_BULK_UPDATES", "true").lower() == "true",
+                enable_temporal_context=os.getenv("ENABLE_TEMPORAL_CONTEXT", "true").lower() == "true",
+                default_batch_size=int(os.getenv("DEFAULT_BATCH_SIZE", "20000")),
+                retention_days=int(os.getenv("BATCH_RETENTION_DAYS", "30")),
+                enable_monitoring=os.getenv("ENABLE_BATCH_MONITORING", "true").lower() == "true"
+            )
+        return self._batch_config
 
     def _load_main_database_config(self) -> DatabaseConfig:
         """Load database configuration from environment variables."""
@@ -248,12 +279,6 @@ class ConfigurationService:
 
     def _load_etl_config(self) -> ETLConfig:
         """Load ETL configuration from environment variables."""
-<<<<<<< HEAD
-
-        # Get current date for defaults
-        current_year = self.year
-        current_month = self.month
-=======
         
         # Create stage-specific configurations
         download_config = DownloadConfig(
@@ -306,7 +331,6 @@ class ConfigurationService:
             max_blob_size_mb=int(os.getenv("ETL_DEV_MAX_BLOB_SIZE_MB", "500")),
             sample_percentage=float(os.getenv("ETL_DEV_SAMPLE_PERCENTAGE", "0.1"))
         )
->>>>>>> 434f202 (refactor() development, config and pandas removal)
 
         return ETLConfig(
             download=download_config,
@@ -316,34 +340,9 @@ class ConfigurationService:
             year=int(self.year),
             month=int(self.month),
             delimiter=os.getenv("ETL_FILE_DELIMITER", ";"),
-<<<<<<< HEAD
-            chunk_size=int(os.getenv("ETL_CHUNK_SIZE", "50000")),
-            max_retries=int(os.getenv("ETL_MAX_RETRIES", "3")),
-            parallel_workers=int(os.getenv("ETL_WORKERS", "4")),
-            delete_files=os.getenv("ETL_DELETE_FILES", "true").lower() == "true",
-            is_parallel=os.getenv("ETL_IS_PARALLEL", "true").lower() == "true",
-            development_mode=os.getenv("ENVIRONMENT", "development").lower()
-            == "development",
-            development_file_size_limit=int(
-                os.getenv("ETL_DEV_FILE_SIZE_LIMIT", "50000")
-            ),
-            development_max_files_per_table=int(
-                os.getenv("ETL_DEV_MAX_FILES_PER_TABLE", "5")
-            ),
-            development_max_files_per_blob=int(
-                os.getenv("ETL_DEV_MAX_FILES_PER_BLOB", "3")
-            ),
-            sub_batch_size=int(os.getenv("ETL_SUB_BATCH_SIZE", "5000")),
-            internal_concurrency=int(os.getenv("ETL_INTERNAL_CONCURRENCY", "3")),
-            manifest_tracking=os.getenv("ETL_MANIFEST_TRACKING", "true").lower() == "true",
-            async_pool_min_size=int(os.getenv("ETL_ASYNC_POOL_MIN_SIZE", "1")),
-            async_pool_max_size=int(os.getenv("ETL_ASYNC_POOL_MAX_SIZE", "10")),
-            checksum_threshold_bytes=int(os.getenv("ETL_CHECKSUM_THRESHOLD_BYTES", "1000000000")),
-=======
             timezone=os.getenv("ETL_TIMEZONE", "America/Sao_Paulo"),
             delete_files=os.getenv("ETL_DELETE_FILES", "true").lower() == "true",
             is_parallel=os.getenv("ETL_IS_PARALLEL", "true").lower() == "true"
->>>>>>> 434f202 (refactor() development, config and pandas removal)
         )
 
     def _load_path_config(self) -> PathConfig:
@@ -523,16 +522,6 @@ def get_url_config() -> URLConfig:
     return get_config().urls
 
 
-def get_etl_configuration(year: Optional[int] = None, month: Optional[int] = None) -> ETLConfig:
-    """
-    Get unified ETL configuration with temporal context.
-    
-    Args:
-        year: Year for temporal configuration
-        month: Month for temporal configuration
-        
-    Returns:
-        ETLConfig: Unified configuration object with stage-specific settings
-    """
-    config_service = get_config(year, month)
-    return config_service.etl
+def get_batch_config() -> BatchTrackingConfig:
+    """Get batch tracking configuration (backward compatibility)."""
+    return get_config().batch_config

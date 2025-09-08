@@ -76,7 +76,7 @@ def apply_transforms_to_batch(table_info: TableInfo, batch: List[Tuple], headers
     transform_func = getattr(table_info, 'transform_map', None)
 
     # Import default transform for proper identity comparison
-    from ..core.constants import default_transform_map
+    from ..core.transforms import default_transform_map
 
     if not transform_func or transform_func is default_transform_map:
         # No transforms needed, return batch as-is
@@ -371,7 +371,7 @@ class UnifiedLoader(BaseFileLoader):
         transform_func = getattr(table_info, 'transform_map', None)
 
         # Import default transform for proper identity comparison
-        from ..core.constants import default_transform_map
+        from ..core.transforms import default_transform_map
 
         if not transform_func or transform_func is default_transform_map:
             # No transforms needed, yield batches as-is

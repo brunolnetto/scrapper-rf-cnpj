@@ -7,6 +7,7 @@ from pathlib import Path
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from uuid import UUID
 
 # Import new services
 from ..setup.logging import logger
@@ -29,6 +30,10 @@ class ReceitaCNPJPipeline(Pipeline):
         self._database = None
         self._audit_service = None
         self._initialized = False
+
+        # Batch tracking state
+        self._current_batch_id: Optional[UUID] = None
+        self._batch_name: Optional[str] = None
 
         # Initialize file downloader and uploader (these are fast)
         self.file_downloader = FileDownloadService(config=config_service)
@@ -95,6 +100,46 @@ class ReceitaCNPJPipeline(Pipeline):
         self._audit_service = AuditService(audit_db, self.config)
         
         self._initialized = True
+
+    def _generate_batch_name(self) -> str:
+        """Generate a descriptive batch name."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return f"ETL_Pipeline_{self.config.etl.year}_{self.config.etl.month:02d}_{timestamp}"
+
+    def _start_batch_tracking(self, target_table: Optional[str] = None) -> UUID:
+        """Start batch tracking for the pipeline execution."""
+        if not self.config.batch_config.enabled:
+            return None
+            
+        self._batch_name = self._generate_batch_name()
+        
+        logger.info(f"Starting batch tracking: {self._batch_name}")
+        
+        # Start batch without context manager - we'll manage it manually
+        batch_id = self.audit_service._start_batch(
+            batch_name=self._batch_name,
+            target_table=target_table or "ALL_TABLES"
+        )
+        self._current_batch_id = batch_id
+        return batch_id
+
+    def _complete_batch_tracking(self, success: bool = True) -> None:
+        """Complete batch tracking for the pipeline execution."""
+        if not self.config.batch_config.enabled or not self._current_batch_id:
+            return
+            
+        logger.info(f"Completing batch tracking: {self._batch_name} (success={success})")
+        
+        # Complete the batch manually using the correct method name
+        from ..database.models import BatchStatus
+        status = BatchStatus.COMPLETED if success else BatchStatus.FAILED
+        self.audit_service._complete_batch_with_accumulated_metrics(self._current_batch_id, status)
+        self._current_batch_id = None
+
+    @property
+    def current_batch_id(self) -> Optional[UUID]:
+        """Get the current batch ID for this pipeline execution."""
+        return self._current_batch_id
 
     def scrap_data(self) -> List[FileInfo]:
         from ..utils.misc import convert_to_bytes
@@ -397,28 +442,34 @@ class ReceitaCNPJPipeline(Pipeline):
         extract_path = str(self.config.paths.extract_path)
         download_path = str(self.config.paths.download_path)
 
-        audits = self.retrieve_data()
+        # No longer create umbrella batch - individual table batches will be created
+        try:
+            audits = self.retrieve_data()
 
-        if audits:
-            audit_metadata = self.audit_service.create_audit_metadata(audits, download_path)
+            if audits:
+                audit_metadata = self.audit_service.create_audit_metadata(audits, download_path)
 
-            # Remove downloaded files
+                # Remove downloaded files
+                if self.config.etl.delete_files:
+                    remove_folder(download_path)
+
+                # Convert to Parquet
+                self.convert_to_parquet(audit_metadata)
+
+                # Load data - each table will create its own batch
+                self.data_loader.load_data(audit_metadata)
+                
+                return audit_metadata
+            else:
+                logger.warning("No data to load!")
+                return None
+
+        except Exception as e:
+            logger.error(f"Pipeline execution failed: {e}")
+            raise
+        finally:
             if self.config.etl.delete_files:
-                remove_folder(download_path)
-
-            # Convert to Parquet
-            self.convert_to_parquet(audit_metadata)
-
-            # Load data using the new DataLoadingService
-            self.data_loader.load_data(audit_metadata)
-
-            return audit_metadata
-        else:
-            logger.warning("No data to load!")
-            return None
-
-        if self.config.etl.delete_files:
-            remove_folder(extract_path)
+                remove_folder(extract_path)
 
     def _detect_csv_files(self, extract_path: Path) -> List[Path]:
         """

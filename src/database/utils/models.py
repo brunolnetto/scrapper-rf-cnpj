@@ -86,6 +86,11 @@ def create_audit(
             sao_paulo_timezone = pytz.timezone("America/Sao_Paulo")
             latest_updated_at = sao_paulo_timezone.localize(latest_updated_at)
 
+        # Extract temporal info from source date for proper tracking
+        source_date = file_group_info.date_range[1]
+        data_year = source_date.year
+        data_month = source_date.month
+
         # First entry: no existing audit entry
         if latest_updated_at is None:
             # Create and insert the new entry
@@ -94,6 +99,8 @@ def create_audit(
                 file_group_info.elements,
                 file_group_info.size_bytes,
                 file_group_info.date_range[1],
+                data_year,  # Use source data year
+                data_month  # Use source data month
             )
 
         # New entry: source updated_at is greater
@@ -104,6 +111,8 @@ def create_audit(
                 file_group_info.elements,
                 file_group_info.size_bytes,
                 file_group_info.date_range[1],
+                data_year,  # Use source data year
+                data_month  # Use source data month
             )
 
         # Not all files are updated in batch aka unreliable
@@ -120,6 +129,11 @@ def create_audit(
 
             return None
 
+    # Extract temporal info from source date for tracking at end of function
+    source_date = file_group_info.date_range[1]
+    data_year = source_date.year
+    data_month = source_date.month
+
     if latest_updated_at is None:
         # First entry: no existing audit entry
         return create_new_audit(
@@ -127,7 +141,8 @@ def create_audit(
             file_group_info.elements,
             file_group_info.size_bytes,
             file_group_info.date_range[1],
-            # Temporal fields will use current date defaults
+            data_year,   # Use source data year
+            data_month   # Use source data month
         )
     elif file_group_info.date_range[1] > latest_updated_at:
         # New entry: source updated_at is greater
@@ -136,7 +151,8 @@ def create_audit(
             file_group_info.elements,
             file_group_info.size_bytes,
             file_group_info.date_range[1],
-            # Temporal fields will use current date defaults
+            data_year,   # Use source data year
+            data_month   # Use source data month
         )
     elif file_group_info.date_diff() > 7:
         return None

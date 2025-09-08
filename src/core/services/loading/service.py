@@ -90,17 +90,17 @@ class DataLoadingService:
         """
         Load data for all tables using the configured strategy.
         Updates audit_metadata with insertion timestamps.
+        Each table will create its own batch for better tracking.
 
         Args:
             audit_metadata: Audit metadata with table-to-files mapping
-            **kwargs: Additional arguments for the strategy
 
         Returns:
             Updated AuditMetadata
         """
         table_to_files = audit_metadata.tablename_to_zipfile_to_files
 
-        # Prepare mapping: table_name -> list of files (for CSV) or just table_name (for Parquet)
+        # Each table will create its own batch in the strategy
         results = self.strategy.load_multiple_tables(
             database=self.database,
             table_to_files=table_to_files,
