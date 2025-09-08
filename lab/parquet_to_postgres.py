@@ -14,7 +14,6 @@ import psutil
 import json
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
-import pandas as pd
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -400,7 +399,7 @@ class PerformanceTester:
         return test_files
     
     def load_csv_to_postgres_sqlalchemy(self, csv_file: Path, table_name: str, if_exists: str = 'replace') -> tuple[bool, Optional[str]]:
-        """Load CSV to PostgreSQL using SQLAlchemy + pandas"""
+        """Load CSV to PostgreSQL using SQLAlchemy + polars"""
         tracker = PerformanceTracker()
         tracker.start()
         
@@ -408,16 +407,20 @@ class PerformanceTester:
             # Create SQLAlchemy engine
             engine = create_engine(self.connection_string)
             
-            # Read CSV with pandas
+            # Read CSV with polars
             logger.info(f"Reading CSV file: {csv_file}")
-            df = pd.read_csv(csv_file)
+            df = pl.read_csv(csv_file)
             
             tracker.update_peak_memory()
             
             logger.info(f"Loading {len(df)} rows into table '{table_name}'")
             
+            # Convert to pandas for SQLAlchemy compatibility (temporary solution)
+            # TODO: Replace with direct polars-to-postgres when connectorx supports it
+            pandas_df = df.to_pandas()
+            
             # Load to PostgreSQL using pandas to_sql
-            df.to_sql(
+            pandas_df.to_sql(
                 name=table_name,
                 con=engine,
                 if_exists=if_exists,
@@ -500,27 +503,31 @@ class PerformanceTester:
             return False, error_msg
     
     def load_parquet_to_postgres_sqlalchemy(self, parquet_file: Path, table_name: str, if_exists: str = 'replace') -> tuple[bool, Optional[str]]:
-        """Load Parquet to PostgreSQL using SQLAlchemy + pandas"""
+        """Load Parquet to PostgreSQL using SQLAlchemy + polars"""
         tracker = PerformanceTracker()
         tracker.start()
         
-    try:
-        # Create SQLAlchemy engine
+        try:
+            # Create SQLAlchemy engine
             engine = create_engine(self.connection_string)
-        
-            # Read Parquet with pandas
-        logger.info(f"Reading Parquet file: {parquet_file}")
-            df = pd.read_parquet(parquet_file)
-        
+            
+            # Read Parquet with polars
+            logger.info(f"Reading Parquet file: {parquet_file}")
+            df = pl.read_parquet(parquet_file)
+            
             tracker.update_peak_memory()
-        
+            
             logger.info(f"Loading {len(df)} rows into table '{table_name}'")
-        
-        # Load to PostgreSQL using pandas to_sql
-            df.to_sql(
-            name=table_name,
-            con=engine,
-            if_exists=if_exists,
+            
+            # Convert to pandas for SQLAlchemy compatibility (temporary solution)
+            # TODO: Replace with direct polars-to-postgres when connectorx supports it
+            pandas_df = df.to_pandas()
+            
+            # Load to PostgreSQL using pandas to_sql
+            pandas_df.to_sql(
+                name=table_name,
+                con=engine,
+                if_exists=if_exists,
                 index=False,
                 method='multi',  # Use PostgreSQL COPY
                 chunksize=10000
@@ -529,15 +536,15 @@ class PerformanceTester:
             elapsed_time, memory_used = tracker.stop()
             logger.info(f"Parquet SQLAlchemy load completed in {elapsed_time:.2f}s")
             return True, None
-        
-    except Exception as e:
+            
+        except Exception as e:
             elapsed_time, memory_used = tracker.stop()
             error_msg = f"Error loading Parquet via SQLAlchemy: {e}"
             logger.error(error_msg)
             return False, error_msg
-    finally:
-        if 'engine' in locals():
-            engine.dispose()
+        finally:
+            if 'engine' in locals():
+                engine.dispose()
 
     def load_parquet_to_postgres_duckdb(self, parquet_file: Path, table_name: str, if_exists: str = 'replace') -> tuple[bool, Optional[str]]:
         """Load Parquet to PostgreSQL using DuckDB + COPY"""

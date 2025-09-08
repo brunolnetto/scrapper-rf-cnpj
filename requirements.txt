@@ -2,7 +2,6 @@ asyncpg==0.30.0
 beautifulsoup4==4.13.4
 lxml==6.0.1
 numpy==2.3.2
-pandas==2.3.2
 polars==1.32.3
 psycopg2_binary==2.9.10
 pyarrow==20.0.0
