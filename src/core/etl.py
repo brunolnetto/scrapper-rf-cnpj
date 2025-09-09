@@ -268,18 +268,8 @@ class ReceitaCNPJPipeline(Pipeline):
                 audit_map[table_name] = {}
 
             for zip_filename, csv_files in zipfile_to_files.items():
-                # Development mode filtering - filter CSV files by size
-                if self.config.is_development_mode():
-                    from ..core.utils.development_filter import DevelopmentFilter
-                    dev_filter = DevelopmentFilter(self.config)
-
-                    # Convert string filenames to Path objects for filtering
-                    csv_paths = [Path(self.config.paths.extract_path) / csv_file for csv_file in csv_files]
-                    filtered_csv_paths = [f for f in csv_paths if dev_filter.check_blob_size_limit(f)]
-
-                    # Convert back to string filenames
-                    csv_files = [path.name for path in filtered_csv_paths]
-
+                # No filtering in conversion - process all CSV files from filtered ZIP blobs
+                # The filtering was already done at the ZIP blob level during download
                 audit_map[table_name][zip_filename] = csv_files
 
         logger.info("Converting CSV files to Parquet format...")

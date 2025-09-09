@@ -189,6 +189,7 @@ class AuditManifest(AuditBase):
     filesize = Column(BigInteger, nullable=True)
     rows_processed = Column(BigInteger, nullable=True)
     processed_at = Column(TIMESTAMP, nullable=True)
+    error_message = Column(Text, nullable=True)  # Added: Store error messages
     notes = Column(Text, nullable=True)
     __table_args__ = (
         Index("idx_manifest_status", "status"),
@@ -209,10 +210,11 @@ class AuditManifest(AuditBase):
         return AuditManifestSchema
 
     def __repr__(self):
+        error_msg = f", error='{self.error_message[:50]}...'" if self.error_message else ""
         return (
-            f"AuditManifest(manifest_id={self.manifest_id}, file_path={self.file_path}, "
+            f"FileIngestionManifest(id={self.file_manifest_id}, file_path={self.file_path}, "
             f"status={self.status}, checksum={self.checksum}, filesize={self.filesize}, "
-            f"rows={self.rows_processed}, processed_at={self.processed_at}, table_name={self.table_name})"
+            f"rows={self.rows_processed}, processed_at={self.processed_at}, table_name={self.table_name}{error_msg})"
         )
 
 

@@ -340,12 +340,13 @@ class AuditService:
     def _calculate_file_checksum(self, file_path: Path, algorithm: str = 'sha256') -> str:
         """Calculate file checksum for integrity verification."""
         try:
-            # Skip checksum for very large files (> 1GB) to avoid performance issues
+            # Skip checksum for very large files to avoid performance issues
             filesize = file_path.stat().st_size
-            checksum_threshold = int(os.getenv("ETL_CHECKSUM_THRESHOLD_BYTES", "1000000000"))  # 1GB default
+            checksum_threshold_mb = int(os.getenv("ETL_CHECKSUM_THRESHOLD_MB", "1000"))  # 1000MB (1GB) default
+            checksum_threshold_bytes = checksum_threshold_mb * 1024 * 1024
             
-            if filesize > checksum_threshold:
-                logger.info(f"[PERFORMANCE] Skipping checksum calculation for large file {file_path.name}: {filesize:,} bytes (> {checksum_threshold:,})")
+            if filesize > checksum_threshold_bytes:
+                logger.info(f"[PERFORMANCE] Skipping checksum calculation for large file {file_path.name}: {filesize:,} bytes (> {checksum_threshold_mb}MB)")
                 return None
             
             hash_func = hashlib.new(algorithm)
@@ -515,7 +516,7 @@ class AuditService:
                 params['rows_processed'] = rows_processed
                 
             if error_msg is not None:
-                update_fields.append('error_message = :error_msg')  
+                update_fields.append('error_message = :error_msg')
                 params['error_msg'] = error_msg
                 
             if notes is not None:

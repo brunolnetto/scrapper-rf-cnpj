@@ -69,7 +69,7 @@ class DownloadConfig(ETLStageConfig):
     workers: int = 4
     chunk_size_mb: int = 50
     verify_checksums: bool = True
-    checksum_threshold_bytes: int = 1_000_000_000  # Skip checksum for files > 1GB
+    checksum_threshold_mb: int = 1000  # Skip checksum for files > 1000MB (1GB)
 
 
 @dataclass
@@ -112,12 +112,10 @@ class LoadingConfig(ETLStageConfig):
 class DevelopmentConfig:
     """Development mode configuration."""
     enabled: bool = False
-    file_size_limit_mb: int = 1000
+    file_size_limit_mb: int = 70  # Default to match environment variable default
     max_files_per_table: int = 3
     max_files_per_blob: int = 3
     row_limit_percent: float = 0.1
-    max_blob_size_mb: int = 500
-    sample_percentage: float = 0.1
 
 
 @dataclass
@@ -135,15 +133,6 @@ class ETLConfig:
     timezone: str = "America/Sao_Paulo"
     delete_files: bool = True
     is_parallel: bool = True
-    
-    # Legacy attributes needed by existing code
-    chunk_size: int = 50000
-    max_retries: int = 3
-    timeout_seconds: int = 300
-    parallel_workers: int = 4
-    sub_batch_size: int = 5000
-    enable_internal_parallelism: bool = True
-    internal_concurrency: int = 3
     
     def get_stage_config(self, stage_name: str) -> ETLStageConfig:
         """Get configuration for a specific stage."""
@@ -166,6 +155,52 @@ class ETLConfig:
     def development_mode(self) -> bool:
         """Backward compatibility property for development mode."""
         return self.development.enabled
+    
+    # Properties for backward compatibility - delegate to stage configs
+    @property
+    def chunk_size(self) -> int:
+        """Legacy compatibility: delegate to conversion config."""
+        return self.conversion.chunk_size
+    
+    @property
+    def parallel_workers(self) -> int:
+        """Legacy compatibility: delegate to loading config."""
+        return self.loading.parallel_workers
+    
+    @property
+    def download_workers(self) -> int:
+        """Legacy compatibility: delegate to download config."""
+        return self.download.workers
+    
+    @property
+    def row_estimation_factor(self) -> int:
+        """Legacy compatibility: delegate to conversion config."""
+        return self.conversion.row_estimation_factor
+    
+    @property
+    def sub_batch_size(self) -> int:
+        """Legacy compatibility: delegate to loading config."""
+        return self.loading.sub_batch_size
+    
+    @property
+    def enable_internal_parallelism(self) -> bool:
+        """Legacy compatibility: delegate to loading config."""
+        return self.loading.enable_internal_parallelism
+    
+    @property
+    def internal_concurrency(self) -> int:
+        """Legacy compatibility: delegate to loading config."""
+        return self.loading.internal_concurrency
+    
+    @property
+    def max_retries(self) -> int:
+        """Legacy compatibility: reasonable default."""
+        return 3
+    
+    @property
+    def timeout_seconds(self) -> int:
+        """Legacy compatibility: reasonable default."""
+        return 300
 
 
 @dataclass
@@ -277,7 +312,7 @@ class ConfigurationService:
             workers=int(os.getenv("ETL_WORKERS", "4")),
             chunk_size_mb=int(os.getenv("ETL_DOWNLOAD_CHUNK_SIZE_MB", "50")),
             verify_checksums=os.getenv("ETL_CHECKSUM_VERIFICATION", "true").lower() == "true",
-            checksum_threshold_bytes=int(os.getenv("ETL_CHECKSUM_THRESHOLD_BYTES", "1000000000"))
+            checksum_threshold_mb=int(os.getenv("ETL_CHECKSUM_THRESHOLD_MB", "1000"))
         )
 
         conversion_config = ConversionConfig(
@@ -307,12 +342,10 @@ class ConfigurationService:
         
         development_config = DevelopmentConfig(
             enabled=os.getenv("ENVIRONMENT", "development").lower() == "development",
-            file_size_limit_mb=int(os.getenv("ETL_DEV_FILE_SIZE_LIMIT", "70000000")) // (1024 * 1024),  # Convert bytes to MB
+            file_size_limit_mb=int(os.getenv("ETL_DEV_FILE_SIZE_LIMIT_MB", "70")),  # Direct MB value
             max_files_per_table=int(os.getenv("ETL_DEV_MAX_FILES_PER_TABLE", "3")),
             max_files_per_blob=int(os.getenv("ETL_DEV_MAX_FILES_PER_BLOB", "3")),
-            row_limit_percent=float(os.getenv("ETL_DEV_ROW_LIMIT_PERCENT", "0.1")),
-            max_blob_size_mb=int(os.getenv("ETL_DEV_MAX_BLOB_SIZE_MB", "500")),
-            sample_percentage=float(os.getenv("ETL_DEV_SAMPLE_PERCENTAGE", "0.1"))
+            row_limit_percent=float(os.getenv("ETL_DEV_ROW_LIMIT_PERCENT", "0.1"))
         )
 
         return ETLConfig(
@@ -325,15 +358,7 @@ class ConfigurationService:
             delimiter=os.getenv("ETL_FILE_DELIMITER", ";"),
             timezone=os.getenv("ETL_TIMEZONE", "America/Sao_Paulo"),
             delete_files=os.getenv("ETL_DELETE_FILES", "true").lower() == "true",
-            is_parallel=os.getenv("ETL_IS_PARALLEL", "true").lower() == "true",
-            # Legacy attributes for backward compatibility
-            chunk_size=conversion_config.chunk_size,
-            max_retries=int(os.getenv("ETL_MAX_RETRIES", "3")),
-            timeout_seconds=int(os.getenv("ETL_TIMEOUT_SECONDS", "300")),
-            parallel_workers=loading_config.parallel_workers,
-            sub_batch_size=loading_config.sub_batch_size,
-            enable_internal_parallelism=loading_config.enable_internal_parallelism,
-            internal_concurrency=loading_config.internal_concurrency
+            is_parallel=os.getenv("ETL_IS_PARALLEL", "true").lower() == "true"
         )
 
     def _load_path_config(self) -> PathConfig:
@@ -374,10 +399,6 @@ class ConfigurationService:
         """Get maximum files per ZIP blob for development mode."""
         return self.etl.development.max_files_per_blob
 
-    def get_sample_percentage(self) -> float:
-        """Get sample percentage for development mode."""
-        return self.etl.development.sample_percentage
-
     def get_year(self) -> int:
         """Get the configured year for data processing."""
         return self.etl.year
@@ -400,31 +421,69 @@ class ConfigurationService:
         self._load_configs()
 
     def validate(self) -> bool:
-        """Validate configuration settings."""
+        """Validate configuration settings with comprehensive checks."""
         errors = []
+        warnings = []
 
         # Validate database config
-        if not self.main_database_config.host:
-            errors.append("Database host is not configured")
-        if not self.main_database_config.user:
-            errors.append("Database user is not configured")
-        if not self.main_database_config.password:
-            errors.append("Database password is not configured")
+        for db_name, db_config in self.databases.items():
+            if not db_config.host:
+                errors.append(f"{db_name} database host is not configured")
+            if not db_config.user:
+                errors.append(f"{db_name} database user is not configured")
+            if not db_config.password:
+                errors.append(f"{db_name} database password is not configured")
+            if not db_config.database_name:
+                errors.append(f"{db_name} database name is not configured")
 
         # Validate ETL config
-        if self.etl.chunk_size <= 0:
-            errors.append("ETL chunk size must be positive")
-        if self.etl.max_retries <= 0:
+        etl = self.etl
+        if etl.loading.batch_size <= 0:
+            errors.append("ETL batch size must be positive")
+        if etl.max_retries <= 0:
             errors.append("ETL max retries must be positive")
-        if self.etl.parallel_workers <= 0:
+        if etl.loading.parallel_workers <= 0:
             errors.append("ETL parallel workers must be positive")
+        if etl.loading.internal_concurrency <= 0:
+            errors.append("ETL internal concurrency must be positive")
+
+        # Validate development config
+        if etl.development.enabled:
+            dev = etl.development
+            if dev.file_size_limit_mb <= 0:
+                errors.append("Development file size limit must be positive")
+            if not 0 < dev.row_limit_percent <= 1:
+                errors.append("Development row limit percent must be between 0 and 1")
+            if dev.max_files_per_table <= 0:
+                errors.append("Development max files per table must be positive")
+                
+            # Development warnings
+            if dev.row_limit_percent < 0.01:
+                warnings.append(f"Development row limit percent is very low ({dev.row_limit_percent*100}%)")
 
         # Validate paths
         if not self.paths.download_path:
             errors.append("Download path is not configured")
         if not self.paths.extract_path:
             errors.append("Extract path is not configured")
+        if not self.paths.conversion_path:
+            errors.append("Conversion path is not configured")
 
+        # Validate URLs
+        if not self.urls.base_url:
+            errors.append("Base URL is not configured")
+
+        # Performance warnings
+        if etl.loading.parallel_workers > 8:
+            warnings.append(f"High number of parallel workers ({etl.loading.parallel_workers}) may cause resource contention")
+        if etl.loading.batch_size > 500000:
+            warnings.append(f"Large batch size ({etl.loading.batch_size}) may cause memory issues")
+
+        # Log warnings
+        for warning in warnings:
+            logger.warning(f"Configuration warning: {warning}")
+
+        # Log errors
         if errors:
             for error in errors:
                 logger.error(f"Configuration validation error: {error}")
@@ -450,16 +509,49 @@ class ConfigurationService:
                 },
             },
             "etl": {
-                "delimiter": self.etl.delimiter, 
-                "chunk_size": self.etl.chunk_size,
-                "max_retries": self.etl.max_retries,
-                "parallel_workers": self.etl.parallel_workers,
-                "delete_files": self.etl.delete_files,
-                "is_parallel": self.etl.is_parallel,
-                "development_mode": self.etl.development_mode,
-                "year": self.etl.year,
-                "month": self.etl.month,
-                "timezone": self.etl.timezone,
+                "global_settings": {
+                    "delimiter": self.etl.delimiter,
+                    "year": self.etl.year,
+                    "month": self.etl.month,
+                    "timezone": self.etl.timezone,
+                    "delete_files": self.etl.delete_files,
+                    "is_parallel": self.etl.is_parallel,
+                },
+                "download": {
+                    "enabled": self.etl.download.enabled,
+                    "workers": self.etl.download.workers,
+                    "chunk_size_mb": self.etl.download.chunk_size_mb,
+                    "verify_checksums": self.etl.download.verify_checksums,
+                },
+                "conversion": {
+                    "enabled": self.etl.conversion.enabled,
+                    "chunk_size": self.etl.conversion.chunk_size,
+                    "max_memory_mb": self.etl.conversion.max_memory_mb,
+                    "compression": self.etl.conversion.compression,
+                    "workers": self.etl.conversion.workers,
+                },
+                "loading": {
+                    "enabled": self.etl.loading.enabled,
+                    "batch_size": self.etl.loading.batch_size,
+                    "parallel_workers": self.etl.loading.parallel_workers,
+                    "internal_concurrency": self.etl.loading.internal_concurrency,
+                    "use_copy": self.etl.loading.use_copy,
+                },
+                "development": {
+                    "enabled": self.etl.development.enabled,
+                    "file_size_limit_mb": self.etl.development.file_size_limit_mb,
+                    "max_files_per_table": self.etl.development.max_files_per_table,
+                    "row_limit_percent": self.etl.development.row_limit_percent,
+                },
+                # Legacy properties for backward compatibility
+                "legacy_properties": {
+                    "chunk_size": self.etl.chunk_size,  # -> conversion.chunk_size
+                    "parallel_workers": self.etl.parallel_workers,  # -> loading.parallel_workers
+                    "download_workers": self.etl.download_workers,  # -> download.workers
+                    "row_estimation_factor": self.etl.row_estimation_factor,  # -> conversion.row_estimation_factor
+                    "max_retries": self.etl.max_retries,  # constant
+                    "development_mode": self.etl.development_mode,  # -> development.enabled
+                }
             },
             "paths": {
                 "download_path": str(self.paths.download_path),
@@ -500,7 +592,55 @@ def get_config(year: int = None, month: int = None) -> ConfigurationService:
 def reload_config() -> None:
     """Reload the global configuration by clearing the cache (thread-safe)."""
     with _config_lock:
+        cache_size = len(_config_cache)
         _config_cache.clear()
+        logger.info(f"Configuration cache cleared ({cache_size} entries removed)")
+
+
+def clear_config_cache_for_period(year: int = None, month: int = None) -> bool:
+    """
+    Clear configuration cache for a specific time period (thread-safe).
+    
+    Args:
+        year: Year to clear (None for all years)
+        month: Month to clear (None for all months)
+        
+    Returns:
+        True if any entries were cleared
+    """
+    with _config_lock:
+        if year is None and month is None:
+            # Clear all
+            cache_size = len(_config_cache)
+            _config_cache.clear()
+            logger.info(f"Configuration cache completely cleared ({cache_size} entries)")
+            return cache_size > 0
+        
+        # Clear specific entries
+        keys_to_remove = []
+        for cache_key in _config_cache.keys():
+            key_year, key_month = cache_key
+            if (year is None or key_year == year) and (month is None or key_month == month):
+                keys_to_remove.append(cache_key)
+        
+        for key in keys_to_remove:
+            del _config_cache[key]
+            
+        if keys_to_remove:
+            logger.info(f"Configuration cache cleared for period {year or 'all'}-{month or 'all'} "
+                       f"({len(keys_to_remove)} entries)")
+        
+        return len(keys_to_remove) > 0
+
+
+def get_cache_status() -> Dict[str, Any]:
+    """Get current configuration cache status for debugging."""
+    with _config_lock:
+        return {
+            "cache_size": len(_config_cache),
+            "cached_periods": list(_config_cache.keys()),
+            "memory_info": f"{len(_config_cache)} ConfigurationService instances cached"
+        }
 
 
 # Backward compatibility functions

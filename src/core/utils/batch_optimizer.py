@@ -169,7 +169,7 @@ class BatchSizeOptimizer:
             parallel_workers = min(2, self.loading_config.parallel_workers)
         
         # Estimate number of batches
-        estimated_rows = file_size_mb * self.config.conversion.row_estimation_factor
+        estimated_rows = file_size_mb * self.config.etl.row_estimation_factor
         estimated_batches = max(1, math.ceil(estimated_rows / optimal_size))
         
         optimization_reason = " + ".join(optimization_reasons) if optimization_reasons else "default"

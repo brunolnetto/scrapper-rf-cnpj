@@ -24,6 +24,10 @@ class DevelopmentFilter:
         if isinstance(config, ETLConfig):
             self.development = config.development
             self.is_enabled = config.development.enabled
+        elif hasattr(config, 'etl') and hasattr(config.etl, 'development'):
+            # ConfigurationService format via config service
+            self.development = config.etl.development
+            self.is_enabled = config.etl.development.enabled
         elif hasattr(config, 'development'):
             # Already new format via config service
             self.development = config.development
@@ -33,7 +37,7 @@ class DevelopmentFilter:
             dev_config = DevelopmentConfig(
                 enabled=getattr(config, 'is_development_mode', lambda: False)(),
                 max_files_per_table=getattr(config, 'get_max_files_per_table', lambda: 5)(),
-                max_blob_size_mb=50,  # Default
+                file_size_limit_mb=50,  # Default - fixed property name
                 row_limit_percent=0.1
             )
             # Create minimal ETL config
@@ -53,16 +57,16 @@ class DevelopmentFilter:
         if not self.is_enabled:
             return audits
 
-        max_blob_size_bytes = self.development.max_blob_size_mb * 1024 * 1024
+        file_size_limit_bytes = self.development.file_size_limit_mb * 1024 * 1024
         filtered_audits = [
             audit for audit in audits
-            if audit.audi_file_size_bytes < max_blob_size_bytes
+            if audit.audi_file_size_bytes < file_size_limit_bytes
         ]
 
         if len(filtered_audits) != len(audits):
             logger.info(
-                f"[DEV-MODE] Blob size filtering: {len(audits)} → {len(filtered_audits)} audits "
-                f"(limit: {self.development.max_blob_size_mb}MB)"
+                f"[DEV-MODE] File size filtering: {len(audits)} → {len(filtered_audits)} audits "
+                f"(limit: {self.development.file_size_limit_mb}MB)"
             )
         
         return filtered_audits
@@ -100,30 +104,30 @@ class DevelopmentFilter:
         return filtered_audits
 
     def filter_files_by_blob_limit(self, file_paths: List[Path], table_name: str) -> List[Path]:
-        """Limit number of files (blobs) per table with strategic selection."""
+        """Limit number of files per blob with strategic selection."""
         if not self.is_enabled:
             return file_paths
 
-        max_files = self.development.max_files_per_table
+        max_files = self.development.max_files_per_blob
         if len(file_paths) <= max_files:
             return file_paths
 
         selected = self._select_representative_files(file_paths, max_files)
         
         logger.info(
-            f"[DEV-MODE] {table_name}: Limited to {len(selected)} files "
+            f"[DEV-MODE] {table_name}: Limited to {len(selected)} files per blob "
             f"(from {len(file_paths)} available)"
         )
         
         return selected
 
     def check_blob_size_limit(self, file_path: Path) -> bool:
-        """Check if file exceeds blob size limit for development mode."""
+        """Check if file exceeds file size limit for development mode."""
         if not self.is_enabled:
             return True
 
         file_size_mb = file_path.stat().st_size / (1024 * 1024)
-        max_size_mb = self.development.max_blob_size_mb
+        max_size_mb = self.development.file_size_limit_mb
 
         if file_size_mb > max_size_mb:
             logger.debug(
@@ -190,7 +194,7 @@ class DevelopmentFilter:
             "row_limit_percent": self.development.row_limit_percent,
             "file_limiting": True,
             "max_files_per_table": self.development.max_files_per_table,
-            "max_blob_size_mb": self.development.max_blob_size_mb,
+            "file_size_limit_mb": self.development.file_size_limit_mb,
             "table_name": table_name
         }
 
@@ -214,7 +218,7 @@ class DevelopmentFilter:
             "configuration": {
                 "row_limit_percent": self.development.row_limit_percent,
                 "max_files_per_table": self.development.max_files_per_table,
-                "max_blob_size_mb": self.development.max_blob_size_mb
+                "file_size_limit_mb": self.development.file_size_limit_mb
             }
         }
 

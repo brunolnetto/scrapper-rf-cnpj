@@ -7,7 +7,7 @@ import sys
 from .core.orchestrator import PipelineOrchestrator
 from .core.etl import ReceitaCNPJPipeline
 from .core.strategies import StrategyFactory
-from .setup.config import ConfigurationService
+from .setup.config import get_config
 from .setup.logging import logger
 
 # Constants
@@ -31,10 +31,10 @@ def validate_cli_arguments(args):
     # Regular strategy combinations
     strategy_key = (args.download, args.convert, args.load)
     valid_combinations = [
-        (True, False, False),  # Download Only
-        (True, True, False),   # Download and Convert  
+        (True, False, False),  # Download Only 
         (False, True, False),  # Convert Only
         (False, False, True),  # Load Only
+        (True, True, False),   # Download and Convert 
         (True, False, True),   # Download and Load 
         (False, True, True),   # Convert and Load
         (True, True, True),    # Full ETL
@@ -147,7 +147,7 @@ Default (no flags): Full ETL (111)
     validate_cli_arguments(args)
 
     # Create configuration and pipeline
-    config_service = ConfigurationService(month=args.month, year=args.year)
+    config_service = get_config(year=args.year, month=args.month)
     pipeline = ReceitaCNPJPipeline(config_service)
 
     # Create strategy based on flags

@@ -232,15 +232,15 @@ class MemoryMonitor:
             "should_block": self.should_prevent_processing()
         }
 
-def infer_optimal_schema(csv_path: Path, delimiter: str, sample_size: int = 100000) -> Dict:
+def infer_optimal_schema(csv_path: Path, delimiter: str, sample_size: int = 50000) -> Dict:
     """
     Infer optimal schema instead of using all strings.
-    This is crucial for memory efficiency.
+    Reduced sample size for faster processing of large files.
     """
-    logger.info(f"Inferring schema for {csv_path.name}...")
+    logger.debug(f"Inferring schema for {csv_path.name}...")
     
     try:
-        # Sample a portion of the file for schema inference
+        # Smaller sample for faster inference on large files
         sample_df = pl.read_csv(
             str(csv_path),
             separator=delimiter,
@@ -249,24 +249,22 @@ def infer_optimal_schema(csv_path: Path, delimiter: str, sample_size: int = 1000
             ignore_errors=True,
             truncate_ragged_lines=True,
             null_values=["", "NULL", "null", "N/A", "n/a"],
-            infer_schema_length=sample_size,
-            try_parse_dates=True,
+            infer_schema_length=min(sample_size, 10000),  # Limit inference for speed
+            try_parse_dates=False,  # Disable date parsing for speed
             has_header=False
         )
         
         schema = sample_df.schema
-        logger.info(f"Inferred schema for {csv_path.name}: {len(schema)} columns, "
-                   f"types: {dict(schema)}")
+        logger.debug(f"Inferred schema for {csv_path.name}: {len(schema)} columns")
         
-        # Clean up sample
+        # Clean up sample immediately
         del sample_df
         gc.collect()
         
         return dict(schema)
         
     except Exception as e:
-        logger.warning(f"Schema inference failed for {csv_path.name}: {e}. Using string fallback.")
-        # Fallback to string schema - but this should be avoided
+        logger.debug(f"Schema inference failed for {csv_path.name}: {e}. Using string fallback.")
         return None
 
 def process_csv_with_memory(
@@ -302,8 +300,11 @@ def process_csv_with_memory(
         
         # If schema inference failed, use a more memory-efficient fallback
         if inferred_schema is None:
-            # Only use string for columns we expect, let Polars infer others
-            schema_override = {col: pl.Utf8 for col in expected_columns}
+            # For headerless CSV, use generated column names (column_1, column_2, etc.)
+            if expected_columns:
+                schema_override = {f"column_{i+1}": pl.Utf8 for i in range(len(expected_columns))}
+            else:
+                schema_override = None
         else:
             schema_override = inferred_schema
 
@@ -325,7 +326,7 @@ def process_csv_with_memory(
         )
 
         # Rename columns to expected names if we have them
-        if expected_columns and len(expected_columns) == len(lazy_frame.collect_schema()):
+        if expected_columns and len(expected_columns) == len(lazy_frame.schema):
             column_mapping = {f"column_{i+1}": expected_columns[i] for i in range(len(expected_columns))}
             lazy_frame = lazy_frame.rename(column_mapping)
             logger.info(f"Renamed columns to expected names: {expected_columns}")
@@ -1019,24 +1020,90 @@ def process_extremely_large_table(
         config, 
         "default_chunksize", None) or \
         getattr(config, "chunk_rows", None) or \
-        500_000
+        1_000_000  # Increased from 500k to 1M for better performance
     chunksize = int(default_chunksize)
 
     try:
-        writer = pq.ParquetWriter(str(tmp_output), pa_schema, compression=getattr(config, "compression", "snappy"))
 
         for csv_path in inputs:
             fsize_mb = csv_path.stat().st_size / (1024 * 1024)
-            if fsize_mb > max_file_size_mb:
-                local_chunksize = max(
-                    50_000, int(chunksize / max(1, int(fsize_mb // max_file_size_mb)))
-                )
-            else:
-                local_chunksize = chunksize
+            # Use larger chunks for better performance - don't reduce chunk size for large files
+            # The streaming approach can handle large chunks efficiently
+            local_chunksize = min(chunksize, 2_000_000)  # Cap at 2M rows for memory safety
+            
+            logger.info(f"Processing {csv_path.name} ({fsize_mb:.1f}MB) with chunk size: {local_chunksize:,}")
 
-            # ------------------- Polars-only CSV processing -------------------
+            # ------------------- Optimized Polars streaming processing -------------------
             try:
+                # Try Polars native streaming first - much faster than manual chunking
+                logger.info(f"Attempting native Polars streaming for {csv_path.name}")
+                
+                # Use native streaming if available
+                if expected_columns:
+                    schema_overrides = {f"column_{i+1}": pl.Utf8 for i in range(len(expected_columns))}
+                else:
+                    schema_overrides = None
+                
+                lazy_frame = pl.scan_csv(
+                    str(csv_path),
+                    separator=delimiter,
+                    quote_char='"',
+                    encoding="utf8-lossy",
+                    ignore_errors=True,
+                    has_header=False,
+                    try_parse_dates=False,
+                    schema_overrides=schema_overrides
+                )
+                
+                # Apply column renaming efficiently
+                if expected_columns:
+                    try:
+                        current_columns = lazy_frame.collect_schema().names()
+                        if len(current_columns) == len(expected_columns):
+                            column_mapping = {f"column_{i+1}": expected_columns[i] for i in range(len(expected_columns))}
+                            lazy_frame = lazy_frame.rename(column_mapping)
+                            lazy_frame = lazy_frame.select(expected_columns)
+                    except Exception as col_error:
+                        logger.debug(f"Column processing failed: {col_error}")
+                
+                # Try native sink_parquet first - this is the fastest approach
+                try:
+                    logger.info(f"Using native sink_parquet for maximum performance...")
+                    lazy_frame.sink_parquet(
+                        str(tmp_output),
+                        compression=getattr(config, "compression", "snappy"),
+                        maintain_order=False,
+                        statistics=False  # Disable for speed
+                    )
+                    
+                    # Get row count
+                    try:
+                        meta = pq.ParquetFile(str(tmp_output)).metadata
+                        total_rows_written = sum(meta.row_group(i).num_rows for i in range(meta.num_row_groups))
+                        logger.info(f"✅ Native streaming completed: {total_rows_written:,} rows")
+                    except Exception:
+                        total_rows_written = 0
+                    
+                    # Skip manual chunking since native approach worked
+                    break
+                    
+                except Exception as sink_error:
+                    logger.warning(f"Native sink_parquet failed: {sink_error}. Falling back to manual chunking...")
+                    # Continue to manual chunking approach below
+                
+                # Manual chunking fallback if native approach fails
+                # Initialize writer only when we need it for manual chunking
+                if writer is None:
+                    writer = pq.ParquetWriter(str(tmp_output), pa_schema, compression=getattr(config, "compression", "snappy"))
+                
                 # Use polars streaming approach instead of pandas chunking
+                # For headerless CSV, we need to use generated column names (column_1, column_2, etc.)
+                if expected_columns:
+                    # Create schema overrides using generated column names
+                    schema_overrides = {f"column_{i+1}": pl.Utf8 for i in range(len(expected_columns))}
+                else:
+                    schema_overrides = None
+                
                 lazy_frame = pl.scan_csv(
                     str(csv_path),
                     separator=delimiter,
@@ -1045,33 +1112,54 @@ def process_extremely_large_table(
                     ignore_errors=True,     # Skip malformed rows instead of failing
                     has_header=False,
                     try_parse_dates=False,  # Performance optimization
-                    schema_overrides={col: pl.Utf8 for col in (expected_columns or pa_schema.names)}
+                    schema_overrides=schema_overrides
                 )
                 
                 # Apply column renaming if needed
                 if expected_columns:
                     # For headerless CSV files, rename numbered columns to expected names
-                    current_columns = lazy_frame.columns
-                    if len(current_columns) == len(expected_columns):
-                        column_mapping = {f"column_{i+1}": expected_columns[i] for i in range(len(expected_columns))}
-                        # Handle both potential column naming patterns
-                        for old_pattern, new_name in zip(current_columns, expected_columns):
-                            column_mapping[old_pattern] = new_name
-                        lazy_frame = lazy_frame.rename(column_mapping)
-                    
-                    # Ensure all expected columns exist
-                    existing_cols = set(lazy_frame.columns)
-                    for col in expected_columns:
-                        if col not in existing_cols:
-                            lazy_frame = lazy_frame.with_columns(pl.lit(None).alias(col))
-                    
-                    # Select and reorder columns
-                    lazy_frame = lazy_frame.select(expected_columns)
+                    try:
+                        current_columns = lazy_frame.collect_schema().names()
+                        if len(current_columns) == len(expected_columns):
+                            column_mapping = {f"column_{i+1}": expected_columns[i] for i in range(len(expected_columns))}
+                            # Handle both potential column naming patterns
+                            for old_pattern, new_name in zip(current_columns, expected_columns):
+                                column_mapping[old_pattern] = new_name
+                            lazy_frame = lazy_frame.rename(column_mapping)
+                        
+                        # Ensure all expected columns exist
+                        existing_cols = set(lazy_frame.collect_schema().names())
+                        for col in expected_columns:
+                            if col not in existing_cols:
+                                lazy_frame = lazy_frame.with_columns(pl.lit(None).alias(col))
+                        
+                        # Select and reorder columns
+                        lazy_frame = lazy_frame.select(expected_columns)
+                    except Exception as col_error:
+                        logger.warning(f"Column processing failed, using original schema: {col_error}")
+                        # If column processing fails, continue with original columns
                 
-                logger.debug(f"Processing {csv_path.name} with polars streaming (chunk size: {local_chunksize})")
+                logger.debug(f"Processing {csv_path.name} with optimized streaming (chunk size: {local_chunksize:,})")
                 
-                # Process in chunks using polars streaming
-                for batch_df in lazy_frame.iter_slices(n_rows=local_chunksize):
+                # Optimized chunking with reduced overhead
+                offset = 0
+                chunk_count = 0
+                last_memory_check = time.time()
+                
+                while True:
+                    # Get chunk using slice
+                    chunk_lf = lazy_frame.slice(offset, local_chunksize)
+                    try:
+                        batch_df = chunk_lf.collect()
+                        
+                        # Check if we've reached the end
+                        if batch_df.height == 0:
+                            break
+                            
+                    except Exception as collect_error:
+                        logger.debug(f"Failed to collect chunk at offset {offset}: {collect_error}")
+                        break
+                    
                     # Convert to arrow and write
                     try:
                         table = batch_df.to_arrow()
@@ -1095,13 +1183,29 @@ def process_extremely_large_table(
                         writer.write_table(table)
                         total_rows_written += table.num_rows
 
-                    # Memory management
-                    if memory_monitor and memory_monitor.should_prevent_processing():
-                        try:
-                            gc.collect()
-                            time.sleep(0.05)
-                        except Exception:
-                            pass
+                    # Reduced frequency memory management (every 10 chunks or 30 seconds)
+                    chunk_count += 1
+                    current_time = time.time()
+                    if chunk_count % 10 == 0 or (current_time - last_memory_check) > 30:
+                        if memory_monitor and memory_monitor.should_prevent_processing():
+                            logger.warning(f"Memory pressure detected at chunk {chunk_count}, performing cleanup...")
+                            try:
+                                gc.collect()
+                                time.sleep(0.1)
+                            except Exception:
+                                pass
+                        last_memory_check = current_time
+                        
+                        # Progress logging every 50 chunks
+                        if chunk_count % 50 == 0:
+                            logger.info(f"Processed {chunk_count} chunks, {total_rows_written:,} rows so far...")
+                    
+                    # Move to next chunk
+                    offset += local_chunksize
+                    
+                    # If we got fewer rows than requested, we're done
+                    if batch_df.height < local_chunksize:
+                        break
 
             except Exception as polars_error:
                 # Fail-fast: provide clear error message for polars issues
@@ -1119,8 +1223,9 @@ def process_extremely_large_table(
                 raise ValueError(error_msg) from polars_error
 
         # close writer and move temp file to final location
-        writer.close()
-        writer = None
+        if writer is not None:
+            writer.close()
+            writer = None
         
         # FIX: Use shutil.move for cross-filesystem compatibility (temp dir -> WSL mount)
         import shutil
@@ -1163,27 +1268,27 @@ def process_extremely_large_table(
 
 class LargeDatasetConfig(ConversionConfig):
     """
-    Specialized configuration for very large datasets like yours.
+    Optimized configuration for very large datasets.
     """
     def __init__(self):
         super().__init__()
         
-        # More conservative memory settings
-        self.max_memory_mb = 800  # Reduced from 1024 to leave more headroom
-        self.cleanup_threshold_ratio = 0.6  # Cleanup earlier
-        self.baseline_buffer_mb = 512  # More conservative system memory buffer
+        # More aggressive memory settings for better performance
+        self.max_memory_mb = 1500  # Increased to allow larger chunks
+        self.cleanup_threshold_ratio = 0.8  # Less frequent cleanup
+        self.baseline_buffer_mb = 256  # Reduced buffer for more working memory
         
-        # Optimize for large files
-        self.row_group_size = 75000  # Smaller row groups for better memory control
-        self.compression = "snappy"  # Faster compression for large datasets
+        # Optimize for large files with larger chunks
+        self.row_group_size = 100000  # Larger row groups for better compression
+        self.compression = "snappy"  # Fastest compression
         
-        # Conservative worker count for large files
-        self.workers = 1  # Single-threaded for very large datasets
+        # Single-threaded for memory control but larger chunks
+        self.workers = 1
         
-        # Additional settings
-        self.enable_file_splitting = True
-        self.max_file_size_mb = 800  # Split files larger than this
-        self.chunk_processing_delay = 0.5  # Pause between chunks
+        # Performance-oriented settings
+        self.enable_file_splitting = False  # Disable splitting - use streaming instead
+        self.max_file_size_mb = 10000  # Much larger threshold before splitting
+        self.chunk_processing_delay = 0  # No delay between chunks
 
 
 # Smart processing strategy selector
