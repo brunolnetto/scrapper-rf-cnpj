@@ -100,6 +100,9 @@ pip install -r requirements.txt
 ```
 
 ### 4. Configuração do `.env`
+
+> 📖 **Documentação Completa**: Consulte [docs/ENVIRONMENT_VARIABLES.md](docs/ENVIRONMENT_VARIABLES.md) para detalhes completos sobre todas as variáveis de ambiente.
+
 ```env
 # Ambiente
 ENVIRONMENT=development
@@ -130,6 +133,18 @@ ETL_ASYNC_POOL_MIN_SIZE=2
 ETL_ASYNC_POOL_MAX_SIZE=10
 ```
 
+### 🔧 Validação da Configuração
+
+Para validar sua configuração antes de executar o ETL:
+
+```bash
+# Validar configuração do ambiente
+python scripts/validate_env.py
+
+# Guia rápido de referência
+cat docs/ENV_QUICK_REFERENCE.md
+```
+
 ### 🔧 Configurações Avançadas
 
 O sistema suporta configurações avançadas para otimização de performance:
@@ -138,6 +153,8 @@ O sistema suporta configurações avançadas para otimização de performance:
 - **`ETL_SUB_BATCH_SIZE`**: Tamanho dos sub-batches internos (padrão: 5,000)  
 - **`ETL_INTERNAL_CONCURRENCY`**: Paralelismo interno por arquivo (padrão: 3)
 - **`ETL_ASYNC_POOL_*`**: Configurações do pool de conexões async
+
+> 💡 **Dica**: Use `python scripts/validate_env.py` para recomendações específicas baseadas nos recursos do seu sistema.
 
 ### 📁 Arquivos Suportados
 
