@@ -1,16 +1,11 @@
 """
 Centralized configuration management for the CNPJ ETL project.
 
-    # CSV to Parquet conversion settings
-    conversion_chunk_size: int = 100000  # Rows per chunk during conversion
-    conversion_max_memory_mb: int = 1024  # Max memory usage in MB
-    conversion_flush_threshold: int = 10   # Chunks to accumulate before flushing
-    conversion_auto_fallback: bool = True  # Auto fallback to PyArrow on failure
-    conversion_row_estimation_factor: int = 8000  # Rows per MB for estimationmodule provides a unified interface for accessing configuration settings
+This module provides a unified interface for accessing configuration settings
 from environment variables, eliminating hard-coded values throughout the codebase.
 """
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 from pathlib import Path
 import os
 from dataclasses import dataclass
@@ -47,21 +42,6 @@ class DatabaseConfig:
         )
 
 @dataclass
-class ConversionConfig:
-    """Configuration for CSV to Parquet conversion."""
-    max_memory_mb: int = 1024
-    cleanup_threshold_ratio: float = 0.7
-    baseline_buffer_mb: int = 256
-    row_group_size: int = 100000
-    compression: str = "zstd"
-    workers: int = 2
-    enable_file_splitting: bool = False
-    max_file_size_mb: int = 1000
-    chunk_processing_delay: float = 0.0
-    default_chunksize: int = 500_000
-
-
-@dataclass
 class ETLStageConfig:
     """Base configuration for ETL stages."""
     enabled: bool = True
@@ -79,18 +59,6 @@ class BatchTrackingConfig(ETLStageConfig):
     default_batch_size: int = 20_000  # Default processing batch size
     retention_days: int = 30  # Keep batch records for N days
     enable_monitoring: bool = True  # Enable batch monitoring features
-
-
-@dataclass
-class ETLConfig:
-    """ETL process configuration."""
-    year: int = 2024  # Default year for data processing
-    month: int = 12   # Default month for data processing
-
-    delimiter: str = ";"
-    chunk_size: int = 50000
-    max_retries: int = 3
-    timeout_seconds: int = 300
 
 
 @dataclass
@@ -113,6 +81,13 @@ class ConversionConfig(ETLStageConfig):
     flush_threshold: int = 10
     auto_fallback: bool = True
     row_estimation_factor: int = 8000
+    workers: int = 2
+    cleanup_threshold_ratio: float = 0.7
+    baseline_buffer_mb: int = 256
+    max_file_size_mb: int = 1000
+    enable_file_splitting: bool = False
+    chunk_processing_delay: float = 0.0
+    default_chunksize: int = 500_000
 
 
 @dataclass
@@ -138,6 +113,7 @@ class DevelopmentConfig:
     enabled: bool = False
     file_size_limit_mb: int = 1000
     max_files_per_table: int = 3
+    max_files_per_blob: int = 3
     row_limit_percent: float = 0.1
     max_blob_size_mb: int = 500
     sample_percentage: float = 0.1
@@ -151,13 +127,22 @@ class ETLConfig:
     loading: LoadingConfig
     development: DevelopmentConfig
     
-    # Global ETL settings
-    year: int = 2024
-    month: int = 12
+    # Global ETL settings (accessed directly by the codebase)
+    year: int
+    month: int
     delimiter: str = ";"
     timezone: str = "America/Sao_Paulo"
     delete_files: bool = True
     is_parallel: bool = True
+    
+    # Legacy attributes needed by existing code
+    chunk_size: int = 50000
+    max_retries: int = 3
+    timeout_seconds: int = 300
+    parallel_workers: int = 4
+    sub_batch_size: int = 5000
+    enable_internal_parallelism: bool = True
+    internal_concurrency: int = 3
     
     def get_stage_config(self, stage_name: str) -> ETLStageConfig:
         """Get configuration for a specific stage."""
@@ -175,6 +160,11 @@ class ETLConfig:
     def is_development_mode(self) -> bool:
         """Check if development mode is enabled."""
         return self.development.enabled
+    
+    @property
+    def development_mode(self) -> bool:
+        """Backward compatibility property for development mode."""
+        return self.development.enabled
 
 
 @dataclass
@@ -188,7 +178,7 @@ class PathConfig:
 
     def ensure_directories_exist(self) -> None:
         """Ensure all configured directories exist."""
-        for path in [self.download_path, self.extract_path, self.log_path]:
+        for path in [self.download_path, self.extract_path, self.conversion_path, self.log_path]:
             path.mkdir(parents=True, exist_ok=True)
 
 
@@ -282,20 +272,14 @@ class ConfigurationService:
         
         # Create stage-specific configurations
         download_config = DownloadConfig(
-            enabled=os.getenv("ETL_DOWNLOAD_ENABLED", "true").lower() == "true",
-            max_retries=int(os.getenv("ETL_MAX_RETRIES", "3")),
-            timeout_seconds=int(os.getenv("ETL_DOWNLOAD_TIMEOUT", "300")),
             base_url=os.getenv("URL_RF_BASE", "https://dadosabertos.rfb.gov.br/CNPJ"),
             workers=int(os.getenv("ETL_WORKERS", "4")),
             chunk_size_mb=int(os.getenv("ETL_DOWNLOAD_CHUNK_SIZE_MB", "50")),
             verify_checksums=os.getenv("ETL_CHECKSUM_VERIFICATION", "true").lower() == "true",
             checksum_threshold_bytes=int(os.getenv("ETL_CHECKSUM_THRESHOLD_BYTES", "1000000000"))
         )
-        
+
         conversion_config = ConversionConfig(
-            enabled=os.getenv("ETL_CONVERSION_ENABLED", "true").lower() == "true",
-            max_retries=int(os.getenv("ETL_MAX_RETRIES", "3")),
-            timeout_seconds=int(os.getenv("ETL_CONVERSION_TIMEOUT", "3600")),
             chunk_size=int(os.getenv("ETL_CHUNK_SIZE", "50000")),
             max_memory_mb=int(os.getenv("ETL_MAX_MEMORY_MB", "1024")),
             compression=os.getenv("ETL_COMPRESSION", "snappy"),
@@ -306,9 +290,6 @@ class ConfigurationService:
         )
         
         loading_config = LoadingConfig(
-            enabled=os.getenv("ETL_LOADING_ENABLED", "true").lower() == "true",
-            max_retries=int(os.getenv("ETL_MAX_RETRIES", "3")),
-            timeout_seconds=int(os.getenv("ETL_LOADING_TIMEOUT", "3600")),
             batch_size=int(os.getenv("ETL_CHUNK_SIZE", "50000")),
             max_batch_size=int(os.getenv("ETL_MAX_BATCH_SIZE", "500000")),
             min_batch_size=int(os.getenv("ETL_MIN_BATCH_SIZE", "10000")),
@@ -325,8 +306,9 @@ class ConfigurationService:
         
         development_config = DevelopmentConfig(
             enabled=os.getenv("ENVIRONMENT", "development").lower() == "development",
-            file_size_limit_mb=int(os.getenv("ETL_DEV_FILE_SIZE_LIMIT_MB", "1000")),
+            file_size_limit_mb=int(os.getenv("ETL_DEV_FILE_SIZE_LIMIT", "70000000")) // (1024 * 1024),  # Convert bytes to MB
             max_files_per_table=int(os.getenv("ETL_DEV_MAX_FILES_PER_TABLE", "3")),
+            max_files_per_blob=int(os.getenv("ETL_DEV_MAX_FILES_PER_BLOB", "3")),
             row_limit_percent=float(os.getenv("ETL_DEV_ROW_LIMIT_PERCENT", "0.1")),
             max_blob_size_mb=int(os.getenv("ETL_DEV_MAX_BLOB_SIZE_MB", "500")),
             sample_percentage=float(os.getenv("ETL_DEV_SAMPLE_PERCENTAGE", "0.1"))
@@ -342,17 +324,29 @@ class ConfigurationService:
             delimiter=os.getenv("ETL_FILE_DELIMITER", ";"),
             timezone=os.getenv("ETL_TIMEZONE", "America/Sao_Paulo"),
             delete_files=os.getenv("ETL_DELETE_FILES", "true").lower() == "true",
-            is_parallel=os.getenv("ETL_IS_PARALLEL", "true").lower() == "true"
+            is_parallel=os.getenv("ETL_IS_PARALLEL", "true").lower() == "true",
+            # Legacy attributes for backward compatibility
+            chunk_size=conversion_config.chunk_size,
+            max_retries=int(os.getenv("ETL_MAX_RETRIES", "3")),
+            timeout_seconds=int(os.getenv("ETL_TIMEOUT_SECONDS", "300")),
+            parallel_workers=loading_config.parallel_workers,
+            sub_batch_size=loading_config.sub_batch_size,
+            enable_internal_parallelism=loading_config.enable_internal_parallelism,
+            internal_concurrency=loading_config.internal_concurrency
         )
 
     def _load_path_config(self) -> PathConfig:
-        """Load path configuration from environment variables."""
+        """Load path configuration from environment variables with temporal versioning."""
         root_path = Path.cwd()
         data_path = Path.cwd() / "data"
+        
+        # Create temporal subdirectory based on ETL year-month
+        temporal_suffix = f"{self.etl.year}-{self.etl.month:02d}"
+        
         return PathConfig(
-            download_path=data_path / os.getenv("DOWNLOAD_PATH", "DOWNLOADED_FILES"),
-            extract_path=data_path / os.getenv("EXTRACT_PATH", "EXTRACTED_FILES"),
-            conversion_path=data_path / os.getenv("CONVERT_PATH", "CONVERTED_FILES"),
+            download_path=data_path / os.getenv("DOWNLOAD_PATH", "DOWNLOADED_FILES") / temporal_suffix,
+            extract_path=data_path / os.getenv("EXTRACT_PATH", "EXTRACTED_FILES") / temporal_suffix,
+            conversion_path=data_path / os.getenv("CONVERT_PATH", "CONVERTED_FILES") / temporal_suffix,
             log_path=root_path / "logs",
         )
 
@@ -377,7 +371,7 @@ class ConfigurationService:
 
     def get_max_files_per_blob(self) -> int:
         """Get maximum files per ZIP blob for development mode."""
-        return self.etl.development_max_files_per_blob
+        return self.etl.development.max_files_per_blob
 
     def get_sample_percentage(self) -> float:
         """Get sample percentage for development mode."""
@@ -445,13 +439,13 @@ class ConfigurationService:
                 "main": {
                     "host": self.databases["main"].host,
                     "port": self.databases["main"].port,
-                    "database": self.databases["main"].database,
+                    "database": self.databases["main"].database_name,
                     "maintenance_db": self.databases["main"].maintenance_db,
                 },
                 "audit": {
                     "host": self.databases["audit"].host,
                     "port": self.databases["audit"].port,
-                    "database": self.databases["audit"].database,
+                    "database": self.databases["audit"].database_name,
                 },
             },
             "etl": {
@@ -462,6 +456,9 @@ class ConfigurationService:
                 "delete_files": self.etl.delete_files,
                 "is_parallel": self.etl.is_parallel,
                 "development_mode": self.etl.development_mode,
+                "year": self.etl.year,
+                "month": self.etl.month,
+                "timezone": self.etl.timezone,
             },
             "paths": {
                 "download_path": str(self.paths.download_path),
@@ -476,29 +473,33 @@ class ConfigurationService:
         }
 
 
-# Global configuration instance
-_config_service: Optional[ConfigurationService] = None
+# Global configuration cache
+_config_cache: Dict[Tuple[int, int], ConfigurationService] = {}
 
 
 def get_config(year: int = None, month: int = None) -> ConfigurationService:
-    """Get the global configuration service instance."""
-    global _config_service
-    if _config_service is None:
-        # Use current date as defaults if not specified
-        if year is None or month is None:
-            from datetime import datetime
-            current = datetime.now()
-            year = year or current.year
-            month = month or current.month
-        _config_service = ConfigurationService(month=month, year=year)
-    return _config_service
+    """Get the configuration service instance with caching based on year/month."""
+    global _config_cache
+    
+    # Use current date as defaults if not specified
+    if year is None or month is None:
+        from datetime import datetime
+        current = datetime.now()
+        year = year or current.year
+        month = month or current.month
+    
+    # Use cached instance if available
+    cache_key = (year, month)
+    if cache_key not in _config_cache:
+        _config_cache[cache_key] = ConfigurationService(month=month, year=year)
+    
+    return _config_cache[cache_key]
 
 
 def reload_config() -> None:
-    """Reload the global configuration."""
-    global _config_service
-    if _config_service is not None:
-        _config_service.reload()
+    """Reload the global configuration by clearing the cache."""
+    global _config_cache
+    _config_cache.clear()
 
 
 # Backward compatibility functions

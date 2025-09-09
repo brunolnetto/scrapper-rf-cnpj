@@ -1231,11 +1231,7 @@ def select_processing_strategy(audit_map: dict, unzip_dir: Path) -> str:
 
 # IMPROVEMENT 15: Main entry point with strategy selection
 
-<<<<<<< HEAD
 def convert_csvs_to_parquet_smart(
-=======
-def convert_csvs_to_parquet_with_strategy_selection(
->>>>>>> 434f202 (refactor() development, config and pandas removal)
     audit_map: dict,
     unzip_dir: Path,
     output_dir: Path,

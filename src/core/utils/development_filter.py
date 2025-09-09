@@ -8,7 +8,11 @@ import random
 import math
 
 import polars as pl
-from ...setup.config import ETLConfig, DevelopmentConfig
+from ...setup.config import (
+    ETLConfig, DevelopmentConfig, 
+    DownloadConfig, ConversionConfig, LoadingConfig
+)
+            
 from ...setup.logging import logger
 from ...database.models import AuditDB
 
@@ -26,25 +30,21 @@ class DevelopmentFilter:
             self.is_enabled = config.development.enabled
         else:
             # Legacy format - create wrapper
-            from ...setup.config import get_etl_configuration
-            if hasattr(config, 'etl'):
-                etl_config = get_etl_configuration()
-            else:
-                # Very old format - create minimal config with defaults
-                dev_config = DevelopmentConfig(
-                    enabled=getattr(config, 'is_development_mode', lambda: False)(),
-                    max_files_per_table=getattr(config, 'get_max_files_per_table', lambda: 5)(),
-                    max_blob_size_mb=50,  # Default
-                    row_limit_percent=0.1
-                )
-                # Create minimal ETL config
-                from ...setup.config import DownloadConfig, ConversionConfig, LoadingConfig
-                etl_config = ETLConfig(
-                    download=DownloadConfig(),
-                    conversion=ConversionConfig(),
-                    loading=LoadingConfig(),
-                    development=dev_config
-                )
+            dev_config = DevelopmentConfig(
+                enabled=getattr(config, 'is_development_mode', lambda: False)(),
+                max_files_per_table=getattr(config, 'get_max_files_per_table', lambda: 5)(),
+                max_blob_size_mb=50,  # Default
+                row_limit_percent=0.1
+            )
+            # Create minimal ETL config
+            etl_config = ETLConfig(
+                download=DownloadConfig(),
+                conversion=ConversionConfig(),
+                loading=LoadingConfig(),
+                development=dev_config,
+                year=2024,  # Default values since this is just for development filtering
+                month=12
+            )
             self.development = etl_config.development
             self.is_enabled = etl_config.development.enabled
 
@@ -99,13 +99,8 @@ class DevelopmentFilter:
 
         return filtered_audits
 
-<<<<<<< HEAD
-    def filter_csv_files_by_size(self, csv_files: List[Path]) -> List[Path]:
-        """Filter CSV files by size limit."""
-=======
     def filter_files_by_blob_limit(self, file_paths: List[Path], table_name: str) -> List[Path]:
         """Limit number of files (blobs) per table with strategic selection."""
->>>>>>> 434f202 (refactor() development, config and pandas removal)
         if not self.is_enabled:
             return file_paths
 

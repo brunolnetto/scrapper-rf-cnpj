@@ -178,10 +178,10 @@ class AuditManifest(AuditBase):
     """
     __tablename__ = "file_ingestion_manifest"
 
-    manifest_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    file_manifest_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     audit_id = Column(UUID(as_uuid=True), ForeignKey('table_ingestion_manifest.audi_id'), nullable=False)  # FIXED: Required audit_id
     batch_id = Column(UUID(as_uuid=True), ForeignKey('batch_ingestion_manifest.batch_id'), nullable=True)
-    subbatch_id = Column(UUID(as_uuid=True), ForeignKey('subbatch_ingestion_manifest.subbatch_id'), nullable=True)
+    subbatch_id = Column(UUID(as_uuid=True), ForeignKey('subbatch_ingestion_manifest.subbatch_manifest_id'), nullable=True)
     table_name = Column(String(100), nullable=True)
     file_path = Column(Text, nullable=False)
     status = Column(String(64), nullable=False)
@@ -227,7 +227,7 @@ class BatchIngestionManifest(AuditBase):
     batch_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     batch_name = Column(String(200), nullable=False)
     target_table = Column(String(100), nullable=False)  # Single table name
-    primary_file_manifest_id = Column(UUID(as_uuid=True), ForeignKey('file_ingestion_manifest.manifest_id'), nullable=True)  # ADDED: Reference to primary file manifest
+    file_manifest_id = Column(UUID(as_uuid=True), ForeignKey('file_ingestion_manifest.file_manifest_id'), nullable=True)  # ADDED: Reference to primary file manifest
     status = Column(Enum(BatchStatus), nullable=False, default=BatchStatus.PENDING)
     started_at = Column(TIMESTAMP, nullable=False, default=datetime.now)
     completed_at = Column(TIMESTAMP, nullable=True)
@@ -239,13 +239,13 @@ class BatchIngestionManifest(AuditBase):
         Index("idx_batch_target_table", "target_table"),
         Index("idx_batch_started_at", "started_at"),
         Index("idx_batch_completed_at", "completed_at"),
-        Index("idx_batch_primary_file_manifest", "primary_file_manifest_id"),  # ADDED: Index for file manifest reference
+        Index("idx_batch_primary_file_manifest", "file_manifest_id"),  # ADDED: Index for file manifest reference
     )
 
     # Relationships with explicit foreign_keys to avoid ambiguity
     subbatches = relationship("SubbatchIngestionManifest", back_populates="batch", cascade="all, delete-orphan")
     file_manifests = relationship("AuditManifest", back_populates="batch", cascade="all, delete-orphan", foreign_keys="AuditManifest.batch_id")
-    primary_file_manifest = relationship("AuditManifest", foreign_keys=[primary_file_manifest_id], post_update=True)  # ADDED: Reference to primary file manifest
+    primary_file_manifest = relationship("AuditManifest", foreign_keys=[file_manifest_id], post_update=True)  # ADDED: Reference to primary file manifest
 
     def __repr__(self):
         return (
@@ -262,8 +262,8 @@ class SubbatchIngestionManifest(AuditBase):
     """
     __tablename__ = "subbatch_ingestion_manifest"
 
-    subbatch_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    batch_id = Column(UUID(as_uuid=True), ForeignKey('batch_ingestion_manifest.batch_id'), nullable=False)
+    subbatch_manifest_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    batch_manifest_id = Column(UUID(as_uuid=True), ForeignKey('batch_ingestion_manifest.batch_id'), nullable=False)
     table_name = Column(String(100), nullable=False)
     status = Column(Enum(SubbatchStatus), nullable=False, default=SubbatchStatus.PENDING)
     started_at = Column(TIMESTAMP, nullable=False, default=datetime.now)
@@ -275,7 +275,7 @@ class SubbatchIngestionManifest(AuditBase):
     notes = Column(Text, nullable=True)
     
     __table_args__ = (
-        Index("idx_subbatch_batch_id", "batch_id"),
+        Index("idx_subbatch_batch_manifest_id", "batch_manifest_id"),
         Index("idx_subbatch_table_name", "table_name"),
         Index("idx_subbatch_status", "status"),
         Index("idx_subbatch_started_at", "started_at"),
@@ -290,7 +290,7 @@ class SubbatchIngestionManifest(AuditBase):
 
     def __repr__(self):
         return (
-            f"SubbatchIngestionManifest(subbatch_id={self.subbatch_id}, batch_id={self.batch_id}, "
+            f"SubbatchIngestionManifest(subbatch_id={self.subbatch_manifest_id}, batch_id={self.batch_manifest_id}, "
             f"table_name={self.table_name}, status={self.status.value}, "
             f"files_processed={self.files_processed}, rows_processed={self.rows_processed}, "
             f"started_at={self.started_at}, completed_at={self.completed_at})"

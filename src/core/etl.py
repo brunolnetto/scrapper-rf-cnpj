@@ -12,7 +12,10 @@ from uuid import UUID
 # Import new services
 from ..setup.logging import logger
 from ..setup.config import ConfigurationService
-from ..database.models import AuditDB, MainBase, AuditBase
+from ..database.models import (
+    AuditDB, MainBase, AuditBase,
+    BatchIngestionManifest, SubbatchIngestionManifest  # Ensure these are imported for create_all()
+)
 from .interfaces import Pipeline
 
 
@@ -215,15 +218,22 @@ class ReceitaCNPJPipeline(Pipeline):
         # Apply development mode filtering using centralized filter
         if self.config.is_development_mode():
             from ..core.utils.development_filter import DevelopmentFilter
-            dev_filter = DevelopmentFilter(self.config)
+            dev_filter = DevelopmentFilter(self.config.etl)
             original_count = len(audits)
 
             # Filter by file size and table limits
             audits = dev_filter.filter_audits_by_size(audits)
             audits = dev_filter.filter_audits_by_table_limit(audits)
 
-            # Log filtering summary
-            dev_filter.log_filtering_summary(original_count, len(audits), "audit files")
+            # Create summary for logging
+            summary = dev_filter.get_development_summary(
+                table_name="audit_files",
+                files_processed=len(audits),
+                rows_processed=0,
+                original_files=original_count,
+                original_rows=None
+            )
+            dev_filter.log_filtering_summary([summary])
 
         return audits
 
@@ -254,7 +264,6 @@ class ReceitaCNPJPipeline(Pipeline):
         from ..utils.misc import makedir
         from .services.conversion.service import convert_csvs_to_parquet_smart
 
-        num_workers = self.config.etl.parallel_workers
         output_dir = Path(self.config.paths.conversion_path)
 
         makedir(output_dir)
@@ -271,7 +280,7 @@ class ReceitaCNPJPipeline(Pipeline):
                 # Development mode filtering - filter CSV files by size
                 if self.config.is_development_mode():
                     from ..core.utils.development_filter import DevelopmentFilter
-                    dev_filter = DevelopmentFilter(self.config)
+                    dev_filter = DevelopmentFilter(self.config.etl)
 
                     # Convert string filenames to Path objects for filtering
                     csv_paths = [Path(self.config.paths.extract_path) / csv_file for csv_file in csv_files]
@@ -284,12 +293,7 @@ class ReceitaCNPJPipeline(Pipeline):
 
         logger.info("Converting CSV files to Parquet format...")
         logger.info(f"Output directory: {output_dir}")
-        logger.info(f"Processing {len(audit_map)} tables with {num_workers} workers")
-
-        # Centralized conversion summary logging
-        from ..core.utils.development_filter import DevelopmentFilter
-        dev_filter = DevelopmentFilter(self.config)
-        dev_filter.log_conversion_summary(audit_map)
+        logger.info(f"Processing {len(audit_map)} tables")
 
         extract_path = Path(self.config.paths.extract_path)
 
@@ -332,13 +336,20 @@ class ReceitaCNPJPipeline(Pipeline):
         # Development mode filtering - filter CSV files by size
         if self.config.is_development_mode():
             from ..core.utils.development_filter import DevelopmentFilter
-            dev_filter = DevelopmentFilter(self.config)
+            dev_filter = DevelopmentFilter(self.config.etl)
             original_count = len(csv_files)
 
             csv_files = dev_filter.filter_csv_files_by_size(csv_files)
 
-            # Log filtering summary
-            dev_filter.log_filtering_summary(original_count, len(csv_files), "CSV files")
+            # Create summary for logging
+            summary = dev_filter.get_development_summary(
+                table_name="csv_files",
+                files_processed=len(csv_files),
+                rows_processed=0,
+                original_files=original_count,
+                original_rows=None
+            )
+            dev_filter.log_filtering_summary([summary])
 
         for csv_file in csv_files:
             logger.debug(f"Detected CSV file: {csv_file.name}")

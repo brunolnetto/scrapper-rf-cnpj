@@ -10,7 +10,8 @@ from typing import Callable, List, Optional, Iterable, Tuple
 
 from . import base
 
-logging.basicConfig(level=logging.INFO)
+# Use the centralized logger instead of basicConfig
+logger = logging.getLogger(__name__)
 
 async def record_manifest(
     conn: asyncpg.Connection, 
@@ -20,7 +21,7 @@ async def record_manifest(
 ):
     await conn.execute(
         """
-        INSERT INTO file_ingestion_manifest (manifest_id, file_path, status, checksum, filesize, rows_processed, processed_at, notes)
+        INSERT INTO file_ingestion_manifest (file_manifest_id, file_path, status, checksum, filesize, rows_processed, processed_at, notes)
         VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7)
         """,
         str(uuid.uuid4()), filename, status, checksum, filesize, rows_processed, notes
@@ -29,7 +30,7 @@ async def record_manifest(
 def emit_log(event: str, **kwargs):
     payload = {"event": event}
     payload.update(kwargs)
-    logging.info(payload)
+    logger.info(payload)
 
 async def async_upsert(
     pool: asyncpg.Pool,
@@ -60,29 +61,29 @@ async def async_upsert(
         # Skip checksum calculation for very large files (> 1GB) to avoid performance issues
         checksum_threshold = int(os.getenv("ETL_CHECKSUM_THRESHOLD_BYTES", "1000000000"))  # 1GB default
         if filesize > checksum_threshold:
-            logging.info(f"[PERFORMANCE] Skipping checksum for large file {filename}: {filesize:,} bytes (> {checksum_threshold:,})")
+            logger.info(f"[PERFORMANCE] Skipping checksum for large file {filename}: {filesize:,} bytes (> {checksum_threshold:,})")
         else:
             # Calculate checksum in chunks to avoid memory issues
             sha256 = hashlib.sha256()
             with open(file_path, "rb") as f:
                 for chunk in iter(lambda: f.read(8192), b""):
                     sha256.update(chunk)
-            logging.info(f"[MEMORY] File {filename}: {filesize:,} bytes, checksum calculated efficiently")
+            logger.info(f"[MEMORY] File {filename}: {filesize:,} bytes, checksum calculated efficiently")
     except Exception as e:
-        logging.warning(f"Could not calculate checksum for {filename}: {e}")
+        logger.warning(f"Could not calculate checksum for {filename}: {e}")
 
     # Memory monitoring for large files
     if filesize and filesize > 1_000_000_000:  # > 1GB
-        logging.warning(f"[MEMORY] Large file detected: {filename} ({filesize/1_000_000_000:.1f}GB)")
+        logger.warning(f"[MEMORY] Large file detected: {filename} ({filesize/1_000_000_000:.1f}GB)")
         # Reduce parallelism for large files to prevent memory issues
         if enable_internal_parallelism:
             internal_concurrency = min(internal_concurrency, 2)
-            logging.info(f"[MEMORY] Reduced internal concurrency to {internal_concurrency} for large file")
+            logger.info(f"[MEMORY] Reduced internal concurrency to {internal_concurrency} for large file")
 
     # Debug: Log headers and types
-    logging.debug(f"[DEBUG] Table: {table}, Headers: {headers}")
+    logger.debug(f"[DEBUG] Table: {table}, Headers: {headers}")
     if types:
-        logging.debug(f"[DEBUG] Types mapping: {types}")
+        logger.debug(f"[DEBUG] Types mapping: {types}")
 
     async with pool.acquire() as conn:
         await conn.execute(
@@ -100,10 +101,10 @@ async def async_upsert(
                     batch_size=len(batch), parallel_mode=enable_internal_parallelism)
             # Debug: Log first batch and sample row
             if not first_batch_logged:
-                logging.debug(f"[DEBUG] First batch (batch_idx={batch_idx}): {batch[:2]}")
+                logger.debug(f"[DEBUG] First batch (batch_idx={batch_idx}): {batch[:2]}")
                 if batch:
                     for i, row in enumerate(batch[:2]):
-                        logging.debug(f"[DEBUG] Row {i} values: {row}")
+                        logger.debug(f"[DEBUG] Row {i} values: {row}")
                 first_batch_logged = True
             if enable_internal_parallelism:
                 # Process sub-batches in parallel

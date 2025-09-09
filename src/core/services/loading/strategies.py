@@ -26,9 +26,6 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
     def __init__(self, config, audit_service=None):
         self.config = config
         self.audit_service = audit_service
-        # Keep for compatibility but simplified
-        self.parallel_enabled = config.etl.is_parallel
-        self.internal_concurrency = config.etl.internal_concurrency
         logger.info("Loading strategy initialized")
 
     def load_table(self, database: Database, table_name: str, path_config: PathConfig, 
@@ -48,7 +45,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             if parquet_file.exists():
                 # Centralized Parquet filtering
                 from ....core.utils.development_filter import DevelopmentFilter
-                dev_filter = DevelopmentFilter(self.config)
+                dev_filter = DevelopmentFilter(self.config.etl)
 
                 if not dev_filter.filter_parquet_file_by_size(parquet_file):
                     return True, "Skipped large file in development mode", 0
@@ -62,7 +59,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             elif table_files:
                 # Centralized CSV filtering
                 from ....core.utils.development_filter import DevelopmentFilter
-                dev_filter = DevelopmentFilter(self.config)
+                dev_filter = DevelopmentFilter(self.config.etl)
 
                 # Apply table limit filtering first
                 table_files = dev_filter.filter_csv_files_by_table_limit(table_files, table_name)
@@ -312,7 +309,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             query = '''
             SELECT audi_id FROM table_ingestion_manifest 
             WHERE audi_table_name = :table_name 
-            AND :filename = ANY(audi_filenames)
+            AND audi_filenames::jsonb ? :filename
             ORDER BY audi_created_at DESC 
             LIMIT 1
             '''

@@ -249,9 +249,11 @@ class AuditService:
         self, file_groups: List[FileGroupInfo]
     ) -> List[AuditDB]:
         """
-        Create audit records from file groups using the database.
+        Create audit records from file groups using the database with ETL temporal context.
         """
-        return create_audits(self.database, file_groups)
+        return create_audits(self.database, file_groups, 
+                            etl_year=self.config.etl.year, 
+                            etl_month=self.config.etl.month)
 
     # Manifest tracking capabilities
     def create_file_manifest(self, file_path: str, status: str, audit_id: str, 
@@ -365,13 +367,13 @@ class AuditService:
         try:
             insert_query = '''
             INSERT INTO file_ingestion_manifest
-            (manifest_id, table_name, file_path, status, checksum, filesize, rows_processed, processed_at, audit_id, notes, batch_id, subbatch_id)
-            VALUES (:manifest_id, :table_name, :file_path, :status, :checksum, :filesize, :rows_processed, :processed_at, :audit_id, :notes, :batch_id, :subbatch_id)
+            (file_manifest_id, table_name, file_path, status, checksum, filesize, rows_processed, processed_at, audit_id, notes, batch_id, subbatch_id)
+            VALUES (:file_manifest_id, :table_name, :file_path, :status, :checksum, :filesize, :rows_processed, :processed_at, :audit_id, :notes, :batch_id, :subbatch_id)
             '''
 
             with self.database.engine.begin() as conn:
                 conn.execute(text(insert_query), {
-                    'manifest_id': manifest_id,
+                    'file_manifest_id': manifest_id,
                     'table_name': table_name,
                     'file_path': file_path,
                     'status': status,
@@ -525,7 +527,7 @@ class AuditService:
                 conn.execute(text(f'''
                     UPDATE file_ingestion_manifest 
                     SET {', '.join(update_fields)}
-                    WHERE manifest_id = :manifest_id
+                    WHERE file_manifest_id = :manifest_id
                 '''), params)
                 
             # Collect metrics for batch accumulation if this is a completion
@@ -535,7 +537,7 @@ class AuditService:
                     with self.database.engine.connect() as conn:
                         result = conn.execute(text('''
                             SELECT subbatch_id FROM file_ingestion_manifest
-                            WHERE manifest_id = :manifest_id
+                            WHERE file_manifest_id = :manifest_id
                         '''), {'manifest_id': manifest_id})
                         row = result.fetchone()
                         if row and row[0]:
@@ -617,8 +619,8 @@ class AuditService:
         try:
             subbatch_id = uuid.uuid4()
             subbatch_data = {
-                'subbatch_id': str(subbatch_id),
-                'batch_id': str(batch_id),
+                'subbatch_manifest_id': str(subbatch_id),
+                'batch_manifest_id': str(batch_id),
                 'table_name': table_name,
                 'status': SubbatchStatus.RUNNING.value,
                 'started_at': datetime.now(),
@@ -628,8 +630,8 @@ class AuditService:
             with self.database.engine.begin() as conn:
                 conn.execute(text('''
                     INSERT INTO subbatch_ingestion_manifest
-                    (subbatch_id, batch_id, table_name, status, started_at, description)
-                    VALUES (:subbatch_id, :batch_id, :table_name, :status, :started_at, :description)
+                    (subbatch_manifest_id, batch_manifest_id, table_name, status, started_at, description)
+                    VALUES (:subbatch_manifest_id, :batch_manifest_id, :table_name, :status, :started_at, :description)
                 '''), subbatch_data)
 
             # Start in-memory tracking
@@ -710,7 +712,7 @@ class AuditService:
                     UPDATE subbatch_ingestion_manifest
                     SET status = :status, completed_at = :completed_at, error_message = :error_message,
                         files_processed = :files_processed, rows_processed = :rows_processed
-                    WHERE subbatch_id = :subbatch_id
+                    WHERE subbatch_manifest_id = :subbatch_id
                 '''), update_data)
 
             logger.info(f"Completed subbatch {subbatch_id} with status: {status.value} in {duration:.1f}s")
@@ -750,7 +752,7 @@ class AuditService:
                     conn.execute(text(f'''
                         UPDATE subbatch_ingestion_manifest
                         SET {set_clause}
-                        WHERE subbatch_id = :subbatch_id
+                        WHERE subbatch_manifest_id = :subbatch_id
                     '''), update_data)
 
                 logger.debug(f"Updated metrics for subbatch {subbatch_id}")

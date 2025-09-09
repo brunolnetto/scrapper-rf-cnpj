@@ -53,7 +53,8 @@ def create_new_audit(
 
 
 def create_audit(
-    database: Database, file_group_info: FileGroupInfo
+    database: Database, file_group_info: FileGroupInfo,
+    etl_year: int = None, etl_month: int = None
 ) -> Union[AuditDB, None]:
     """
     Inserts a new audit entry if the provided processed_at is later than the latest existing entry for the filename.
@@ -61,22 +62,42 @@ def create_audit(
     Args:
         database (Database): The database object.
         file_group_info (FileGroupInfo): Information about the file group.
+        etl_year (int, optional): ETL processing year. If provided, overrides source year.
+        etl_month (int, optional): ETL processing month. If provided, overrides source month.
 
     Returns:
         Union[AuditDB, None]: The created audit entry or None if not created.
     """
     if database.engine:
-        # Define raw SQL query
-        sql_query = text(f"""SELECT max(audi_source_updated_at) 
-            FROM public.table_ingestion_manifest 
-            WHERE audi_table_name = \'{file_group_info.table_name}\';""")
-
-        # Execute query with parameters (optional)
-        with database.engine.connect() as connection:
-            result = connection.execute(sql_query)
-
-            # Process results (e.g., fetchall, fetchone)
-            latest_updated_at = result.fetchone()[0]
+        # Define temporal-aware SQL query
+        if etl_year is not None and etl_month is not None:
+            # Check for existing processing in the specific ETL year/month context
+            sql_query = text(f"""SELECT max(audi_source_updated_at) 
+                FROM public.table_ingestion_manifest 
+                WHERE audi_table_name = :table_name 
+                AND audi_ingestion_year = :etl_year 
+                AND audi_ingestion_month = :etl_month;""")
+            
+            # Execute query with ETL temporal parameters
+            with database.engine.connect() as connection:
+                result = connection.execute(sql_query, {
+                    'table_name': file_group_info.table_name,
+                    'etl_year': etl_year,
+                    'etl_month': etl_month
+                })
+                latest_updated_at = result.fetchone()[0]
+        else:
+            # Legacy behavior: check without temporal filtering
+            sql_query = text(f"""SELECT max(audi_source_updated_at) 
+                FROM public.table_ingestion_manifest 
+                WHERE audi_table_name = :table_name;""")
+            
+            # Execute query with parameters
+            with database.engine.connect() as connection:
+                result = connection.execute(sql_query, {
+                    'table_name': file_group_info.table_name
+                })
+                latest_updated_at = result.fetchone()[0]
 
         if latest_updated_at is not None:
             format = "%Y-%m-%d %H:%M"
@@ -86,10 +107,16 @@ def create_audit(
             sao_paulo_timezone = pytz.timezone("America/Sao_Paulo")
             latest_updated_at = sao_paulo_timezone.localize(latest_updated_at)
 
-        # Extract temporal info from source date for proper tracking
-        source_date = file_group_info.date_range[1]
-        data_year = source_date.year
-        data_month = source_date.month
+        # Extract temporal info - use ETL config if provided, otherwise use source date
+        if etl_year is not None and etl_month is not None:
+            # Use ETL configuration for temporal tracking
+            data_year = etl_year
+            data_month = etl_month
+        else:
+            # Use source date for temporal tracking (legacy behavior)
+            source_date = file_group_info.date_range[1]
+            data_year = source_date.year
+            data_month = source_date.month
 
         # First entry: no existing audit entry
         if latest_updated_at is None:
@@ -99,8 +126,8 @@ def create_audit(
                 file_group_info.elements,
                 file_group_info.size_bytes,
                 file_group_info.date_range[1],
-                data_year,  # Use source data year
-                data_month  # Use source data month
+                data_year,  # Use ETL year or source year
+                data_month  # Use ETL month or source month
             )
 
         # New entry: source updated_at is greater
@@ -111,13 +138,9 @@ def create_audit(
                 file_group_info.elements,
                 file_group_info.size_bytes,
                 file_group_info.date_range[1],
-                data_year,  # Use source data year
-                data_month  # Use source data month
+                data_year,  # Use ETL year or source year
+                data_month  # Use ETL month or source month
             )
-
-        # Not all files are updated in batch aka unreliable
-        elif file_group_info.date_diff() > 7:
-            return None
 
         else:
             summary = (
@@ -129,10 +152,16 @@ def create_audit(
 
             return None
 
-    # Extract temporal info from source date for tracking at end of function
-    source_date = file_group_info.date_range[1]
-    data_year = source_date.year
-    data_month = source_date.month
+    # Extract temporal info - use ETL config if provided, otherwise use source date
+    if etl_year is not None and etl_month is not None:
+        # Use ETL configuration for temporal tracking
+        data_year = etl_year
+        data_month = etl_month
+    else:
+        # Use source date for temporal tracking (legacy behavior)
+        source_date = file_group_info.date_range[1]
+        data_year = source_date.year
+        data_month = source_date.month
 
     if latest_updated_at is None:
         # First entry: no existing audit entry
@@ -141,8 +170,8 @@ def create_audit(
             file_group_info.elements,
             file_group_info.size_bytes,
             file_group_info.date_range[1],
-            data_year,   # Use source data year
-            data_month   # Use source data month
+            data_year,   # Use ETL year or source year
+            data_month   # Use ETL month or source month
         )
     elif file_group_info.date_range[1] > latest_updated_at:
         # New entry: source updated_at is greater
@@ -151,11 +180,9 @@ def create_audit(
             file_group_info.elements,
             file_group_info.size_bytes,
             file_group_info.date_range[1],
-            data_year,   # Use source data year
-            data_month   # Use source data month
+            data_year,   # Use ETL year or source year
+            data_month   # Use ETL month or source month
         )
-    elif file_group_info.date_diff() > 7:
-        return None
     else:
         logger.warning(
             f"Skipping create entry for file group {file_group_info.name}. "
@@ -164,21 +191,24 @@ def create_audit(
         return None
 
 
-def create_audits(database: Database, files_info: List[FileGroupInfo]) -> List[AuditDB]:
+def create_audits(database: Database, files_info: List[FileGroupInfo], 
+                 etl_year: int = None, etl_month: int = None) -> List[AuditDB]:
     """
     Creates a list of audit entries based on the provided database and files information.
 
     Args:
         database (Database): The database object.
         files_info (List[FileGroupInfo]): A list of file information objects.
+        etl_year (int, optional): ETL processing year. Defaults to None (uses source year).
+        etl_month (int, optional): ETL processing month. Defaults to None (uses source month).
 
     Returns:
         List[AuditDB]: A list of audit entries.
     """
     return [
-        create_audit(database, file_info)
+        create_audit(database, file_info, etl_year, etl_month)
         for file_info in files_info
-        if create_audit(database, file_info)
+        if create_audit(database, file_info, etl_year, etl_month)
     ]
 
 
