@@ -97,7 +97,7 @@ Copy `.env.template` to `.env` and configure:
 
 ### Performance Analysis  
 - `lab/memory_monitor.py` - Memory usage tracking
-- Environment limits: `ETL_DEV_FILE_SIZE_LIMIT`, `ETL_DEV_MAX_FILES_PER_TABLE`
+- Environment limits: `ETL_DEV_FILE_SIZE_LIMIT_MB`, `ETL_DEV_MAX_FILES_PER_TABLE`
 
 ## Database Patterns
 
