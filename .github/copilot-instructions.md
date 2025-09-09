@@ -60,6 +60,18 @@ with audit_service.batch_context("estabelecimento", "monthly_load") as batch_id:
         # File processing happens here
 ```
 
+### Development Mode Filtering
+```python
+from src.core.utils.development_filter import DevelopmentFilter
+dev_filter = DevelopmentFilter(config)
+# Filter by file size and table limits for faster development cycles
+audits = dev_filter.filter_audits_by_size(audits)
+audits = dev_filter.filter_audits_by_table_limit(audits)
+# Create proper summary for logging
+summary = dev_filter.get_development_summary("table_name", files_processed, rows_processed)
+dev_filter.log_filtering_summary([summary])
+```
+
 ## Essential Commands
 - **Full ETL**: `just run-etl 2024 12` or `python -m src.main --year 2024 --month 12`
 - **Partial Strategies**: `python -m src.main --download --convert` (skip loading)
