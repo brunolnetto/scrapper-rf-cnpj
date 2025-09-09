@@ -109,12 +109,12 @@ class ReceitaCNPJPipeline(Pipeline):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         return f"ETL_Pipeline_{self.config.etl.year}_{self.config.etl.month:02d}_{timestamp}"
 
-    def _start_batch_tracking(self, target_table: Optional[str] = None) -> UUID:
+    def _start_batch_tracking(self, target_table: Optional[str] = None, batch_name: Optional[str] = None) -> UUID:
         """Start batch tracking for the pipeline execution."""
         if not self.config.batch_config.enabled:
             return None
             
-        self._batch_name = self._generate_batch_name()
+        self._batch_name = batch_name or self._generate_batch_name()
         
         logger.info(f"Starting batch tracking: {self._batch_name}")
         
@@ -453,7 +453,20 @@ class ReceitaCNPJPipeline(Pipeline):
         extract_path = str(self.config.paths.extract_path)
         download_path = str(self.config.paths.download_path)
 
-        # No longer create umbrella batch - individual table batches will be created
+        # Create pipeline-level batch for proper hierarchy
+        pipeline_batch_id = None
+        if self.config.batch_config.enabled:
+            # Create descriptive pipeline batch name
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            year_month = f"{self.config.etl.year}-{self.config.etl.month:02d}"
+            pipeline_batch_name = f"CNPJ_Pipeline_{year_month}_{timestamp}"
+            
+            pipeline_batch_id = self._start_batch_tracking("ALL_TABLES", pipeline_batch_name)
+            # Pass pipeline batch ID to data loader
+            if hasattr(self.data_loader, 'strategy') and hasattr(self.data_loader.strategy, 'set_pipeline_batch_id'):
+                self.data_loader.strategy.set_pipeline_batch_id(pipeline_batch_id)
+
         try:
             audits = self.retrieve_data()
 
@@ -467,16 +480,24 @@ class ReceitaCNPJPipeline(Pipeline):
                 # Convert to Parquet
                 self.convert_to_parquet(audit_metadata)
 
-                # Load data - each table will create its own batch
+                # Load data - files will create batches within pipeline batch
                 self.data_loader.load_data(audit_metadata)
+                
+                # Complete pipeline batch successfully
+                if pipeline_batch_id:
+                    self._complete_batch_tracking(success=True)
                 
                 return audit_metadata
             else:
                 logger.warning("No data to load!")
+                if pipeline_batch_id:
+                    self._complete_batch_tracking(success=False)
                 return None
 
         except Exception as e:
             logger.error(f"Pipeline execution failed: {e}")
+            if pipeline_batch_id:
+                self._complete_batch_tracking(success=False)
             raise
         finally:
             if self.config.etl.delete_files:

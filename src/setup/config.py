@@ -291,10 +291,10 @@ class ConfigurationService:
         
         loading_config = LoadingConfig(
             batch_size=int(os.getenv("ETL_CHUNK_SIZE", "50000")),
-            max_batch_size=int(os.getenv("ETL_MAX_BATCH_SIZE", "500000")),
-            min_batch_size=int(os.getenv("ETL_MIN_BATCH_SIZE", "10000")),
-            batch_size_mb=int(os.getenv("ETL_BATCH_SIZE_MB", "100")),
             sub_batch_size=int(os.getenv("ETL_SUB_BATCH_SIZE", "5000")),
+            min_batch_size=int(os.getenv("ETL_MIN_BATCH_SIZE", "10000")),
+            max_batch_size=int(os.getenv("ETL_MAX_BATCH_SIZE", "500000")),
+            batch_size_mb=int(os.getenv("ETL_BATCH_SIZE_MB", "100")),
             parallel_workers=int(os.getenv("ETL_WORKERS", "4")),
             internal_concurrency=int(os.getenv("ETL_INTERNAL_CONCURRENCY", "3")),
             use_copy=os.getenv("ETL_USE_COPY", "true").lower() == "true",
