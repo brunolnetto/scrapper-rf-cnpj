@@ -15,6 +15,7 @@ This structure allows:
 """
 from abc import ABC, abstractmethod
 from typing import List, Tuple, Optional
+from pathlib import Path
 
 from ....database.engine import Database
 from ....setup.logging import logger
@@ -64,7 +65,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                 from ....core.utils.development_filter import DevelopmentFilter
                 dev_filter = DevelopmentFilter(self.config.etl)
 
-                if not dev_filter.filter_parquet_file_by_size(parquet_file):
+                if not dev_filter.check_blob_size_limit(parquet_file):
                     return True, "Skipped large file in development mode", 0
 
                 logger.info(f"[LoadingStrategy] Loading Parquet file: {parquet_file.name}")
@@ -78,16 +79,17 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                 from ....core.utils.development_filter import DevelopmentFilter
                 dev_filter = DevelopmentFilter(self.config.etl)
 
-                # Apply table limit filtering first
-                table_files = dev_filter.filter_csv_files_by_table_limit(table_files, table_name)
+                # Apply table limit filtering first - keep as Path objects
+                file_paths = [Path(f) for f in table_files]
+                filtered_paths = dev_filter.filter_files_by_blob_limit(file_paths, table_name)
 
-                if not table_files:
+                if not filtered_paths:
                     logger.info(f"[LoadingStrategy] No files to load for table '{table_name}' after filtering")
                     return True, "No files to load after development filtering", 0
 
-                logger.info(f"[LoadingStrategy] Loading {len(table_files)} CSV files for table: {table_name}")
+                logger.info(f"[LoadingStrategy] Loading {len(filtered_paths)} CSV files for table: {table_name}")
                 return self._load_csv_files(
-                    loader, table_info, path_config, table_files, table_name,
+                    loader, table_info, path_config, filtered_paths, table_name,
                     batch_id=batch_id, subbatch_id=subbatch_id
                 )
             
@@ -102,8 +104,8 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
         """Create manifest entry and load file with row-driven batch tracking."""
         try:
             # Get batch configuration from config
-            batch_size = getattr(self.config.etl, 'row_batch_size', 1000)  # Row-driven batch size
-            subbatch_size = getattr(self.config.etl, 'row_subbatch_size', 100)  # Row-driven subbatch size
+            batch_size = getattr(self.config.etl, 'row_batch_size', 10000)  # Increased threshold for row-driven batching
+            subbatch_size = getattr(self.config.etl, 'row_subbatch_size', 1000)  # Increased subbatch size
             
             # Check if file is large enough to warrant row-driven batching
             import polars as pl
@@ -196,7 +198,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                         with self.audit_service.subbatch_context(
                             batch_id=row_batch_id,
                             table_name=table_name,
-                            subbatch_name=subbatch_name
+                            description=subbatch_name
                         ) as subbatch_id:
                             # Load this specific row range
                             success, error, rows = self._load_row_range(
@@ -292,13 +294,18 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
         
         return success, error, rows
     
-    def _load_csv_files(self, loader, table_info, path_config, table_files, table_name, batch_id=None, subbatch_id=None):
+    def _load_csv_files(self, loader, table_info, path_config, file_paths, table_name, batch_id=None, subbatch_id=None):
         """Load multiple CSV files with batch tracking."""
         total_rows = 0
         
-        for filename in table_files:
-            csv_file = path_config.extract_path / filename
-            logger.info(f"[LoadingStrategy] Processing CSV file: {filename}")
+        for file_path in file_paths:
+            # file_path is already a Path object from the filtering
+            if isinstance(file_path, str):
+                csv_file = path_config.extract_path / file_path
+            else:
+                csv_file = file_path
+            
+            logger.info(f"[LoadingStrategy] Processing CSV file: {csv_file.name}")
             
             success, error, rows = self._create_manifest_and_load(
                 loader, table_info, csv_file, table_name,
@@ -306,11 +313,11 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             )
             
             if not success:
-                logger.error(f"[LoadingStrategy] Failed to load {filename}: {error}")
+                logger.error(f"[LoadingStrategy] Failed to load {csv_file.name}: {error}")
                 return success, error, total_rows
             
             total_rows += rows
-            logger.info(f"[LoadingStrategy] Successfully loaded {rows:,} rows from {filename}")
+            logger.info(f"[LoadingStrategy] Successfully loaded {rows:,} rows from {csv_file.name}")
         
         return True, None, total_rows
     
@@ -507,7 +514,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                 with self.audit_service.subbatch_context(
                     batch_id=file_batch_id,
                     table_name=table_name,
-                    subbatch_name=f"Process_{csv_files[0]}"
+                    description=f"Process_{csv_files[0]}"
                 ) as subbatch_id:
                     result = self.load_table(
                         database, table_name, path_config, csv_files,
@@ -521,7 +528,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                     with self.audit_service.subbatch_context(
                         batch_id=file_batch_id,
                         table_name=table_name,
-                        subbatch_name=f"Process_{csv_file}_part{i+1}"
+                        description=f"Process_{csv_file}_part{i+1}"
                     ) as subbatch_id:
                         file_result = self.load_table(
                             database, table_name, path_config, [csv_file],

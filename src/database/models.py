@@ -225,9 +225,9 @@ class BatchIngestionManifest(AuditBase):
     __tablename__ = "batch_ingestion_manifest"
 
     batch_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    file_manifest_id = Column(UUID(as_uuid=True), ForeignKey('file_ingestion_manifest.file_manifest_id'), nullable=True)  # ADDED: Reference to primary file manifest
     batch_name = Column(String(200), nullable=False)
     target_table = Column(String(100), nullable=False)  # Single table name
-    file_manifest_id = Column(UUID(as_uuid=True), ForeignKey('file_ingestion_manifest.file_manifest_id'), nullable=True)  # ADDED: Reference to primary file manifest
     status = Column(Enum(BatchStatus), nullable=False, default=BatchStatus.PENDING)
     started_at = Column(TIMESTAMP, nullable=False, default=datetime.now)
     completed_at = Column(TIMESTAMP, nullable=True)

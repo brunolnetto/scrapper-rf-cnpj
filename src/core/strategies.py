@@ -35,7 +35,7 @@ class DownloadOnlyStrategy:
             else:
                 logger.warning("[DOWNLOAD-ONLY] No files were downloaded")
             return audits
-        except Exception as e:
+        except (OSError, IOError, ConnectionError, TimeoutError) as e:
             logger.error(f"[DOWNLOAD-ONLY] Download failed: {e}")
             raise
 
@@ -86,7 +86,7 @@ class DownloadAndLoadStrategy:
             
             return loading_result
             
-        except Exception as e:
+        except (OSError, IOError, ValueError, RuntimeError) as e:
             logger.error(f"[DOWNLOAD+LOAD] Strategy failed: {e}")
             logger.info("[DOWNLOAD+LOAD] Falling back to standard ETL flow...")
             return self._execute_standard_flow(pipeline, config_service, **kwargs)
@@ -109,7 +109,7 @@ class DownloadAndLoadStrategy:
             loading_result = pipeline.load_parquet_files(config_service, **kwargs)
             return loading_result
             
-        except Exception as e:
+        except (OSError, IOError, ConnectionError, TimeoutError, ValueError, RuntimeError) as e:
             logger.error(f"[DOWNLOAD+LOAD] Fallback strategy failed: {e}")
             raise
 
@@ -154,7 +154,7 @@ class DownloadAndConvertStrategy:
                 logger.info("[DOWNLOAD-CONVERT] Cleaned up downloaded files")
             
             return conversion_path
-        except Exception as e:
+        except (OSError, IOError, ConnectionError, TimeoutError, ValueError, RuntimeError) as e:
             logger.error(f"[DOWNLOAD-CONVERT] Process failed: {e}")
             raise
 
@@ -184,7 +184,7 @@ class ConvertOnlyStrategy:
             else:
                 logger.warning("[CONVERT-ONLY] No CSV files were converted")
             return conversion_path
-        except Exception as e:
+        except (OSError, IOError, ValueError, RuntimeError) as e:
             logger.error(f"[CONVERT-ONLY] Conversion failed: {e}")
             raise
 
@@ -276,7 +276,7 @@ class FullETLStrategy:
                 logger.warning("[FULL-ETL] No data processed")
                 return None
                 
-        except Exception as e:
+        except (OSError, IOError, ConnectionError, TimeoutError, ValueError, RuntimeError) as e:
             logger.error(f"[FULL-ETL] ETL job failed: {e}")
             logger.error("[FULL-ETL] Production database may be in inconsistent state.")
             raise
@@ -363,7 +363,7 @@ class LoadOnlyStrategy:
                 logger.error("[LOAD-ONLY] Pipeline does not have data loader")
                 return None
                 
-        except Exception as e:
+        except (OSError, IOError, ConnectionError, TimeoutError, ValueError, RuntimeError) as e:
             logger.error(f"[LOAD-ONLY] Load failed: {e}")
             raise
 
@@ -403,7 +403,7 @@ class ConvertAndLoadStrategy:
             
             return audit_metadata
             
-        except Exception as e:
+        except (OSError, IOError, ConnectionError, TimeoutError, ValueError, RuntimeError) as e:
             logger.error(f"[CONVERT-LOAD] Process failed: {e}")
             raise
 

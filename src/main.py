@@ -8,6 +8,10 @@ from .core.orchestrator import PipelineOrchestrator
 from .core.etl import ReceitaCNPJPipeline
 from .core.strategies import StrategyFactory
 from .setup.config import ConfigurationService
+from .setup.logging import logger
+
+# Constants
+MIN_VALID_YEAR = 2000  # Minimum year for CNPJ data processing
 
 
 def validate_cli_arguments(args):
@@ -31,6 +35,7 @@ def validate_cli_arguments(args):
         (True, True, False),   # Download and Convert  
         (False, True, False),  # Convert Only
         (False, False, True),  # Load Only
+        (True, False, True),   # Download and Load 
         (False, True, True),   # Convert and Load
         (True, True, True),    # Full ETL
     ]
@@ -57,9 +62,9 @@ def validate_cli_arguments(args):
         errors.append("Either both or none of year and month must be specified.")
     
     if are_both_not_none:
-        valid_temporal_values=args.year <= 2000 or (args.month < 1 or args.month > 12)    
+        valid_temporal_values=args.year <= MIN_VALID_YEAR or (args.month < 1 or args.month > 12)    
         if valid_temporal_values:
-            errors.append("Invalid year or month specified.")
+            errors.append(f"Invalid year (must be > {MIN_VALID_YEAR}) or month (1-12) specified.")
 
     # Either both or none must be specified. If none, set to current
     if not args.year and not args.month:
@@ -67,12 +72,12 @@ def validate_cli_arguments(args):
         args.year = datetime.now().year
         args.month = datetime.now().month
 
-    # Print errors and exit if any found
+    # Log errors and exit if any found
     if errors:
-        print("❌ Invalid CLI argument combinations detected:")
+        logger.error("❌ Invalid CLI argument combinations detected:")
         for i, error in enumerate(errors, 1):
-            print(f"  {i}. {error}")
-        print("\nUse --help for valid usage examples.")
+            logger.error(f"  {i}. {error}")
+        logger.error("Use --help for valid usage examples.")
         sys.exit(1)
 
 def main():

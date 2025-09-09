@@ -96,7 +96,7 @@ class AuditService:
             logger.info(f"Batch processing completed successfully", 
                        extra={"batch_id": str(batch_id), "table_name": target_table})
             
-        except Exception as e:
+        except (OSError, IOError, ConnectionError, ValueError, RuntimeError) as e:
             logger.error(f"Batch processing failed for {target_table}: {e}", 
                         extra={"batch_id": str(batch_id), "table_name": target_table, 
                               "error": str(e)})
@@ -131,7 +131,7 @@ class AuditService:
             logger.info(f"Subbatch processing completed", 
                        extra={"subbatch_id": str(subbatch_id), "table_name": table_name})
             
-        except Exception as e:
+        except (OSError, IOError, ConnectionError, ValueError, RuntimeError) as e:
             logger.error(f"Subbatch processing failed: {e}", 
                         extra={"subbatch_id": str(subbatch_id), "batch_id": str(batch_id), 
                               "table_name": table_name, "error": str(e)})
@@ -231,7 +231,7 @@ class AuditService:
 
             logger.debug(f"Created {status} manifest entry for audit: {table_name}")
 
-        except Exception as e:
+        except (OSError, IOError, ValueError, RuntimeError) as e:
             logger.error(f"Failed to create manifest entry for audit {audit}: {e}")
 
     def _filter_relevant_files(self, files_info: List[FileInfo]) -> List[FileInfo]:

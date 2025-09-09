@@ -5,6 +5,9 @@ Transform functions for data cleaning during ETL processing.
 from typing import Dict, List, Callable
 from ..setup.logging import logger
 
+# Constants for Brazilian Federal Revenue data formats
+BRAZILIAN_NULL_DATE = "00000000"  # Standard null date format in RF data
+
 
 def normalize_null_values(row_dict: Dict[str, str]) -> Dict[str, str]:
     """
@@ -25,7 +28,7 @@ def normalize_null_values(row_dict: Dict[str, str]) -> Dict[str, str]:
                 row_dict[key] = ""
             elif isinstance(value, str):
                 row_dict[key] = value.strip()
-    except Exception as e:
+    except (AttributeError, KeyError, TypeError) as e:
         logger.warning(f"Error normalizing NULL values: {e}")
     
     return row_dict
@@ -52,7 +55,7 @@ def clean_leading_zeros_from_fields(row_dict: Dict[str, str], field_names: List[
                     row_dict[field] = cleaned_value
                 elif field == "codigo" and not value:  # Special case for codigo
                     row_dict[field] = '0'
-    except Exception as e:
+    except (AttributeError, KeyError, TypeError) as e:
         logger.warning(f"Error cleaning leading zeros from fields {field_names}: {e}")
     
     return row_dict
@@ -76,7 +79,7 @@ def format_cnpj_fields(row_dict: Dict[str, str], field_specs: Dict[str, int]) ->
                 value = row_dict[field].strip()
                 if value and value.isdigit():
                     row_dict[field] = value.zfill(length)
-    except Exception as e:
+    except (AttributeError, KeyError, ValueError, TypeError) as e:
         logger.warning(f"Error formatting CNPJ fields {field_specs}: {e}")
     
     return row_dict
@@ -120,7 +123,7 @@ def format_date_fields(row_dict: Dict[str, str], field_names: List[str], null_da
                 elif date_value and date_value != "0":
                     logger.warning(f"Invalid date format in {field}: {date_value}")
                     
-    except Exception as e:
+    except (AttributeError, KeyError, ValueError, TypeError) as e:
         logger.warning(f"Error formatting date fields {field_names}: {e}")
     
     return row_dict
@@ -179,7 +182,7 @@ def convert_brazilian_currency(row_dict: Dict[str, str]) -> Dict[str, str]:
                 except ValueError:
                     logger.warning(f"Could not convert capital_social: {original_value}")
 
-    except Exception as e:
+    except (ValueError, TypeError, AttributeError) as e:
         logger.warning(f"Error converting Brazilian currency: {e}")
 
     return row_dict
@@ -210,54 +213,70 @@ def compose_transforms(*transforms: Callable[[Dict[str, str]], Dict[str, str]]) 
 
 def build_cnpj_only_transform() -> Callable[[Dict[str, str]], Dict[str, str]]:
     """Build transform for tables that only need cnpj_basico formatting."""
-    return lambda row_dict: format_cnpj_fields(row_dict, {"cnpj_basico": 8})
+    def cnpj_only_transform(row_dict: Dict[str, str]) -> Dict[str, str]:
+        return format_cnpj_fields(row_dict, {"cnpj_basico": 8})
+    return cnpj_only_transform
 
 
 def build_codigo_cleanup_transform() -> Callable[[Dict[str, str]], Dict[str, str]]:
     """Build transform for tables with codigo field needing cleanup."""
-    return lambda row_dict: clean_leading_zeros_from_fields(row_dict, ["codigo"])
+    def codigo_cleanup_transform(row_dict: Dict[str, str]) -> Dict[str, str]:
+        return clean_leading_zeros_from_fields(row_dict, ["codigo"])
+    return codigo_cleanup_transform
 
 
 def build_qualificacao_cleanup_transform() -> Callable[[Dict[str, str]], Dict[str, str]]:
     """Build transform for qualificacao fields cleanup."""
-    return lambda row_dict: clean_leading_zeros_from_fields(
-        row_dict, ["qualificacao_socio", "qualificacao_representante_legal"]
-    )
+    def qualificacao_cleanup_transform(row_dict: Dict[str, str]) -> Dict[str, str]:
+        return clean_leading_zeros_from_fields(
+            row_dict, ["qualificacao_socio", "qualificacao_representante_legal"]
+        )
+    return qualificacao_cleanup_transform
 
 
 def build_estabelecimento_date_transform() -> Callable[[Dict[str, str]], Dict[str, str]]:
     """Build transform for estabelecimento date fields."""
-    return lambda row_dict: format_date_fields(
-        row_dict, ["data_inicio_atividade", "data_situacao_cadastral"]
-    )
+    def estabelecimento_date_transform(row_dict: Dict[str, str]) -> Dict[str, str]:
+        return format_date_fields(
+            row_dict, ["data_inicio_atividade", "data_situacao_cadastral"]
+        )
+    return estabelecimento_date_transform
 
 
 def build_simples_date_transform() -> Callable[[Dict[str, str]], Dict[str, str]]:
     """Build transform for simples date fields."""
-    return lambda row_dict: format_date_fields(
-        row_dict, 
-        ["data_opcao_simples", "data_exclusao_simples", "data_opcao_mei", "data_exclusao_mei"],
-        null_date_value="00000000"
-    )
+    def simples_date_transform(row_dict: Dict[str, str]) -> Dict[str, str]:
+        return format_date_fields(
+            row_dict, 
+            ["data_opcao_simples", "data_exclusao_simples", "data_opcao_mei", "data_exclusao_mei"],
+            null_date_value=BRAZILIAN_NULL_DATE
+        )
+    return simples_date_transform
 
 
 def build_socios_date_transform() -> Callable[[Dict[str, str]], Dict[str, str]]:
     """Build transform for socios date fields."""
-    return lambda row_dict: format_date_fields(row_dict, ["data_entrada_sociedade"])
+    def socios_date_transform(row_dict: Dict[str, str]) -> Dict[str, str]:
+        return format_date_fields(row_dict, ["data_entrada_sociedade"])
+    return socios_date_transform
 
 
 def build_estabelecimento_cnpj_transform() -> Callable[[Dict[str, str]], Dict[str, str]]:
     """Build transform for estabelecimento CNPJ components."""
-    return lambda row_dict: format_cnpj_fields(
-        row_dict, {"cnpj_basico": 8, "cnpj_ordem": 4, "cnpj_dv": 2}
-    )
+    def estabelecimento_cnpj_transform(row_dict: Dict[str, str]) -> Dict[str, str]:
+        return format_cnpj_fields(
+            row_dict, {"cnpj_basico": 8, "cnpj_ordem": 4, "cnpj_dv": 2}
+        )
+    return estabelecimento_cnpj_transform
 
 
 def build_reference_codes_transform() -> Callable[[Dict[str, str]], Dict[str, str]]:
     """Build transform for reference code validation."""
-    return lambda row_dict: clean_leading_zeros_from_fields(
-        row_dict, ["motivo_situacao_cadastral", "cnae_fiscal_principal"]
-    )
+    def reference_codes_transform(row_dict: Dict[str, str]) -> Dict[str, str]:
+        return clean_leading_zeros_from_fields(
+            row_dict, ["motivo_situacao_cadastral", "cnae_fiscal_principal"]
+        )
+    return reference_codes_transform
 
 
 # =============================================================================
@@ -276,7 +295,7 @@ def codigo_transform_map(row_dict: Dict[str, str]) -> Dict[str, str]:
             normalize_null_values,
             build_codigo_cleanup_transform()
         )(row_dict)
-    except Exception as e:
+    except (ValueError, TypeError, KeyError) as e:
         logger.warning(f"Transform error for codigo row: {e}")
         return row_dict
 
@@ -289,7 +308,7 @@ def empresa_transform_map(row_dict: Dict[str, str]) -> Dict[str, str]:
             build_cnpj_only_transform(),
             convert_brazilian_currency
         )(row_dict)
-    except Exception as e:
+    except (ValueError, TypeError, KeyError) as e:
         logger.warning(f"Transform error for empresa row: {e}")
         return row_dict
 
@@ -303,7 +322,7 @@ def socios_transform_map(row_dict: Dict[str, str]) -> Dict[str, str]:
             build_socios_date_transform(),
             build_qualificacao_cleanup_transform()
         )(row_dict)
-    except Exception as e:
+    except (ValueError, TypeError, KeyError) as e:
         logger.warning(f"Transform error for socios row: {e}")
         return row_dict
 
@@ -317,7 +336,7 @@ def estabelecimento_transform_map(row_dict: Dict[str, str]) -> Dict[str, str]:
             build_estabelecimento_date_transform(),
             build_reference_codes_transform()
         )(row_dict)
-    except Exception as e:
+    except (ValueError, TypeError, KeyError) as e:
         logger.warning(f"Transform error for estabelecimento row: {e}")
         return row_dict
 
@@ -330,6 +349,6 @@ def simples_transform_map(row_dict: Dict[str, str]) -> Dict[str, str]:
             build_cnpj_only_transform(),
             build_simples_date_transform()
         )(row_dict)
-    except Exception as e:
+    except (ValueError, TypeError, KeyError) as e:
         logger.warning(f"Transform error for simples row: {e}")
         return row_dict

@@ -7,6 +7,7 @@ Supports configurable encoding for CSV files.
 import os
 from typing import Iterable, List, Tuple, Optional
 from .ingestors import batch_generator_csv, batch_generator_parquet
+from .....setup.logging import logger
 
 class FileLoader:
     """
@@ -67,7 +68,7 @@ class FileLoader:
             # Try to detect as CSV with different delimiters
             if self._validate_csv_content():
                 detected_format = 'csv'
-                print(f"Warning: Treating {ext} file as CSV format: {base_name}")
+                logger.warning(f"Treating {ext} file as CSV format: {base_name}")
             else:
                 raise ValueError(f"File with extension {ext} does not appear to be valid CSV: {self.file_path}")
                 

@@ -268,6 +268,35 @@ class DevelopmentFilter:
 
         return selected
 
+    def log_simple_filtering(self, original_count: int, filtered_count: int, item_type: str) -> None:
+        """Log simple filtering results for development mode."""
+        if not self.is_enabled:
+            return
+            
+        if original_count != filtered_count:
+            reduction_pct = (1 - filtered_count / original_count) * 100 if original_count > 0 else 0
+            logger.info(
+                f"[DEV-MODE] {item_type.capitalize()} filtering: {original_count} → {filtered_count} "
+                f"({reduction_pct:.1f}% reduction)"
+            )
+        else:
+            logger.debug(f"[DEV-MODE] No {item_type} filtering applied: {original_count} items")
+
+    def log_conversion_summary(self, audit_map: Dict[str, Dict[str, List[str]]]) -> None:
+        """Log conversion summary for development mode."""
+        if not self.is_enabled:
+            return
+            
+        total_files = 0
+        tables_count = len(audit_map)
+        
+        for table_name, zip_files in audit_map.items():
+            table_file_count = sum(len(csv_files) for csv_files in zip_files.values())
+            total_files += table_file_count
+            logger.debug(f"[DEV-MODE] {table_name}: {table_file_count} files to convert")
+        
+        logger.info(f"[DEV-MODE] Conversion summary: {tables_count} tables, {total_files} files total")
+
     def log_filtering_summary(self, summaries: List[Dict[str, Any]]) -> None:
         """Log comprehensive filtering summary."""
         if not self.is_enabled:
@@ -312,19 +341,3 @@ class DevelopmentFilter:
                 f"Total row reduction: {total_rows_original:,} → {total_rows_processed:,} "
                 f"({rows_reduction_pct:.1f}% reduction)"
             )
-
-
-    # Legacy method compatibility for backward compatibility
-    def filter_csv_files_by_size(self, csv_files: List[Path], extract_path: Path = None) -> List[Path]:
-        """Legacy compatibility for CSV size filtering."""
-        return [f for f in csv_files if self.check_blob_size_limit(f)]
-
-    def filter_parquet_file_by_size(self, parquet_file: Path) -> bool:
-        """Legacy compatibility for Parquet size filtering."""
-        return self.check_blob_size_limit(parquet_file)
-
-    def filter_csv_files_by_table_limit(self, csv_files: List[str], table_name: str) -> List[str]:
-        """Legacy compatibility for CSV table limit filtering."""
-        file_paths = [Path(f) for f in csv_files]
-        filtered_paths = self.filter_files_by_blob_limit(file_paths, table_name)
-        return [str(p) for p in filtered_paths]

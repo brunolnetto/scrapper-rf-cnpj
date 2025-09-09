@@ -8,6 +8,7 @@ from environment variables, eliminating hard-coded values throughout the codebas
 from typing import Dict, Any, Optional, Tuple
 from pathlib import Path
 import os
+import threading
 from dataclasses import dataclass
 from dotenv import load_dotenv
 
@@ -473,14 +474,13 @@ class ConfigurationService:
         }
 
 
-# Global configuration cache
+# Global configuration cache with thread safety
 _config_cache: Dict[Tuple[int, int], ConfigurationService] = {}
+_config_lock = threading.Lock()
 
 
 def get_config(year: int = None, month: int = None) -> ConfigurationService:
-    """Get the configuration service instance with caching based on year/month."""
-    global _config_cache
-    
+    """Get the configuration service instance with thread-safe caching based on year/month."""
     # Use current date as defaults if not specified
     if year is None or month is None:
         from datetime import datetime
@@ -488,18 +488,19 @@ def get_config(year: int = None, month: int = None) -> ConfigurationService:
         year = year or current.year
         month = month or current.month
     
-    # Use cached instance if available
+    # Use cached instance if available (thread-safe)
     cache_key = (year, month)
-    if cache_key not in _config_cache:
-        _config_cache[cache_key] = ConfigurationService(month=month, year=year)
     
-    return _config_cache[cache_key]
+    with _config_lock:
+        if cache_key not in _config_cache:
+            _config_cache[cache_key] = ConfigurationService(month=month, year=year)
+        return _config_cache[cache_key]
 
 
 def reload_config() -> None:
-    """Reload the global configuration by clearing the cache."""
-    global _config_cache
-    _config_cache.clear()
+    """Reload the global configuration by clearing the cache (thread-safe)."""
+    with _config_lock:
+        _config_cache.clear()
 
 
 # Backward compatibility functions

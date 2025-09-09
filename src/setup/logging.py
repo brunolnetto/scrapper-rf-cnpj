@@ -1,5 +1,6 @@
 import logging
 import sys
+import threading
 from datetime import datetime
 from dotenv import load_dotenv
 from os import getenv, makedirs, path
@@ -36,20 +37,23 @@ ENVIRONMENT = getenv("ENVIRONMENT", "development")
 # Get the root logger and configure it properly to prevent duplication
 root_logger = logging.getLogger()
 
-# Global flag to prevent multiple setup
+# Global flag to prevent multiple setup with thread safety
 _logging_configured = False
+_logging_lock = threading.Lock()
 
 def configure_logging():
-    """Configure logging once globally."""
+    """Configure logging once globally (thread-safe)."""
     global _logging_configured, root_logger
     
-    if _logging_configured:
-        return
-    
-    # Clear all existing handlers on the root logger to prevent duplication
-    root_logger.handlers.clear()
-    
-    # Set root logger level
+    with _logging_lock:
+        if _logging_configured:
+            return
+        
+        # Clear all existing handlers on the root logger to prevent duplication
+        root_logger.handlers.clear()
+        
+        # Set root logger level
+        root_logger.setLevel(logging.DEBUG)
     root_logger.setLevel(logging.DEBUG)
     
     # Formatters
