@@ -17,6 +17,7 @@ help:
     @echo "  install         Install Python dependencies using uv"
     @echo "  env             Create virtual environment"
     @echo "  lint            Run ruff linter with auto-fix"
+    @echo "  validate-env    Validate environment configuration"
     @echo ""
     @echo "Maintenance Commands:"
     @echo "  clean           Remove logs and cache files"
@@ -93,4 +94,8 @@ run-etl year month:
 
 # Run ETL for current date
 run-current:
-    python3 -m src.main 
+    python3 -m src.main
+
+# Validate environment configuration
+validate-env:
+    python3 scripts/validate_env.py 
