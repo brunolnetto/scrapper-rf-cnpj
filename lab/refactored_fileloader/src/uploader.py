@@ -53,15 +53,6 @@ async def async_upsert(
     checksum = None
     
     emit_log("file_processing_started", run_id=run_id, filename=filename, file_path=file_path)
-<<<<<<< HEAD
-    try:
-        with open(file_path, "rb") as f:
-            data = f.read()
-            filesize = len(data)
-            checksum = hashlib.sha256(data).digest()
-    except Exception:
-        pass
-=======
     
     # MEMORY-EFFICIENT: Calculate file size and checksum without loading entire file into memory
     try:
@@ -83,7 +74,6 @@ async def async_upsert(
     except Exception as e:
         logging.warning(f"Could not calculate checksum for {filename}: {e}")
         checksum = None
->>>>>>> 8a568e6 (Normalization)
 
     async with pool.acquire() as conn:
         await conn.execute(base.ensure_table_sql(table, headers, base.map_types(headers, types), primary_keys))
@@ -119,12 +109,8 @@ async def async_upsert(
 
         emit_log("file_completed", run_id=run_id, filename=filename, rows=rows_total,
                 parallel_mode=enable_internal_parallelism)
-<<<<<<< HEAD
-        await record_manifest(conn, filename, "success", checksum, filesize, run_id, rows_processed=rows_total)
-=======
         # Note: Manifest recording is handled by the audit service at the loading strategy level
         # await record_manifest(conn, filename, "success", checksum, filesize, run_id, rows_processed=rows_total)
->>>>>>> 8a568e6 (Normalization)
     
     return rows_total  # Return the total number of rows processed
 
