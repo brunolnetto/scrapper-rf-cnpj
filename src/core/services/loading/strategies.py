@@ -129,11 +129,25 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                 # For CSV, default to ensure batch creation
                 total_rows = 1
             
+<<<<<<< HEAD
             # Always use unified batching approach (no special case for small files)
             return self._load_with_batching(
                 loader, table_info, file_path, table_name, 
                 total_rows, batch_size, subbatch_size, batch_id, subbatch_id
             )
+=======
+            if total_rows > batch_size:
+                # Row-driven subbatching: split file into multiple subbatches within existing batch
+                return self._load_with_row_driven_batches(
+                    loader, table_info, file_path, table_name, 
+                    total_rows, batch_size, subbatch_size, batch_id, subbatch_id
+                )
+            else:
+                # File is small enough, use single batch approach
+                return self._load_single_batch(
+                    loader, table_info, file_path, table_name, batch_id, subbatch_id
+                )
+>>>>>>> dc4d89e (refactor() fix MB variables and (sub)batch persistence)
             
         except Exception as e:
             logger.error(f"[LoadingStrategy] Failed to load {file_path}: {e}")
@@ -148,6 +162,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                            total_rows: int, batch_size: int, subbatch_size: int,
                            parent_batch_id=None, parent_subbatch_id=None) -> Tuple[bool, Optional[str], int]:
         """
+<<<<<<< HEAD
         Unified loading approach that always creates proper batch/subbatch hierarchy.
         Works consistently for files of any size - no special cases.
         
@@ -155,6 +170,13 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
         - One batch per file (even if file has 1 row)  
         - One or more subbatches within each batch based on subbatch_size
         - Consistent 4-tier hierarchy: Table → File → Batch → Subbatch
+=======
+        Load file with row-driven subbatch creation within existing file batch.
+        Creates subbatches instead of separate top-level batches.
+        
+        Example: 10,000 rows, batch_size=1,000 within existing file batch
+        → 10 subbatches within the file batch
+>>>>>>> dc4d89e (refactor() fix MB variables and (sub)batch persistence)
         """
         import math
         from datetime import datetime
@@ -169,11 +191,18 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
         total_batches = max(1, math.ceil(total_rows / batch_size)) if total_rows > 0 else 1
         total_processed_rows = 0
         
+<<<<<<< HEAD
+=======
+        logger.info(f"[LoadingStrategy] Row-driven subbatching: {total_rows:,} rows → {total_batches} subbatches within file batch")
+        
+        # Process file in row-driven subbatches within existing file batch
+>>>>>>> dc4d89e (refactor() fix MB variables and (sub)batch persistence)
         for batch_num in range(total_batches):
             batch_start = batch_num * batch_size if total_rows > 0 else 0
             batch_end = min(batch_start + batch_size, total_rows) if total_rows > 0 else max(1, total_rows)
             actual_batch_rows = max(1, batch_end - batch_start) if total_rows > 0 else 1
             
+<<<<<<< HEAD
             # Create row-driven batch name
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
             batch_name = f"Batch_{table_name}_{batch_num+1}of{total_batches}_rows{batch_start}-{batch_end}_{timestamp}"
@@ -227,6 +256,75 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
         
         return True, None, total_processed_rows
 
+=======
+            # Create subbatch name for this row chunk
+            subbatch_name = f"RowChunk_{batch_num+1}of{total_batches}_rows{start_row}-{end_row}"
+            
+            if self.audit_service and parent_batch_id:
+                # Use existing file batch, create subbatch for this row range
+                with self.audit_service.subbatch_context(
+                    batch_id=parent_batch_id,
+                    table_name=table_name,
+                    description=subbatch_name
+                ) as chunk_subbatch_id:
+                    # Load this specific row range
+                    success, error, rows = self._load_row_range(
+                        loader, table_info, file_path, table_name,
+                        start_row, end_row, parent_batch_id, chunk_subbatch_id
+                    )
+                    
+                    if not success:
+                        return False, error, total_processed_rows
+                    
+                    total_processed_rows += rows
+                    logger.info(f"[LoadingStrategy] Completed row chunk {batch_num+1}/{total_batches}: {rows:,} rows")
+            else:
+                # Fallback without audit tracking
+                success, error, rows = self._load_row_range(
+                    loader, table_info, file_path, table_name, start_row, end_row
+                )
+                if not success:
+                    return False, error, total_processed_rows
+                total_processed_rows += rows
+        
+        return True, None, total_processed_rows
+
+    def _load_row_range(self, loader, table_info, file_path, table_name, 
+                       start_row: int, end_row: int, batch_id=None, subbatch_id=None):
+        """Load a specific row range from a file."""
+        try:
+            # Create manifest entry for this row range
+            range_info = f"rows_{start_row}-{end_row}"
+            manifest_id = self._create_manifest_entry(
+                f"{file_path}#{range_info}", table_name, "PROCESSING", 
+                batch_id=batch_id, subbatch_id=subbatch_id
+            )
+            
+            # Load the specific row range with batch context
+            # Note: This would need to be implemented in UnifiedLoader to support row ranges
+            # For now, we'll load the entire file (this is a limitation)
+            success, error, total_rows = loader.load_file(
+                table_info, file_path,
+                batch_id=batch_id, subbatch_id=subbatch_id
+            )
+            
+            if success:
+                # Calculate actual rows in this range
+                actual_rows = min(end_row - start_row, total_rows - start_row) if total_rows > start_row else 0
+                
+                # Update manifest entry
+                self._update_manifest_entry(manifest_id, "COMPLETED", actual_rows)
+                return True, None, actual_rows
+            else:
+                self._update_manifest_entry(manifest_id, "FAILED", 0, error)
+                return False, error, 0
+                
+        except Exception as e:
+            logger.error(f"[LoadingStrategy] Failed to load row range {start_row}-{end_row}: {e}")
+            if 'manifest_id' in locals():
+                self._update_manifest_entry(manifest_id, "FAILED", 0, str(e))
+            return False, str(e), 0
+>>>>>>> dc4d89e (refactor() fix MB variables and (sub)batch persistence)
 
 
 
@@ -238,8 +336,16 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             batch_id=batch_id, subbatch_id=subbatch_id
         )
         
+<<<<<<< HEAD
         # Load the entire file
         success, error, rows = loader.load_file(table_info, file_path)
+=======
+        # Load the file with batch context
+        success, error, rows = loader.load_file(
+            table_info, file_path, 
+            batch_id=batch_id, subbatch_id=subbatch_id
+        )
+>>>>>>> dc4d89e (refactor() fix MB variables and (sub)batch persistence)
         
         # Update manifest entry
         status = "COMPLETED" if success else "FAILED" 

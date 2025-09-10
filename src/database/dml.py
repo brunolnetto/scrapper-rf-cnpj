@@ -214,6 +214,8 @@ class UnifiedLoader(BaseFileLoader):
         file_path: Union[str, Path],
         chunk_size: Optional[int] = None,
         max_retries: int = 3,
+        batch_id: Optional[str] = None,
+        subbatch_id: Optional[str] = None,
     ) -> Tuple[bool, Optional[str], int]:
         """
         Load any file (CSV or Parquet) with automatic format detection.
@@ -228,11 +230,17 @@ class UnifiedLoader(BaseFileLoader):
             file_path: Path to file (CSV or Parquet)
             chunk_size: Optional chunk size override
             max_retries: Number of retry attempts
+            batch_id: Optional audit service batch ID for coordination
+            subbatch_id: Optional audit service subbatch ID for coordination
             
         Returns:
             Tuple of (success, error_message, rows_processed)
         """
         try:
+            # Store batch context for use in internal processing
+            self._current_batch_id = batch_id
+            self._current_subbatch_id = subbatch_id
+            
             # Validate file exists
             file_path = self._validate_file(file_path)
             if not file_path:
@@ -245,13 +253,17 @@ class UnifiedLoader(BaseFileLoader):
             # Detect format (not used in this flow)
             self._detect_format(file_loader, file_path)
             
-            # Execute load
+            # Execute load with batch context
             return self._execute_load(table_info, file_path, file_loader, chunk_size, max_retries)
             
         except Exception as e:
             error_msg = f"Failed to load {Path(file_path).name}: {e}"
             logger.error(f"[UnifiedLoader] {error_msg}")
             return False, error_msg, 0
+        finally:
+            # Clear batch context
+            self._current_batch_id = None
+            self._current_subbatch_id = None
 
     def _execute_load(
         self,
