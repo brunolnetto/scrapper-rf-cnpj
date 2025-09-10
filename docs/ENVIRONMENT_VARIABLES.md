@@ -111,9 +111,9 @@ ETL_ASYNC_POOL_MAX_SIZE=10
 
 #### Data Integrity
 ```bash
-ETL_CHECKSUM_THRESHOLD_BYTES=1000000000
+ETL_CHECKSUM_THRESHOLD_MB=1000
 ```
-- **Purpose**: Files larger than 1GB skip checksum verification (performance optimization)
+- **Purpose**: Files larger than 1000MB (1GB) skip checksum verification (performance optimization)
 - **Security**: Smaller files still verified for data integrity
 - **Trade-off**: Speed vs. verification completeness
 
@@ -166,7 +166,7 @@ ETL_ENABLE_INTERNAL_PARALLELISM=true
 ### 7. Development Mode Settings
 
 ```bash
-ETL_DEV_FILE_SIZE_LIMIT=70000000
+ETL_DEV_FILE_SIZE_LIMIT_MB=70
 ETL_DEV_MAX_FILES_PER_TABLE=5
 ETL_DEV_MAX_FILES_PER_BLOB=3
 ETL_DEV_MAX_BLOB_SIZE_MB=500
@@ -175,7 +175,7 @@ ETL_DEV_SAMPLE_PERCENTAGE=0.1
 ```
 
 **Development Filtering (when `ENVIRONMENT=development`):**
-- **`ETL_DEV_FILE_SIZE_LIMIT`**: Skip files larger than 70MB
+- **`ETL_DEV_FILE_SIZE_LIMIT_MB`**: Skip files larger than 70MB
 - **`ETL_DEV_MAX_FILES_PER_TABLE`**: Limit files per table type
 - **`ETL_DEV_MAX_FILES_PER_BLOB`**: Limit files per ZIP archive
 - **`ETL_DEV_MAX_BLOB_SIZE_MB`**: Skip large ZIP files
@@ -213,7 +213,7 @@ ENVIRONMENT=development
 ETL_WORKERS=2
 ETL_CHUNK_SIZE=10000
 ETL_MAX_MEMORY_MB=512
-ETL_DEV_FILE_SIZE_LIMIT=50000000
+ETL_DEV_FILE_SIZE_LIMIT_MB=50
 ```
 
 ### Production Environment
@@ -294,7 +294,7 @@ ETL_INTERNAL_CONCURRENCY=2
 ```bash
 # Fast development cycles
 ENVIRONMENT=development
-ETL_DEV_FILE_SIZE_LIMIT=10000000
+ETL_DEV_FILE_SIZE_LIMIT_MB=10
 ETL_DEV_MAX_FILES_PER_TABLE=2
 ETL_DEV_ROW_LIMIT_PERCENT=0.05
 ```

@@ -34,7 +34,7 @@ ETL_MAX_MEMORY_MB=1024
 ### Development (Fast Testing)
 ```bash
 ENVIRONMENT=development
-ETL_DEV_FILE_SIZE_LIMIT=10000000  # 10MB limit
+ETL_DEV_FILE_SIZE_LIMIT_MB=10     # 10MB limit
 ETL_DEV_MAX_FILES_PER_TABLE=2     # Only 2 files per table
 ETL_DEV_ROW_LIMIT_PERCENT=0.05    # 5% of data
 ```
