@@ -58,10 +58,11 @@ async def async_upsert(
     try:
         filesize = os.path.getsize(file_path)
         
-        # Skip checksum for very large files (> 1GB) to avoid performance issues
-        checksum_threshold = int(os.getenv("ETL_CHECKSUM_THRESHOLD_BYTES", "1000000000"))  # 1GB default
-        if filesize > checksum_threshold:
-            logging.info(f"[PERFORMANCE] Skipping checksum for large file {filename}: {filesize:,} bytes (> {checksum_threshold:,})")
+        # Skip checksum for very large files to avoid performance issues
+        checksum_threshold_mb = int(os.getenv("ETL_CHECKSUM_THRESHOLD_MB", "1000"))  # 1000MB (1GB) default
+        checksum_threshold_bytes = checksum_threshold_mb * 1024 * 1024
+        if filesize > checksum_threshold_bytes:
+            logging.info(f"[PERFORMANCE] Skipping checksum for large file {filename}: {filesize:,} bytes (> {checksum_threshold_mb}MB)")
             checksum = None
         else:
             # Calculate checksum in chunks to avoid memory issues
