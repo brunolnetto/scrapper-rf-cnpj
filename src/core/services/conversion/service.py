@@ -326,13 +326,13 @@ def process_csv_with_memory(
         )
 
         # Rename columns to expected names if we have them
-        if expected_columns and len(expected_columns) == len(lazy_frame.schema):
+        if expected_columns and len(expected_columns) == len(lazy_frame.collect_schema()):
             column_mapping = {f"column_{i+1}": expected_columns[i] for i in range(len(expected_columns))}
             lazy_frame = lazy_frame.rename(column_mapping)
             logger.info(f"Renamed columns to expected names: {expected_columns}")
         elif expected_columns:
             logger.warning(f"Column count mismatch: expected {len(expected_columns)} columns, "
-                          f"got {len(lazy_frame.schema)} columns. Using auto-generated names.")
+                          f"got {len(lazy_frame.collect_schema())} columns. Using auto-generated names.")
 
         # IMPROVEMENT 3: Add memory-efficient transformations
         # Filter to only expected columns if we have them

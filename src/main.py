@@ -7,7 +7,7 @@ import sys
 from .core.orchestrator import PipelineOrchestrator
 from .core.etl import ReceitaCNPJPipeline
 from .core.strategies import StrategyFactory
-from .setup.config import get_config
+from .setup.config import get_config, ConfigurationService
 from .setup.logging import logger
 
 # Constants

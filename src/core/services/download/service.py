@@ -7,7 +7,7 @@ from tqdm import tqdm
 
 from ....database.models import AuditDB
 from ....setup.logging import logger
-from ....setup.config import ConfigurationService
+from ....setup.config import ConfigurationService, AppConfig
 from ....utils.misc import get_file_size, get_max_workers
 from ....utils.zip import extract_zip_file
 
@@ -19,8 +19,8 @@ class FileDownloadService:
         if max_workers is not None:
             self.max_workers = max_workers
         elif config and hasattr(config, 'etl'):
-            # Use legacy property instead of direct stage config access
-            self.max_workers = config.etl.download_workers
+            # Use nested download config instead of legacy property
+            self.max_workers = config.etl.download.workers
         else:
             self.max_workers = get_max_workers()
             

@@ -19,7 +19,7 @@ from threading import Lock
 from sqlalchemy import text
 
 from ....setup.logging import logger
-from ....setup.config import get_config, ConfigurationService
+from ....setup.config import get_config, ConfigurationService, AppConfig
 from ....database.engine import Database
 from ....database.models import AuditDB, BatchIngestionManifest, SubbatchIngestionManifest, BatchStatus, SubbatchStatus
 from ....database.utils.models import create_audits, create_audit_metadata, insert_audit

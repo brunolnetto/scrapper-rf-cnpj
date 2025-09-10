@@ -5,7 +5,7 @@ Provides clean separation between SQLAlchemy ORM and high-performance asyncpg lo
 """
 import asyncpg
 from .....database.engine import Database
-from .....setup.config import ConfigurationService
+from .....setup.config import ConfigurationService, AppConfig
 from .....setup.logging import logger
 
 

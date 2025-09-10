@@ -11,7 +11,7 @@ from uuid import UUID
 
 # Import new services
 from ..setup.logging import logger
-from ..setup.config import ConfigurationService
+from ..setup.config import ConfigurationService, AppConfig
 from ..database.models import AuditDB, MainBase, AuditBase
 from .interfaces import Pipeline
 

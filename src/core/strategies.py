@@ -2,7 +2,7 @@ from typing import Optional, Any
 from datetime import datetime
 
 from ..setup.logging import logger
-from ..setup.config import ConfigurationService
+from ..setup.config import ConfigurationService, AppConfig
 from ..database.utils.db_admin import (
     create_database_if_not_exists,
     truncate_tables,
