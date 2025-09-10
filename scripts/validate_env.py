@@ -182,7 +182,7 @@ class EnvironmentValidator:
         
         if environment == 'development':
             dev_vars = {
-                'ETL_DEV_FILE_SIZE_LIMIT': 70000000,
+                'ETL_DEV_FILE_SIZE_LIMIT_MB': 70,
                 'ETL_DEV_MAX_FILES_PER_TABLE': 5,
                 'ETL_DEV_ROW_LIMIT_PERCENT': 0.1
             }
