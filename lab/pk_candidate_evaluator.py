@@ -16,7 +16,7 @@ def evaluate_pk_candidates(parquet_path):
         df = pl.scan_parquet(parquet_path)
         
         # Get schema and columns efficiently
-        schema = df.collect_schema()
+        schema = df.schema
         columns = schema.names()
         total_rows = df.select(pl.len()).collect().item()
         
