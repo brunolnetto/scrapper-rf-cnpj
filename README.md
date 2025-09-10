@@ -122,15 +122,27 @@ AUDIT_DB_USER=postgres
 AUDIT_DB_PASSWORD=sua_senha
 AUDIT_DB_NAME=dadosrfb_analysis
 
-# Diretórios (opcionais)
-OUTPUT_PATH=data/DOWNLOAD_FILES
-EXTRACT_PATH=data/EXTRACTED_FILES
+# Diretórios de processamento
+DOWNLOAD_PATH=DOWNLOADED_FILES
+EXTRACT_PATH=EXTRACTED_FILES
+CONVERT_PATH=CONVERTED_FILES
 
-# Carregamento
-ETL_CHUNK_SIZE=50000
-ETL_SUB_BATCH_SIZE=5000
-ETL_INTERNAL_CONCURRENCY=3
-ETL_ASYNC_POOL_MIN_SIZE=2
+# Configuração de conversão (CSV → Parquet)
+ETL_CONVERSION_CHUNK_SIZE=50000
+ETL_CONVERSION_WORKERS=2
+ETL_CONVERSION_MEMORY_LIMIT_MB=1024
+
+# Configuração de carregamento (Database)
+ETL_LOADING_BATCH_SIZE=1000
+ETL_LOADING_SUB_BATCH_SIZE=500
+ETL_LOADING_WORKERS=3
+
+# Configuração de download
+ETL_DOWNLOAD_WORKERS=4
+ETL_DOWNLOAD_CHUNK_SIZE_MB=50
+
+# Pool de conexões async
+ETL_ASYNC_POOL_MIN_SIZE=1
 ETL_ASYNC_POOL_MAX_SIZE=10
 ```
 
@@ -148,12 +160,21 @@ cat docs/ENV_QUICK_REFERENCE.md
 
 ### 🔧 Configurações Avançadas
 
-O sistema suporta configurações avançadas para otimização de performance:
+O sistema suporta configurações avançadas organizadas por estágio de processamento:
 
-- **`ETL_CHUNK_SIZE`**: Tamanho do batch principal (padrão: 50,000)
-- **`ETL_SUB_BATCH_SIZE`**: Tamanho dos sub-batches internos (padrão: 5,000)  
-- **`ETL_INTERNAL_CONCURRENCY`**: Paralelismo interno por arquivo (padrão: 3)
-- **`ETL_ASYNC_POOL_*`**: Configurações do pool de conexões async
+**Conversão (CSV → Parquet):**
+- **`ETL_CONVERSION_CHUNK_SIZE`**: Tamanho do batch de conversão (padrão: 50,000)
+- **`ETL_CONVERSION_WORKERS`**: Workers de conversão (padrão: 2)
+- **`ETL_CONVERSION_MEMORY_LIMIT_MB`**: Limite de memória (padrão: 1,024MB)
+
+**Carregamento (Database):**
+- **`ETL_LOADING_BATCH_SIZE`**: Tamanho do batch de inserção (padrão: 1,000)
+- **`ETL_LOADING_SUB_BATCH_SIZE`**: Sub-batches paralelos (padrão: 500)
+- **`ETL_LOADING_WORKERS`**: Workers de carregamento (padrão: 3)
+
+**Download:**
+- **`ETL_DOWNLOAD_WORKERS`**: Workers de download (padrão: 4)
+- **`ETL_DOWNLOAD_CHUNK_SIZE_MB`**: Chunks de download (padrão: 50MB)
 
 > 💡 **Dica**: Use `python scripts/validate_env.py` para recomendações específicas baseadas nos recursos do seu sistema.
 
