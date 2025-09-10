@@ -29,11 +29,12 @@ Este projeto implementa um pipeline ETL robusto e escalável para processamento 
 
 ### 🚀 Arquitetura
 
-- **Carregador de Arquivos Aprimorado**: Detecção automática de formato (CSV/Parquet) com validação robusta
-- **Processamento Assíncrono**: Processamento paralelo interno com controle de concorrência
-- **Estratégia de Carregamento Unificado**: Interface simplificada para todos os tipos de arquivo
-- **Pool de Conexões**: Pool de conexões async para máxima performance
-- **Eficiente em Memória**: Streaming processing para arquivos de qualquer tamanho
+- **Strategy Pattern**: Múltiplas estratégias de execução (download-only, conversion, full ETL)
+- **Configuração Pydantic**: Sistema de configuração tipado com validação automática
+- **Arquitetura de Serviços**: Serviços especializados (audit, download, conversion, loading)
+- **Orquestração Centralizada**: Pipeline orchestrator com controle unificado de fluxo
+- **Pool de Conexões Async**: Máxima performance com pools de conexão configuráveis
+- **Dual Database**: Separação entre dados de produção e auditoria
 
 ## 📚 Fonte de Dados
 
@@ -179,14 +180,20 @@ just help
 
 ### Execução Manual
 ```bash
-# ETL para período atual
+# ETL completo para período atual
 python -m src.main
 
 # ETL para período específico
 python -m src.main --year 2024 --month 12
 
+# Estratégias específicas
+python -m src.main --download              # Apenas download
+python -m src.main --download --convert    # Download + conversão
+python -m src.main --download --load       # Download + carregamento
+python -m src.main --convert --load        # Conversão + carregamento
+
 # ETL com refresh completo (limpa tabelas)
-python -m src.main --year 2024 --month 12 --full-refresh true
+python -m src.main --year 2024 --month 12 --full-refresh
 
 # Limpar tabelas específicas
 python -m src.main --clear-tables "empresa,estabelecimento"
@@ -245,15 +252,36 @@ Para informações detalhadas, consulte o [layout oficial](https://www.gov.br/re
 ```
 scrapper-rf-cnpj/
 ├── src/                   # Código fonte principal
-│   ├── main.py            # Ponto de entrada do ETL
+│   ├── main.py            # Ponto de entrada com Strategy Pattern
 │   ├── core/              # Componentes principais do ETL
+│   │   ├── etl.py         # Pipeline principal (ReceitaCNPJPipeline)
+│   │   ├── orchestrator.py# Orquestração de estratégias
+│   │   ├── strategies.py  # Estratégias de execução (download, convert, full)
+│   │   ├── interfaces.py  # Interfaces e contratos
+│   │   ├── services/      # Serviços especializados
+│   │   │   ├── audit/     # Serviço de auditoria e rastreamento
+│   │   │   ├── download/  # Serviço de download de arquivos
+│   │   │   ├── conversion/# Serviço de conversão CSV→Parquet
+│   │   │   └── loading/   # Serviço de carregamento no banco
+│   │   └── utils/         # Utilitários (batch optimizer, dev filter)
 │   ├── database/          # Modelos e conexões de banco
+│   │   ├── models.py      # Modelos SQLAlchemy (MainBase, AuditBase)
+│   │   ├── engine.py      # Database connection factory
+│   │   └── utils/         # Utilitários de banco
 │   ├── setup/             # Configurações e logging
-│   └── utils/             # Utilitários diversos
+│   │   ├── config/        # Sistema de configuração Pydantic
+│   │   │   ├── models.py  # Modelos de configuração tipados
+│   │   │   ├── profiles.py# Perfis por ambiente (dev, prod)
+│   │   │   ├── validation.py# Validação de configuração
+│   │   │   └── loader.py  # Carregamento de configuração
+│   │   ├── base.py        # Configurações base
+│   │   └── logging.py     # Configuração de logs
+│   └── utils/             # Utilitários gerais
 ├── data/                  # Dados processados
-│   ├── DOWNLOAD_FILES/    # Arquivos ZIP baixados
+│   ├── DOWNLOADED_FILES/  # Arquivos ZIP baixados
 │   ├── EXTRACTED_FILES/   # Arquivos CSV extraídos
 │   └── CONVERTED_FILES/   # Arquivos Parquet convertidos
+├── docs/                  # Documentação do projeto
 ├── examples/              # Exemplos de uso
 ├── lab/                   # Notebooks para análise
 ├── logs/                  # Logs do sistema
@@ -285,10 +313,11 @@ scrapper-rf-cnpj/
 ## 🛠️ Desenvolvimento
 
 ### Estrutura de Código
-- **Configuração Centralizada**: `src/setup/config.py`
-- **Padrão Lazy Loading**: Conexões de banco sob demanda
-- **Strategy Pattern**: Diferentes estratégias de carregamento
-- **Auditoria Integrada**: Rastreamento automático de operações
+- **Configuração Pydantic**: `src/setup/config/` - Sistema tipado com validação automática
+- **Strategy Pattern**: `src/core/strategies.py` - Múltiplas estratégias de execução
+- **Service Architecture**: `src/core/services/` - Serviços especializados independentes
+- **Pipeline Orchestrator**: `src/core/orchestrator.py` - Coordenação centralizada
+- **Auditoria Integrada**: `src/core/services/audit/` - Rastreamento completo automático
 
 ### Executando Testes
 ```bash
