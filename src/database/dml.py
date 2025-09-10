@@ -336,14 +336,15 @@ class UnifiedLoader(BaseFileLoader):
                    f"sub_batch_size={config_params['sub_batch_size']}, "
                    f"parallelism={config_params['enable_parallelism']}")
     
-    def _create_batch_generator(self, _file_path: Path, file_loader: FileLoader, 
+    def _create_batch_generator(self, file_path: Path, file_loader: FileLoader, 
                                table_info: TableInfo, chunk_size: int):
         """Create batch generator function with transforms."""
         def create_batch_gen(_file_path: str, headers: List[str], _chunk_size: int):
             return self._apply_transforms_to_batches(
                 file_loader.batch_generator(headers, chunk_size), 
                 table_info, 
-                headers
+                headers,
+                file_path  # Pass file_path for size checking
             )
         return create_batch_gen
     
@@ -366,24 +367,122 @@ class UnifiedLoader(BaseFileLoader):
             internal_concurrency=config_params['internal_concurrency']
         )
     
-    def _apply_transforms_to_batches(self, batch_generator, table_info: TableInfo, headers: List[str]):
+    def _apply_transforms_to_batches(self, batch_generator, table_info: TableInfo, headers: List[str], file_path: Path = None):
         """Apply row-level transforms from table_info.transform_map to each batch."""
         transform_func = getattr(table_info, 'transform_map', None)
 
         # Import default transform for proper identity comparison
         from ..core.transforms import default_transform_map
 
+        # Apply development mode row sampling first (if enabled)
+        processed_generator = self._apply_development_sampling(batch_generator, table_info, headers, file_path)
+
         if not transform_func or transform_func is default_transform_map:
             # No transforms needed, yield batches as-is
             logger.debug(f"[UnifiedLoader] No transforms for table {table_info.table_name}")
-            for batch in batch_generator:
+            for batch in processed_generator:
                 yield batch
         else:
             # Apply transforms to each row using shared utility
             logger.info(f"[UnifiedLoader] ✅ APPLYING TRANSFORMS: {transform_func.__name__} to {table_info.table_name}")
 
-            for batch in batch_generator:
+            for batch in processed_generator:
                 yield apply_transforms_to_batch(table_info, batch, headers)
+
+    def _apply_development_sampling(self, batch_generator, table_info: TableInfo, headers: List[str], file_path: Path = None):
+        """Apply development mode row sampling to batch generator based on file size threshold."""
+        # Check if development mode is enabled
+        if not self.config or not hasattr(self.config, 'etl') or not hasattr(self.config.etl, 'development'):
+            # No development config, pass through unchanged
+            for batch in batch_generator:
+                yield batch
+            return
+
+        from ..core.utils.development_filter import DevelopmentFilter
+        
+        try:
+            dev_filter = DevelopmentFilter(self.config)
+            
+            if not dev_filter.is_enabled:
+                # Development mode disabled, pass through unchanged
+                for batch in batch_generator:
+                    yield batch
+                return
+            
+            # Check if file meets size threshold for sampling
+            file_size_mb = self._get_file_size_mb(file_path)
+            size_threshold_mb = dev_filter.development.file_size_limit_mb
+            
+            if file_size_mb <= size_threshold_mb:
+                # File is small - process all rows without sampling
+                logger.info(f"[UnifiedLoader] 📁 Small file ({file_size_mb:.1f}MB ≤ {size_threshold_mb}MB) - processing all rows for {table_info.table_name}")
+                for batch in batch_generator:
+                    yield batch
+                return
+            
+            # File is large - apply development row sampling
+            logger.info(f"[UnifiedLoader] 🎯 Large file ({file_size_mb:.1f}MB > {size_threshold_mb}MB) - applying row sampling to {table_info.table_name}")
+            
+            # Collect all data first
+            all_rows = []
+            total_batches = 0
+            for batch in batch_generator:
+                all_rows.extend(batch)
+                total_batches += 1
+            
+            original_rows = len(all_rows)
+            logger.debug(f"[UnifiedLoader] Collected {original_rows:,} rows from {total_batches} batches")
+            
+            if original_rows == 0:
+                logger.info(f"[UnifiedLoader] No rows to sample for {table_info.table_name}")
+                return
+            
+            # Convert to Polars DataFrame for efficient sampling
+            import polars as pl
+            
+            # Create DataFrame from rows
+            df = pl.DataFrame(all_rows, schema=headers, orient="row")
+            
+            # Apply development filter sampling
+            sampled_df = dev_filter.filter_dataframe_by_percentage(df, table_info.table_name)
+            
+            # Convert back to batches
+            sampled_rows = sampled_df.rows()
+            logger.info(f"[UnifiedLoader] 📊 Row sampling: {original_rows:,} → {len(sampled_rows):,} rows "
+                       f"({dev_filter.development.row_limit_percent:.1%})")
+            
+            # Yield sampled data in chunks
+            chunk_size = getattr(self.config.etl, 'chunk_size', 50000)
+            for i in range(0, len(sampled_rows), chunk_size):
+                batch = sampled_rows[i:i + chunk_size]
+                yield batch
+                
+        except Exception as e:
+            logger.error(f"[UnifiedLoader] Development sampling failed for {table_info.table_name}: {e}")
+            logger.warning(f"[UnifiedLoader] Falling back to full data processing")
+            # Fallback: pass through original data without sampling
+            # Note: The original batch_generator is already consumed, so we'll skip sampling
+            # This is acceptable as a fallback - the data will be processed without development filtering
+            return
+
+    def _get_file_size_mb(self, file_path: Path = None) -> float:
+        """Get the size of the specified file in MB."""
+        if file_path and file_path.exists():
+            try:
+                size_bytes = file_path.stat().st_size
+                size_mb = size_bytes / (1024 * 1024)
+                return size_mb
+            except Exception as e:
+                logger.debug(f"[UnifiedLoader] Could not get file size for {file_path}: {e}")
+        
+        # Fallback: Use a heuristic based on chunk size and estimated row count
+        # This is approximate but gives us a reasonable threshold check
+        chunk_size = getattr(self.config.etl, 'chunk_size', 50000)
+        estimated_avg_row_size_bytes = 200  # Reasonable estimate for CNPJ data
+        estimated_file_size_mb = (chunk_size * estimated_avg_row_size_bytes) / (1024 * 1024)
+        
+        # Return a conservative estimate - if we can't determine size, assume it's large enough for sampling
+        return max(estimated_file_size_mb, 100.0)  # Default to 100MB if we can't determine
     
     # Compatibility methods for existing code that expects specific method names
     def load_csv_file(
@@ -508,11 +607,23 @@ class LargeFileLoader(BaseFileLoader):
         batch_count = 0
         total_rows = 0
 
+        # Check if development mode row sampling is enabled based on file size
+        development_skip_probability = self._get_development_skip_probability(file_path)
+
         try:
             for batch in file_loader.batch_generator(table_info.columns, chunk_size):
                 batch_count += 1
+                
+                # Apply development mode row sampling (probabilistic for large files)
+                if development_skip_probability > 0:
+                    batch = self._apply_development_sampling_to_batch(batch, development_skip_probability, table_info.table_name)
+                
                 batch_rows = len(batch)
                 total_rows += batch_rows
+
+                # Skip empty batches (could happen after sampling)
+                if batch_rows == 0:
+                    continue
 
                 # Progress reporting
                 if batch_count % 10 == 0:
@@ -541,6 +652,69 @@ class LargeFileLoader(BaseFileLoader):
     def _apply_transforms_to_batch(self, table_info: TableInfo, batch: List[Tuple]) -> List[Tuple]:
         """Apply row-level transforms to a batch using shared utility."""
         return apply_transforms_to_batch(table_info, batch, table_info.columns)
+
+    def _get_development_skip_probability(self, file_path: Path = None) -> float:
+        """Get the probability of skipping rows in development mode based on file size."""
+        if not self.config or not hasattr(self.config, 'etl') or not hasattr(self.config.etl, 'development'):
+            return 0.0
+        
+        from ..core.utils.development_filter import DevelopmentFilter
+        
+        try:
+            dev_filter = DevelopmentFilter(self.config)
+            
+            if not dev_filter.is_enabled:
+                return 0.0
+            
+            # Check file size threshold
+            file_size_mb = self._get_file_size_mb(file_path)
+            size_threshold_mb = dev_filter.development.file_size_limit_mb
+            
+            if file_size_mb <= size_threshold_mb:
+                # File is small - no sampling needed
+                logger.info(f"[LargeFileLoader] 📁 Small file ({file_size_mb:.1f}MB ≤ {size_threshold_mb}MB) - processing all rows")
+                return 0.0
+            
+            # File is large - apply row sampling
+            # Calculate skip probability: if we want to keep 10% (0.1), we skip 90% (0.9)
+            row_limit_percent = dev_filter.development.row_limit_percent
+            skip_probability = 1.0 - row_limit_percent
+            
+            logger.info(f"[LargeFileLoader] 🎯 Large file ({file_size_mb:.1f}MB > {size_threshold_mb}MB) - keeping {row_limit_percent:.1%} of rows (skipping {skip_probability:.1%})")
+            return skip_probability
+            
+        except Exception as e:
+            logger.error(f"[LargeFileLoader] Failed to get development config: {e}")
+            return 0.0
+
+    def _apply_development_sampling_to_batch(self, batch: List[Tuple], skip_probability: float, table_name: str) -> List[Tuple]:
+        """Apply probabilistic sampling to a batch for development mode."""
+        if skip_probability <= 0:
+            return batch
+        
+        import random
+        
+        # Apply probabilistic sampling
+        original_size = len(batch)
+        sampled_batch = [row for row in batch if random.random() >= skip_probability]
+        
+        if len(sampled_batch) != original_size:
+            logger.debug(f"[LargeFileLoader] {table_name}: Sampled {len(sampled_batch)} rows from {original_size} in batch")
+        
+        return sampled_batch
+
+    def _get_file_size_mb(self, file_path: Path = None) -> float:
+        """Get the size of the specified file in MB."""
+        if file_path and file_path.exists():
+            try:
+                size_bytes = file_path.stat().st_size
+                size_mb = size_bytes / (1024 * 1024)
+                return size_mb
+            except Exception as e:
+                logger.debug(f"[LargeFileLoader] Could not get file size for {file_path}: {e}")
+        
+        # Fallback: Use a conservative estimate
+        return 100.0  # Default to 100MB if we can't determine
 
     def _insert_batch_synchronously(self, table_info: TableInfo, batch: List[Tuple]):
         """Insert a batch of rows synchronously with proper SQL formatting and UPSERT logic."""

@@ -152,11 +152,17 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                                      total_rows: int, batch_size: int, subbatch_size: int,
                                      parent_batch_id=None, parent_subbatch_id=None):
         """
-        Load file with row-driven batch creation.
-        Creates multiple BatchIngestionManifest entries and SubbatchIngestionManifest entries.
+        Load file with row-driven batch creation - This is the CORRECT batching approach.
+        Creates proper 4-tier hierarchy: Table → File → Batch → Subbatch
         
-        Example: 10,000 rows, batch_size=1,000, subbatch_size=100
-        → 10 batch entries, 100 subbatch entries
+        Each batch represents a row range segment (e.g., rows 0-999, 1000-1999, etc.)
+        Each subbatch represents a smaller row range within a batch (e.g., rows 0-299, 300-599, etc.)
+        
+        Example: 10,000 rows, batch_size=1,000, subbatch_size=300
+        → 10 batch entries (row segments), ~34 subbatch entries
+        
+        Note: parent_batch_id should be None when called from _process_file_batch
+        to ensure proper independent row-driven batch creation.
         """
         from datetime import datetime
         import math
@@ -172,9 +178,9 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             end_row = min(start_row + batch_size, total_rows)
             actual_batch_rows = end_row - start_row
             
-            # Create batch for this row range
+            # Create batch for this row range (this is the correct batch level!)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # Include milliseconds
-            batch_name = f"RowBatch_{table_name}_{batch_num+1}of{total_batches}_{timestamp}"
+            batch_name = f"Batch_{table_name}_{batch_num+1}of{total_batches}_rows{start_row}-{end_row}_{timestamp}"
             
             if self.audit_service:
                 # Create row-driven batch
@@ -193,7 +199,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                         subbatch_end = min(subbatch_start + subbatch_size, end_row)
                         
                         # Create subbatch for this row range
-                        subbatch_name = f"RowSubbatch_{subbatch_num+1}of{subbatches_in_batch}_rows{subbatch_start}-{subbatch_end}"
+                        subbatch_name = f"Subbatch_{subbatch_num+1}of{subbatches_in_batch}_rows{subbatch_start}-{subbatch_end}"
                         
                         with self.audit_service.subbatch_context(
                             batch_id=row_batch_id,
@@ -482,14 +488,11 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
     def _process_file_batch(self, database, table_name: str, zip_filename: str, 
                            csv_files: List[str], path_config: PathConfig) -> Tuple[bool, Optional[str], int]:
         """
-        Process a single file as a batch with potential parallel subbatches.
-        This represents the file-level batch in the hierarchy.
+        Process files with direct row-driven batching (no file batch wrapper).
+        This creates proper 4-tier hierarchy: Table → File → Batch → Subbatch
+        where batches are row-driven segments, not file-level wrappers.
         """
-        from datetime import datetime
-        
-        # Create file-specific batch name
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_batch_name = f"File_{zip_filename}_{table_name}_{timestamp}"
+        logger.info(f"[LoadingStrategy] Processing {len(csv_files)} files for {table_name} (row-driven batching)")
         
         if not self.audit_service:
             # Fallback without batch tracking
@@ -497,73 +500,48 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                 database, table_name, csv_files, path_config
             )
         
-        # Create file batch within pipeline batch context
-        parent_info = f"Pipeline_{self._pipeline_batch_id}" if self._pipeline_batch_id else "Standalone"
-        file_batch_name = f"File_{zip_filename}_{table_name}_{timestamp}_({parent_info})"
+        total_success = True
+        total_processed_rows = 0
+        total_errors = []
         
-        try:
-            # Start file-level batch
-            file_batch_id = self.audit_service._start_batch(
-                target_table=table_name,
-                batch_name=file_batch_name
-            )
-            
-            # Process files within this batch (could be parallel subbatches)
-            if len(csv_files) == 1:
-                # Single file - create one subbatch
-                with self.audit_service.subbatch_context(
-                    batch_id=file_batch_id,
-                    table_name=table_name,
-                    description=f"Process_{csv_files[0]}"
-                ) as subbatch_id:
-                    result = self.load_table(
-                        database, table_name, path_config, csv_files,
-                        batch_id=file_batch_id, subbatch_id=subbatch_id
-                    )
-            else:
-                # Multiple files - could process in parallel subbatches
-                # For now, process sequentially but with separate subbatches
-                total_rows = 0
-                for i, csv_file in enumerate(csv_files):
-                    with self.audit_service.subbatch_context(
-                        batch_id=file_batch_id,
-                        table_name=table_name,
-                        description=f"Process_{csv_file}_part{i+1}"
-                    ) as subbatch_id:
-                        file_result = self.load_table(
-                            database, table_name, path_config, [csv_file],
-                            batch_id=file_batch_id, subbatch_id=subbatch_id
-                        )
-                        
-                        if not file_result[0]:
-                            # Complete batch with failure
-                            from ....database.models import BatchStatus
-                            self.audit_service._complete_batch_with_accumulated_metrics(
-                                file_batch_id, BatchStatus.FAILED
-                            )
-                            return file_result
-                        
-                        total_rows += file_result[2]
+        # Process each CSV file with direct row-driven batching
+        for csv_file in csv_files:
+            try:
+                logger.info(f"[LoadingStrategy] Processing file: {csv_file}")
                 
-                result = (True, None, total_rows)
-            
-            # Complete file batch successfully
-            from ....database.models import BatchStatus
-            success = result[0] if result else False
-            status = BatchStatus.COMPLETED if success else BatchStatus.FAILED
-            self.audit_service._complete_batch_with_accumulated_metrics(file_batch_id, status)
-            
-            return result
-            
-        except Exception as e:
-            # Complete batch with failure
-            from ....database.models import BatchStatus
-            if 'file_batch_id' in locals():
-                self.audit_service._complete_batch_with_accumulated_metrics(
-                    file_batch_id, BatchStatus.FAILED
+                # Direct file processing - let load_table create appropriate row-driven batches
+                # No file batch wrapper - this creates proper hierarchy per user specification
+                success, error, rows = self.load_table(
+                    database, table_name, path_config, [csv_file],
+                    batch_id=None,  # No parent batch - creates proper row-driven batches
+                    subbatch_id=None
                 )
-            logger.error(f"[LoadingStrategy] File batch failed for {zip_filename}: {e}")
-            return (False, str(e), 0)
+                
+                if success:
+                    total_processed_rows += rows
+                    logger.info(f"[LoadingStrategy] Successfully processed {csv_file}: {rows} rows")
+                else:
+                    total_success = False
+                    error_msg = f"Failed to process {csv_file}: {error}"
+                    total_errors.append(error_msg)
+                    logger.error(f"[LoadingStrategy] {error_msg}")
+                    
+            except Exception as e:
+                total_success = False
+                error_msg = f"Exception processing {csv_file}: {e}"
+                total_errors.append(error_msg)
+                logger.error(f"[LoadingStrategy] {error_msg}")
+        
+        # Return results
+        if total_success:
+            logger.info(f"[LoadingStrategy] All files processed successfully. Total rows: {total_processed_rows}")
+            return True, None, total_processed_rows
+        else:
+            error_summary = f"Errors in {len(total_errors)} files: {'; '.join(total_errors[:3])}"
+            if len(total_errors) > 3:
+                error_summary += f" (and {len(total_errors) - 3} more)"
+            logger.error(f"[LoadingStrategy] Processing completed with errors: {error_summary}")
+            return False, error_summary, total_processed_rows
 
     def _load_files_without_batch_tracking(self, database, table_name: str, 
                                           csv_files: List[str], path_config: PathConfig) -> Tuple[bool, Optional[str], int]:
