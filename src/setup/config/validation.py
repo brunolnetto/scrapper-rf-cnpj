@@ -8,6 +8,8 @@ and relationships between different configuration sections.
 from typing import List, Tuple, Optional
 import os
 import logging
+import multiprocessing
+
 from .models import AppConfig, Environment
 
 logger = logging.getLogger(__name__)
@@ -39,7 +41,7 @@ class ConfigurationValidator:
     def _validate_memory_constraints(self):
         """Validate memory usage will not exceed limits."""
         try:
-            conversion = self.config.etl.conversion
+            conversion = self.config.pipeline.conversion
             
             # Estimate memory usage for conversion
             estimated_memory_mb = (
@@ -69,11 +71,11 @@ class ConfigurationValidator:
     def _validate_worker_relationships(self):
         """Validate worker counts make sense for system."""
         try:
-            etl = self.config.etl
+            pipeline = self.config.pipeline
             total_workers = (
-                etl.conversion.workers + 
-                etl.loading.workers + 
-                etl.download.workers
+                pipeline.conversion.workers + 
+                pipeline.loading.workers + 
+                pipeline.download.workers
             )
             
             available_cores = os.cpu_count() or 4
@@ -94,15 +96,15 @@ class ConfigurationValidator:
                 )
             
             # Validate individual worker counts
-            if etl.conversion.workers > available_cores:
+            if pipeline.conversion.workers > available_cores:
                 self.warnings.append(
-                    f"Conversion workers ({etl.conversion.workers}) exceed "
+                    f"Conversion workers ({pipeline.conversion.workers}) exceed "
                     f"available cores ({available_cores})"
                 )
             
-            if etl.loading.workers > available_cores // 2:
+            if pipeline.loading.workers > available_cores // 2:
                 self.warnings.append(
-                    f"Loading workers ({etl.loading.workers}) may be too high "
+                    f"Loading workers ({pipeline.loading.workers}) may be too high "
                     f"for database operations"
                 )
                 
@@ -112,8 +114,8 @@ class ConfigurationValidator:
     def _validate_batch_hierarchies(self):
         """Validate batch size relationships are logical."""
         try:
-            loading = self.config.etl.loading
-            conversion = self.config.etl.conversion
+            loading = self.config.pipeline.loading
+            conversion = self.config.pipeline.conversion
             
             # Loading batch size vs conversion chunk size
             if loading.batch_size > conversion.chunk_size:
@@ -155,51 +157,51 @@ class ConfigurationValidator:
     def _validate_environment_specific(self):
         """Apply environment-specific validations."""
         try:
-            etl = self.config.etl
+            pipeline = self.config.pipeline
             
-            if etl.environment == Environment.DEVELOPMENT:
+            if pipeline.environment == Environment.DEVELOPMENT:
                 # Development-specific warnings
-                if etl.conversion.chunk_size > 10000:
+                if pipeline.conversion.chunk_size > 10000:
                     self.warnings.append(
-                        f"Large conversion chunk size ({etl.conversion.chunk_size}) "
+                        f"Large conversion chunk size ({pipeline.conversion.chunk_size}) "
                         f"in development mode may cause memory issues"
                     )
                 
-                if etl.loading.batch_size > 5000:
+                if pipeline.loading.batch_size > 5000:
                     self.warnings.append(
-                        f"Large loading batch size ({etl.loading.batch_size}) "
+                        f"Large loading batch size ({pipeline.loading.batch_size}) "
                         f"in development mode may be inefficient"
                     )
                 
-                if not etl.development.enabled:
+                if not pipeline.development.enabled:
                     self.warnings.append(
                         "Development optimizations are disabled in development environment"
                     )
             
-            elif etl.environment == Environment.PRODUCTION:
+            elif pipeline.environment == Environment.PRODUCTION:
                 # Production-specific validations
-                if etl.development.enabled:
+                if pipeline.development.enabled:
                     self.errors.append(
                         "Development mode cannot be enabled in production environment"
                     )
                 
-                if etl.conversion.chunk_size < 10000:
+                if pipeline.conversion.chunk_size < 10000:
                     self.warnings.append(
-                        f"Small conversion chunk size ({etl.conversion.chunk_size}) "
+                        f"Small conversion chunk size ({pipeline.conversion.chunk_size}) "
                         f"in production may be inefficient"
                     )
                 
-                if etl.loading.batch_size < 1000:
+                if pipeline.loading.batch_size < 1000:
                     self.warnings.append(
-                        f"Small loading batch size ({etl.loading.batch_size}) "
+                        f"Small loading batch size ({pipeline.loading.batch_size}) "
                         f"in production may be inefficient"
                     )
             
-            elif etl.environment == Environment.TESTING:
+            elif pipeline.environment == Environment.TESTING:
                 # Testing-specific validations
-                if etl.conversion.chunk_size > 5000:
+                if pipeline.conversion.chunk_size > 5000:
                     self.warnings.append(
-                        f"Large conversion chunk size ({etl.conversion.chunk_size}) "
+                        f"Large conversion chunk size ({pipeline.conversion.chunk_size}) "
                         f"in testing environment may slow down tests"
                     )
                     
@@ -234,13 +236,13 @@ class ConfigurationValidator:
     def _validate_path_accessibility(self):
         """Validate path configuration accessibility."""
         try:
-            paths = self.config.paths
+            paths = self.config.pipeline.data_sink.paths
             
             # Check if paths are reasonable
             for path_name, path_value in [
-                ("download_path", paths.download_path),
-                ("extract_path", paths.extract_path), 
-                ("conversion_path", paths.conversion_path)
+                ("download", paths.download),
+                ("extraction", paths.extraction), 
+                ("conversion", paths.conversion)
             ]:
                 if not path_value:
                     self.errors.append(f"Path '{path_name}' is empty")
@@ -275,7 +277,7 @@ class ConfigurationValidator:
                     )
                 
                 # Check for localhost in production
-                if (self.config.etl.environment == Environment.PRODUCTION and 
+                if (self.config.pipeline.environment == Environment.PRODUCTION and 
                     'localhost' in url_value):
                     self.warnings.append(
                         f"URL '{url_name}' contains localhost in production environment"

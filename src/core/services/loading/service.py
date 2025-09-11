@@ -8,8 +8,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any
 
-from ....setup.config import PathConfig
-from ....setup.config import ETLConfig
 from ....setup.logging import logger
 from ....database.engine import Database
 from ...schemas import AuditMetadata
@@ -23,23 +21,23 @@ class DataLoadingService:
     def __init__(
         self,
         database: Database,
-        path_config: PathConfig,
+        pipeline_config,
         strategy: BaseDataLoadingStrategy,
-        config: ETLConfig,
+        config,
         audit_service=None
     ):
         self.database = database
-        self.path_config = path_config
+        self.pipeline_config = pipeline_config
         self.config = config
         self.audit_service = audit_service  # Store audit service
         
-        # Initialize batch optimizer if we have ETL configuration
-        if isinstance(config, ETLConfig):
+        # Initialize batch optimizer if we have pipeline configuration
+        if hasattr(config, 'pipeline'):
             self.batch_optimizer = BatchSizeOptimizer(config)
-            logger.debug("Initialized BatchSizeOptimizer with ETL configuration")
+            logger.debug("Initialized BatchSizeOptimizer with pipeline configuration")
         else:
             self.batch_optimizer = None
-            logger.debug("No ETL configuration provided, batch optimization disabled")
+            logger.debug("No pipeline configuration provided, batch optimization disabled")
         
         # Always use enhanced strategy (replace legacy implementation)
         if config:
@@ -104,7 +102,7 @@ class DataLoadingService:
         results = self.strategy.load_multiple_tables(
             database=self.database,
             table_to_files=table_to_files,
-            path_config=self.path_config,
+            pipeline_config=self.pipeline_config,
         )
 
         # Update audit_metadata with insertion timestamps

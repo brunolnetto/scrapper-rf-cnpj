@@ -8,8 +8,8 @@ import random
 import math
 
 import polars as pl
-from ...setup.config import (
-    ETLConfig, DevelopmentConfig, 
+from ...setup.config.models import (
+    DevelopmentConfig, 
     DownloadConfig, ConversionConfig, LoadingConfig
 )
             
@@ -19,17 +19,14 @@ from ...database.models import AuditDB
 class DevelopmentFilter:
     """Development mode filtering with comprehensive controls."""
 
-    def __init__(self, config: Union[ETLConfig, Any]):
-        # Handle both new ETLConfig and legacy config formats
-        if isinstance(config, ETLConfig):
-            self.development = config.development
-            self.is_enabled = config.development.enabled
-        elif hasattr(config, 'etl') and hasattr(config.etl, 'development'):
-            # ConfigurationService format via config service
-            self.development = config.etl.development
-            self.is_enabled = config.etl.development.enabled
+    def __init__(self, config: Any):
+        # Handle both new SOLID config and legacy config formats
+        if hasattr(config, 'pipeline') and hasattr(config.pipeline, 'development'):
+            # SOLID ConfigurationService format via config service
+            self.development = config.pipeline.development
+            self.is_enabled = config.pipeline.development.enabled
         elif hasattr(config, 'development'):
-            # Already new format via config service
+            # Already new format via config service  
             self.development = config.development
             self.is_enabled = config.development.enabled
         else:
@@ -40,17 +37,8 @@ class DevelopmentFilter:
                 file_size_limit_mb=50,  # Default - fixed property name
                 row_limit_percent=0.1
             )
-            # Create minimal ETL config
-            etl_config = ETLConfig(
-                download=DownloadConfig(),
-                conversion=ConversionConfig(),
-                loading=LoadingConfig(),
-                development=dev_config,
-                year=2024,  # Default values since this is just for development filtering
-                month=12
-            )
-            self.development = etl_config.development
-            self.is_enabled = etl_config.development.enabled
+            self.development = dev_config
+            self.is_enabled = dev_config.enabled
 
     def filter_audits_by_size(self, audits: List[AuditDB]) -> List[AuditDB]:
         """Filter audits by file size limit."""

@@ -1,8 +1,7 @@
 """
-Nuclear Migration: Pure Pydantic Configuration System
+SOLID-compliant Pydantic Configuration System
 
-Complete replacement of legacy configuration with typed Pydantic models.
-No legacy compatibility layer needed - direct migration approach.
+Clean configuration architecture following Single Responsibility Principle.
 """
 
 import os
@@ -13,10 +12,9 @@ from .models import (
     LoadingConfig,
     DownloadConfig,
     DevelopmentConfig,
-    ETLConfig,
-    PathConfig,
-    URLConfig,
-    BatchConfig,
+    DataSourceConfig,
+    PipelineConfig,
+    AuditConfig,
     AppConfig,
 )
 from .validation import ConfigurationValidator
@@ -26,10 +24,14 @@ from .loader import ConfigLoader, load_config
 
 def get_config(year=None, month=None):
     """
-    NEW: Direct Pydantic configuration - no legacy system!
+    Load SOLID-compliant Pydantic configuration.
     
-    Returns the new typed configuration system directly.
-    Temporal parameters (year/month) are handled as metadata.
+    Args:
+        year: Year for temporal processing context
+        month: Month for temporal processing context
+        
+    Returns:
+        AppConfig: Fully configured application settings
     """
     # Determine profile based on environment
     profile = os.getenv("CONFIG_PROFILE", "development")

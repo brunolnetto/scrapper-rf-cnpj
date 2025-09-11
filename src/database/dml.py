@@ -325,7 +325,7 @@ class UnifiedLoader(BaseFileLoader):
     
     def _get_config_params(self, chunk_size: Optional[int]) -> dict:
         """Get configuration parameters with defaults and memory optimization."""
-        base_chunk_size = chunk_size or getattr(self.config.etl, 'chunk_size', 50000)
+        base_chunk_size = chunk_size or getattr(self.config.pipeline.loading, 'batch_size', 50000)
         
         # Memory optimization for large files
         if hasattr(self, 'database') and self.config:
@@ -337,9 +337,9 @@ class UnifiedLoader(BaseFileLoader):
         
         return {
             'chunk_size': base_chunk_size,
-            'sub_batch_size': getattr(self.config.etl, 'sub_batch_size', 5000),
-            'enable_parallelism': getattr(self.config.etl, 'enable_internal_parallelism', True),
-            'internal_concurrency': min(getattr(self.config.etl, 'internal_concurrency', 3), 2)  # Cap at 2 for safety
+            'sub_batch_size': getattr(self.config.pipeline.loading, 'sub_batch_size', 5000),
+            'enable_parallelism': getattr(self.config.pipeline.loading, 'enable_internal_parallelism', True),
+            'internal_concurrency': min(getattr(self.config.pipeline.loading, 'internal_concurrency', 3), 2)  # Cap at 2 for safety
         }
     
     def _log_config_params(self, config_params: dict):
@@ -404,7 +404,7 @@ class UnifiedLoader(BaseFileLoader):
     def _apply_development_sampling(self, batch_generator, table_info: TableInfo, headers: List[str], file_path: Path = None):
         """Apply development mode row sampling to batch generator based on file size threshold."""
         # Check if development mode is enabled
-        if not self.config or not hasattr(self.config, 'etl') or not hasattr(self.config.etl, 'development'):
+        if not self.config or not hasattr(self.config, 'pipeline') or not hasattr(self.config.pipeline, 'development'):
             # No development config, pass through unchanged
             for batch in batch_generator:
                 yield batch
@@ -464,7 +464,7 @@ class UnifiedLoader(BaseFileLoader):
                        f"({dev_filter.development.row_limit_percent:.1%})")
             
             # Yield sampled data in chunks
-            chunk_size = getattr(self.config.etl, 'chunk_size', 50000)
+            chunk_size = getattr(self.config.pipeline.loading, 'batch_size', 50000)
             for i in range(0, len(sampled_rows), chunk_size):
                 batch = sampled_rows[i:i + chunk_size]
                 yield batch
@@ -489,7 +489,7 @@ class UnifiedLoader(BaseFileLoader):
         
         # Fallback: Use a heuristic based on chunk size and estimated row count
         # This is approximate but gives us a reasonable threshold check
-        chunk_size = getattr(self.config.etl, 'chunk_size', 50000)
+        chunk_size = getattr(self.config.pipeline.loading, 'batch_size', 50000)
         estimated_avg_row_size_bytes = 200  # Reasonable estimate for CNPJ data
         estimated_file_size_mb = (chunk_size * estimated_avg_row_size_bytes) / (1024 * 1024)
         
@@ -667,7 +667,7 @@ class LargeFileLoader(BaseFileLoader):
 
     def _get_development_skip_probability(self, file_path: Path = None) -> float:
         """Get the probability of skipping rows in development mode based on file size."""
-        if not self.config or not hasattr(self.config, 'etl') or not hasattr(self.config.etl, 'development'):
+        if not self.config or not hasattr(self.config, 'pipeline') or not hasattr(self.config.pipeline, 'development'):
             return 0.0
         
         from ..core.utils.development_filter import DevelopmentFilter

@@ -62,7 +62,7 @@ class ReceitaCNPJPipeline(Pipeline):
         if not hasattr(self, '_data_loader') or self._data_loader is None:
             self._data_loader = DataLoadingService(
                 self.database, 
-                self.config.paths, 
+                self.config.pipeline.data_sink.paths, 
                 self.loading_strategy, 
                 self.config,
                 audit_service=self.audit_service
@@ -104,7 +104,7 @@ class ReceitaCNPJPipeline(Pipeline):
     def _generate_batch_name(self) -> str:
         """Generate a descriptive batch name."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        return f"ETL_Pipeline_{self.config.etl.year}_{self.config.etl.month:02d}_{timestamp}"
+        return f"ETL_Pipeline_{self.config.pipeline.year}_{self.config.pipeline.month:02d}_{timestamp}"
 
     def _start_batch_tracking(self, target_table: Optional[str] = None) -> UUID:
         """Start batch tracking for the pipeline execution."""
@@ -144,7 +144,7 @@ class ReceitaCNPJPipeline(Pipeline):
     def scrap_data(self) -> List[FileInfo]:
         from ..utils.misc import convert_to_bytes
 
-        url = self.config.urls.get_files_url(self.config.etl.year, self.config.etl.month)
+        url = self.config.urls.get_files_url(self.config.pipeline.year, self.config.pipeline.month)
 
         session = requests.Session()
         retries = Retry(
@@ -235,9 +235,9 @@ class ReceitaCNPJPipeline(Pipeline):
         self.file_downloader.download_and_extract(
             audits,
             files,
-            str(self.config.paths.download_path),
-            str(self.config.paths.extract_path),
-            parallel=self.config.etl.is_parallel,
+            str(self.config.pipeline.paths.download),
+            str(self.config.pipeline.paths.extraction),
+            parallel=self.config.pipeline.is_parallel,
         )
 
     def retrieve_data(self) -> List[AuditDB]:
@@ -255,7 +255,7 @@ class ReceitaCNPJPipeline(Pipeline):
         from .services.conversion.service import convert_csvs_to_parquet_smart
 
         num_workers = self.config.etl.parallel_workers
-        output_dir = Path(self.config.paths.conversion_path)
+        output_dir = Path(self.config.pipeline.data_sink.paths.conversion)
 
         makedir(output_dir)
 
@@ -281,7 +281,7 @@ class ReceitaCNPJPipeline(Pipeline):
         dev_filter = DevelopmentFilter(self.config)
         dev_filter.log_conversion_summary(audit_map)
 
-        extract_path = Path(self.config.paths.extract_path)
+        extract_path = Path(self.config.pipeline.data_sink.paths.extraction)
 
         convert_csvs_to_parquet_smart(audit_map, extract_path, output_dir)
         logger.info(f"Parquet conversion completed. Files saved to: {output_dir}")
@@ -305,7 +305,7 @@ class ReceitaCNPJPipeline(Pipeline):
         from datetime import datetime
         from uuid import uuid4
 
-        extract_path = Path(self.config.paths.extract_path)
+        extract_path = Path(self.config.pipeline.data_sink.paths.extraction)
         if not extract_path.exists():
             logger.warning(f"Extract path does not exist: {extract_path}")
             return None
@@ -407,9 +407,9 @@ class ReceitaCNPJPipeline(Pipeline):
         try:
             return bool(
                 self.config and 
-                self.config.databases and 
-                self.config.etl and 
-                self.config.paths
+                self.config.audit and 
+                self.config.pipeline and 
+                self.config.pipeline.data_sink
             )
         except Exception:
             return False
@@ -427,10 +427,10 @@ class ReceitaCNPJPipeline(Pipeline):
         if year:
             self.config.etl.year = int(year)
         if month:
-            self.config.etl.month = int(month)
+            self.config.pipeline.month = int(month)
         
-        extract_path = str(self.config.paths.extract_path)
-        download_path = str(self.config.paths.download_path)
+        extract_path = str(self.config.pipeline.data_sink.paths.extraction)
+        download_path = str(self.config.pipeline.data_sink.paths.download)
 
         # No longer create umbrella batch - individual table batches will be created
         try:

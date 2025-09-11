@@ -31,7 +31,7 @@ class DownloadOnlyStrategy:
             audits = pipeline.retrieve_data()
             if audits:
                 logger.info(f"[DOWNLOAD-ONLY] Successfully downloaded {len(audits)} files")
-                logger.info(f"[DOWNLOAD-ONLY] Files saved to: {config_service.paths.download_path}")
+                logger.info(f"[DOWNLOAD-ONLY] Files saved to: {config_service.pipeline.data_sink.paths.download}")
             else:
                 logger.warning("[DOWNLOAD-ONLY] No files were downloaded")
             return audits
@@ -140,7 +140,7 @@ class DownloadAndConvertStrategy:
                 return None
             
             # Create audit metadata and convert to Parquet
-            download_path = str(config_service.paths.download_path)
+            download_path = str(config_service.pipeline.data_sink.paths.download)
             audit_metadata = pipeline.audit_service.create_audit_metadata(audits, download_path)
             conversion_path = pipeline.convert_to_parquet(audit_metadata)
             

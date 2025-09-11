@@ -1,9 +1,30 @@
 """
 Pydantic configuration models with validation.
 
-This module defines typed configuration models that replace the legacy
-string-based environment variable system with semantic clarity and
-comprehensive validation.
+This module defines typed configuration models following SOLID principles
+with semantic clarity and comprehensive validation.
+
+Configuration Architecture:
+==========================
+
+DataSourceConfig: Brazilian Federal Revenue specific settings (delimiter, timezone, URLs, encoding)
+PathConfig: Clean file system paths (download, extraction, conversion) - no suffixes, clear names
+DataSinkConfig: Output paths and database configuration for ETL pipeline results
+ConversionConfig: CSV to Parquet conversion settings
+LoadingConfig: Database loading and batching settings  
+DownloadConfig: File download and verification settings
+DevelopmentConfig: Development mode optimizations
+AuditConfig: Audit database and tracking configuration
+PipelineConfig: Main pipeline orchestration (combines data source, data sink, and operation configs)
+AppConfig: Top-level application configuration (combines pipeline and audit)
+
+Clean Architecture Principles:
+=============================
+- PathConfig: Pure path management with clean naming (download, extraction, conversion)
+- DataSinkConfig: Groups output concerns (paths + database) for SOLID compliance
+- Direct access properties: config.pipeline.database, config.pipeline.paths
+- Semantic clarity: extraction (not extract), database (not main_database)
+- No legacy compatibility - clean, modern architecture only
 """
 
 from pydantic import BaseModel, Field, field_validator, model_validator, PrivateAttr
@@ -171,6 +192,26 @@ class LoadingConfig(BaseModel):
         description="Batch size limit in MB"
     )
     
+    # Async operations and connection pooling
+    internal_concurrency: int = Field(
+        default=3, 
+        ge=1, 
+        le=16, 
+        description="Internal concurrency level for async operations"
+    )
+    async_pool_min_size: int = Field(
+        default=1, 
+        ge=1, 
+        le=50, 
+        description="Minimum size of async connection pool"
+    )
+    async_pool_max_size: int = Field(
+        default=10, 
+        ge=1, 
+        le=100, 
+        description="Maximum size of async connection pool"
+    )
+    
     @field_validator('sub_batch_size')
     @classmethod
     def validate_sub_batch_size(cls, v, info):
@@ -187,6 +228,48 @@ class LoadingConfig(BaseModel):
             max_batch_size = info.data['max_batch_size']
             if v > max_batch_size:
                 raise ValueError('Min batch size cannot exceed max batch size')
+        return v
+
+
+class DataSourceConfig(BaseModel):
+    """Brazilian Federal Revenue data source configuration."""
+    
+    # Data format specifics
+    delimiter: str = Field(
+        default=";", 
+        description="CSV delimiter used by Brazilian Federal Revenue files"
+    )
+    timezone: str = Field(
+        default="America/Sao_Paulo", 
+        description="Timezone for parsing timestamps from data source"
+    )
+    encoding: str = Field(
+        default="iso-8859-1", 
+        description="Default file encoding used by RF (some files may differ)"
+    )
+    
+    # Data source URLs
+    base_url: str = Field(
+        default="https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj",
+        description="Base URL for Brazilian Federal Revenue CNPJ data files"
+    )
+    layout_url: str = Field(
+        default="https://www.gov.br/receitafederal/dados/cnpj-metadados.pdf",
+        description="URL for CNPJ data layout documentation"
+    )
+    
+    @field_validator('base_url', 'layout_url')
+    @classmethod
+    def validate_url(cls, v):
+        if not v.startswith(('http://', 'https://')):
+            raise ValueError('URL must start with http:// or https://')
+        return v
+    
+    @field_validator('delimiter')
+    @classmethod
+    def validate_delimiter(cls, v):
+        if len(v) != 1:
+            raise ValueError('Delimiter must be a single character')
         return v
 
 
@@ -262,30 +345,122 @@ class DevelopmentConfig(BaseModel):
     )
 
 
-class ETLConfig(BaseModel):
-    """Main ETL configuration with nested components."""
+class PathConfig(BaseModel):
+    """File system paths configuration for ETL stages."""
     
-    environment: Environment = Field(default=Environment.DEVELOPMENT, description="ETL execution environment (DEVELOPMENT/PRODUCTION)")
-    timezone: str = Field(default="America/Sao_Paulo", description="Timezone for processing timestamps")
-    delimiter: str = Field(default=";", description="Delimiter for Brazilian Federal Revenue CSV files")
+    download: str = Field(
+        default="DOWNLOADED_FILES", 
+        description="Directory for storing downloaded ZIP files"
+    )
+    extraction: str = Field(
+        default="EXTRACTED_FILES", 
+        description="Directory for storing extracted CSV files" 
+    )
+    conversion: str = Field(
+        default="CONVERTED_FILES", 
+        description="Directory for storing converted Parquet files"
+    )
+    
+    # Path utility methods
+    def get_download_path(self) -> Path:
+        """Get download path as Path object."""
+        return Path(self.download)
+    
+    def get_extraction_path(self) -> Path:
+        """Get extraction path as Path object."""
+        return Path(self.extraction)
+    
+    def get_conversion_path(self) -> Path:
+        """Get conversion path as Path object."""
+        return Path(self.conversion)
+    
+    def ensure_directories_exist(self):
+        """Create directories if they don't exist."""
+        for path in [self.get_download_path(), self.get_extraction_path(), self.get_conversion_path()]:
+            path.mkdir(parents=True, exist_ok=True)
+
+
+class DataSinkConfig(BaseModel):
+    """Data sink configuration for output paths and database."""
+    
+    # File system paths for ETL stages
+    paths: PathConfig = Field(
+        default_factory=PathConfig,
+        description="File system paths for different ETL stages"
+    )
+    
+    # Main database for processed data
+    database: DatabaseConfig = Field(
+        default_factory=DatabaseConfig, 
+        description="Main PostgreSQL database for CNPJ data"
+    )
+    
+    # Delegated path utility methods for convenience
+    def get_download_path(self) -> Path:
+        """Get download path as Path object."""
+        return self.paths.get_download_path()
+    
+    def get_extraction_path(self) -> Path:
+        """Get extraction path as Path object."""
+        return self.paths.get_extraction_path()
+    
+    def get_conversion_path(self) -> Path:
+        """Get conversion path as Path object."""
+        return self.paths.get_conversion_path()
+    
+    def ensure_directories_exist(self):
+        """Create directories if they don't exist."""
+        self.paths.ensure_directories_exist()
+
+
+class PipelineConfig(BaseModel):
+    """Main pipeline configuration with nested components."""
+    
+    environment: Environment = Field(default=Environment.DEVELOPMENT, description="Pipeline execution environment (DEVELOPMENT/PRODUCTION)")
     delete_files: bool = Field(default=True, description="Delete temporary files after successful processing")
     is_parallel: bool = Field(default=True, description="Enable parallel processing across multiple cores")
-    internal_concurrency: int = Field(default=3, ge=1, le=16, description="Internal concurrency level for async operations")
-    manifest_tracking: bool = Field(default=False, description="Enable comprehensive audit trail and batch tracking")
-    
-    # Pool configuration
-    async_pool_min_size: int = Field(default=1, ge=1, le=50, description="Minimum size of async connection pool")
-    async_pool_max_size: int = Field(default=10, ge=1, le=100, description="Maximum size of async connection pool")
     
     # Temporal configuration (set at runtime)
     year: Optional[int] = Field(default=None, ge=2020, le=2030, description="Year for data processing")
     month: Optional[int] = Field(default=None, ge=1, le=12, description="Month for data processing")
     
-    # Nested configurations
+    # Data sink configuration (output paths and database)
+    data_sink: DataSinkConfig = Field(default_factory=DataSinkConfig, description="Data sink configuration for outputs and database")
+    
+    # Nested operation configurations
+    data_source: DataSourceConfig = Field(default_factory=DataSourceConfig, description="Brazilian Federal Revenue data source settings")
+    download: DownloadConfig = Field(default_factory=DownloadConfig, description="File download and verification settings")
     conversion: ConversionConfig = Field(default_factory=ConversionConfig, description="CSV to Parquet conversion settings")
     loading: LoadingConfig = Field(default_factory=LoadingConfig, description="Database loading and batching settings")
-    download: DownloadConfig = Field(default_factory=DownloadConfig, description="File download and verification settings")
     development: DevelopmentConfig = Field(default_factory=DevelopmentConfig, description="Development mode and testing settings")
+    
+    # Direct access properties for clean architecture
+    @property
+    def database(self) -> DatabaseConfig:
+        """Direct access to database configuration."""
+        return self.data_sink.database
+    
+    @property
+    def paths(self) -> PathConfig:
+        """Direct access to path configuration."""
+        return self.data_sink.paths
+    
+    # Utility methods (delegated to DataSinkConfig)
+    def get_download_path(self) -> Path:
+        """Get download path as Path object."""
+        return self.data_sink.get_download_path()
+    
+    def get_extraction_path(self) -> Path:
+        """Get extraction path as Path object."""
+        return self.data_sink.get_extraction_path()
+    
+    def get_conversion_path(self) -> Path:
+        """Get conversion path as Path object."""
+        return self.data_sink.get_conversion_path()
+    
+    def ensure_directories_exist(self):
+        """Create directories if they don't exist."""
+        self.data_sink.ensure_directories_exist()
     
     @model_validator(mode='after')
     def validate_config_relationships(self):
@@ -309,62 +484,22 @@ class ETLConfig(BaseModel):
                 )
         
         return self
-    
-    # Legacy compatibility methods
-    @property
-    def chunk_size(self) -> int:
-        """Legacy compatibility: delegate to loading config."""
-        return self.loading.batch_size
 
 
-class PathConfig(BaseModel):
-    """Path configuration for data directories."""
-    
-    download_path: str = Field(default="DOWNLOADED_FILES", description="Directory for storing downloaded ZIP files")
-    extract_path: str = Field(default="EXTRACTED_FILES", description="Directory for storing extracted CSV files")
-    conversion_path: str = Field(default="CONVERTED_FILES", description="Directory for storing converted Parquet files")
-    
-    def get_download_path(self) -> Path:
-        """Get download path as Path object."""
-        return Path(self.download_path)
-    
-    def get_extract_path(self) -> Path:
-        """Get extract path as Path object."""
-        return Path(self.extract_path)
-    
-    def get_conversion_path(self) -> Path:
-        """Get conversion path as Path object."""
-        return Path(self.conversion_path)
-    
-    def ensure_directories_exist(self):
-        """Create directories if they don't exist."""
-        for path in [self.get_download_path(), self.get_extract_path(), self.get_conversion_path()]:
-            path.mkdir(parents=True, exist_ok=True)
 
-
-class URLConfig(BaseModel):
-    """URL configuration for external services."""
+class AuditConfig(BaseModel):
+    """Audit and tracking configuration."""
     
-    base_url: str = Field(
-        default="https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj",
-        description="Base URL for Brazilian Federal Revenue CNPJ data files"
-    )
-    layout_url: str = Field(
-        default="https://www.gov.br/receitafederal/dados/cnpj-metadados.pdf",
-        description="URL for CNPJ data layout documentation"
+    # Audit database connection
+    database: DatabaseConfig = Field(default_factory=DatabaseConfig, description="Audit database for ETL tracking and manifests")
+    
+    # Manifest tracking
+    manifest_tracking: bool = Field(
+        default=False, 
+        description="Enable comprehensive audit trail and batch tracking"
     )
     
-    @field_validator('base_url', 'layout_url')
-    @classmethod
-    def validate_url(cls, v):
-        if not v.startswith(('http://', 'https://')):
-            raise ValueError('URL must start with http:// or https://')
-        return v
-
-
-class BatchConfig(BaseModel):
-    """Batch tracking configuration."""
-    
+    # Batch tracking settings
     update_threshold: int = Field(
         default=100,
         ge=1,
@@ -408,56 +543,37 @@ class AppConfig(BaseModel):
     
     environment: Environment = Field(default=Environment.DEVELOPMENT, description="Application environment mode")
     
-    # Database configurations
-    main_database: DatabaseConfig = Field(default_factory=DatabaseConfig, description="Main PostgreSQL database for CNPJ data")
-    audit_database: DatabaseConfig = Field(default_factory=DatabaseConfig, description="Audit database for ETL tracking and manifests")
-    
     # Core configurations
-    etl: ETLConfig = Field(default_factory=ETLConfig, description="ETL processing configuration")
-    paths: PathConfig = Field(default_factory=PathConfig, description="File system paths for ETL processing")
-    urls: URLConfig = Field(default_factory=URLConfig, description="URLs for data sources and services")
-    batch: BatchConfig = Field(default_factory=BatchConfig, description="Batch processing and audit configuration")
+    pipeline: PipelineConfig = Field(default_factory=PipelineConfig, description="Pipeline processing configuration")
+    audit: AuditConfig = Field(default_factory=AuditConfig, description="Audit and tracking configuration")
     
-    # Temporal properties for legacy compatibility (set by get_config)
+    # Temporal properties (set by get_config)
     _year: Optional[int] = PrivateAttr(default=None)
     _month: Optional[int] = PrivateAttr(default=None)
     
     @property
     def year(self) -> Optional[int]:
-        """Legacy compatibility: temporal year."""
+        """Temporal year for processing."""
         return self._year
     
     @property
     def month(self) -> Optional[int]:
-        """Legacy compatibility: temporal month."""
+        """Temporal month for processing."""
         return self._month
     
-    @property
-    def databases(self) -> Dict[str, DatabaseConfig]:
-        """Legacy compatibility: provide databases as dict."""
-        return {
-            'main': self.main_database,
-            'audit': self.audit_database
-        }
-    
-    @property
-    def batch_config(self) -> BatchConfig:
-        """Legacy compatibility: batch_config property."""
-        return self.batch
-    
     def is_development_mode(self) -> bool:
-        """Legacy compatibility: check if in development mode."""
+        """Check if in development mode."""
         return (self.environment == Environment.DEVELOPMENT or 
-                self.etl.development.enabled)
+                self.pipeline.development.enabled)
     
     @model_validator(mode='after')
     def validate_app_config(self):
         """Validate application-level configuration consistency."""
-        etl = self.etl
+        pipeline = self.pipeline
         
-        if etl and etl.environment == Environment.PRODUCTION:
+        if pipeline and pipeline.environment == Environment.PRODUCTION:
             # Production-specific validations
-            if etl.development.enabled:
+            if pipeline.development.enabled:
                 raise ValueError("Development mode cannot be enabled in production environment")
         
         return self

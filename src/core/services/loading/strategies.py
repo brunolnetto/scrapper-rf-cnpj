@@ -19,16 +19,14 @@ from pathlib import Path
 
 from ....database.engine import Database
 from ....setup.logging import logger
-from ....setup.config import PathConfig
 from ....database.dml import table_name_to_table_info
 
 class BaseDataLoadingStrategy(ABC):
     """Abstract base class for data loading strategies."""
     
     @abstractmethod
-    def load_table(self, database: Database, table_name: str, path_config: PathConfig, 
-                   table_files: Optional[List[str]] = None, 
-                   batch_id=None, subbatch_id=None) -> Tuple[bool, Optional[str], int]:
+    def load_table(self, database: Database, table_name: str, pipeline_config,
+                   table_files: Optional[List[str]] = None) -> Tuple[bool, Optional[str], int]:
         """Load a single table."""
         pass
 
@@ -46,7 +44,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
         self._pipeline_batch_id = batch_id
         logger.debug(f"Pipeline batch ID set: {batch_id}")
 
-    def load_table(self, database: Database, table_name: str, path_config: PathConfig, 
+    def load_table(self, database: Database, table_name: str, pipeline_config,
                    table_files: Optional[List[str]] = None, 
                    batch_id=None, subbatch_id=None) -> Tuple[bool, Optional[str], int]:
         """Load table using EnhancedUnifiedLoader with batch tracking."""
@@ -59,11 +57,11 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             loader = UnifiedLoader(database, self.config)
             
             # Check Parquet first (maintain existing priority)
-            parquet_file = path_config.conversion_path / f"{table_name}.parquet"
+            parquet_file = pipeline_config.get_conversion_path() / f"{table_name}.parquet"
             if parquet_file.exists():
                 # Centralized Parquet filtering
                 from ....core.utils.development_filter import DevelopmentFilter
-                dev_filter = DevelopmentFilter(self.config.etl)
+                dev_filter = DevelopmentFilter(self.config.pipeline.development)
 
                 if not dev_filter.check_blob_size_limit(parquet_file):
                     return True, "Skipped large file in development mode", 0
@@ -77,7 +75,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             elif table_files:
                 # Centralized CSV filtering
                 from ....core.utils.development_filter import DevelopmentFilter
-                dev_filter = DevelopmentFilter(self.config.etl)
+                dev_filter = DevelopmentFilter(self.config.pipeline.development)
 
                 # Apply table limit filtering first - keep as Path objects
                 file_paths = [Path(f) for f in table_files]
@@ -89,7 +87,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
 
                 logger.info(f"[LoadingStrategy] Loading {len(filtered_paths)} CSV files for table: {table_name}")
                 return self._load_csv_files(
-                    loader, table_info, path_config, filtered_paths, table_name,
+                    loader, table_info, pipeline_config, filtered_paths, table_name,
                     batch_id=batch_id, subbatch_id=subbatch_id
                 )
             
@@ -107,9 +105,9 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
         """
         try:
             # Get batch configuration from config
-            if hasattr(self.config, 'etl'):
-                batch_size = getattr(self.config.etl.loading, 'batch_size', 1000)
-                subbatch_size = getattr(self.config.etl, 'sub_batch_size', 500)
+            if hasattr(self.config, 'pipeline'):
+                batch_size = getattr(self.config.pipeline.loading, 'batch_size', 1000)
+                subbatch_size = getattr(self.config.pipeline.loading, 'sub_batch_size', 500)
             
             # Check file size and row count
             import polars as pl
@@ -165,7 +163,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             from .file_loader import FileLoader
             
             # Use UTF-8 for most CNPJ files, but FileLoader will auto-detect issues
-            encoding = getattr(self.config.etl, 'encoding', 'utf-8')
+            encoding = getattr(self.config.pipeline.data_source, 'encoding', 'utf-8')
             file_loader = FileLoader(str(file_path), encoding=encoding)
             
             logger.info(f"[LoadingStrategy] FileLoader detected format: {file_loader.get_format()}")
@@ -405,7 +403,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
         for file_path in file_paths:
             # file_path is already a Path object from the filtering
             if isinstance(file_path, str):
-                csv_file = path_config.extract_path / file_path
+                csv_file = path_config.get_extraction_path() / file_path
             else:
                 csv_file = file_path
             
@@ -536,7 +534,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
         else:
             logger.debug("No audit service available for manifest update")
 
-    def load_multiple_tables(self, database, table_to_files, path_config: PathConfig):
+    def load_multiple_tables(self, database, table_to_files, pipeline_config):
         """
         Load multiple tables with proper hierarchical batch tracking:
         - One table-level context contains all file processing for all tables
@@ -574,7 +572,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                     
                     # Process files using FileLoader batch processing
                     file_batch_result = self._process_file_batch_with_fileloader(
-                        database, table_name, zip_filename, csv_files, path_config
+                        database, table_name, zip_filename, csv_files, pipeline_config
                     )
                     
                     success, error, rows = file_batch_result
@@ -598,7 +596,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             return results
 
     def _process_file_batch_with_fileloader(self, database, table_name: str, zip_filename: str, 
-                                          csv_files: List[str], path_config: PathConfig) -> Tuple[bool, Optional[str], int]:
+                                          csv_files: List[str], pipeline_config) -> Tuple[bool, Optional[str], int]:
         """
         Process files using FileLoader batch processing with proper hierarchy.
         Each file creates its own batch/subbatch structure via FileLoader.
@@ -617,7 +615,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                 # Use FileLoader-based processing via load_table
                 # This will create proper File → Batch → Subbatch hierarchy
                 success, error, rows = self.load_table(
-                    database, table_name, path_config, [csv_file],
+                    database, table_name, pipeline_config, [csv_file],
                     batch_id=None,  # FileLoader will create its own batch hierarchy
                     subbatch_id=None
                 )
@@ -649,9 +647,9 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             return False, error_summary, total_processed_rows
 
     def _load_files_without_batch_tracking(self, database, table_name: str, 
-                                          csv_files: List[str], path_config: PathConfig) -> Tuple[bool, Optional[str], int]:
+                                          csv_files: List[str], pipeline_config) -> Tuple[bool, Optional[str], int]:
         """Fallback file loading without batch tracking."""
-        return self.load_table(database, table_name, path_config, csv_files)
+        return self.load_table(database, table_name, pipeline_config, csv_files)
 
     def _find_audit_id_for_file(self, table_name: str, filename: str) -> Optional[str]:
         """Find existing audit entry ID for a given table and filename."""
