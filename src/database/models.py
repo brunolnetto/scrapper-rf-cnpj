@@ -43,96 +43,98 @@ class SubbatchStatus(enum.Enum):
     SKIPPED = "SKIPPED"
 
 
-class AuditDBSchema(BaseModel, Generic[T]):
-    audi_id: str = Field(
+class TableIngestionManifestSchema(BaseModel, Generic[T]):
+    table_manifest_id: str = Field(
         default_factory=uuid4, description="Unique identifier for the audit entry."
     )
-    audi_table_name: str = Field(
+    table_name: str = Field(
         ..., description="Table name associated with the audit entry."
     )
-    audi_filenames: Optional[List[str]] = Field(
+    source_files: Optional[List[str]] = Field(
         None, description="List of files associated to given table."
     )
-    audi_file_size_bytes: Optional[float] = Field(
+    file_size_bytes: Optional[float] = Field(
         None, description="Total size of files respective to given table."
     )
-    audi_source_updated_at: Optional[datetime] = Field(
+    source_updated_at: Optional[datetime] = Field(
         None, description="Timestamp of the last source update."
     )
-    audi_created_at: Optional[datetime] = Field(
+    created_at: Optional[datetime] = Field(
         None, description="Timestamp of the audit entry creation."
     )
-    audi_downloaded_at: Optional[datetime] = Field(
+    downloaded_at: Optional[datetime] = Field(
         None, description="Timestamp of the audit entry download."
     )
-    audi_processed_at: Optional[datetime] = Field(
+    processed_at: Optional[datetime] = Field(
         None, description="Timestamp of the audit entry processing."
     )
-    audi_inserted_at: Optional[datetime] = Field(
+    inserted_at: Optional[datetime] = Field(
         ..., description="Timestamp of the audit entry insertion."
     )
-    audi_metadata: Optional[dict[str, Any]] = Field(
+    audit_metadata: Optional[dict[str, Any]] = Field(
         None, description="Metadata associated with the audit entry."
     )
-    audi_ingestion_year: int = Field(
+    ingestion_year: int = Field(
         default_factory=lambda: datetime.now().year, description="Year of ingestion (e.g., 2024)"
     )
-    audi_ingestion_month: int = Field(
+    ingestion_month: int = Field(
         default_factory=lambda: datetime.now().month, description="Month of ingestion (1-12)"
     )
 
     def to_audit_db(self) -> Any:
-        """Convert AuditDBSchema to AuditDB model."""
-        return AuditDB(
-            audi_id=self.audi_id,
-            audi_table_name=self.audi_table_name,
-            audi_filenames=self.audi_filenames,
-            audi_file_size_bytes=self.audi_file_size_bytes,
-            audi_source_updated_at=self.audi_source_updated_at,
-            audi_created_at=self.audi_created_at,
-            audi_downloaded_at=self.audi_downloaded_at,
-            audi_processed_at=self.audi_processed_at,
-            audi_inserted_at=self.audi_inserted_at,
-            audi_metadata=self.audi_metadata,
-            audi_ingestion_year=self.audi_ingestion_year,
-            audi_ingestion_month=self.audi_ingestion_month,
+        """Convert TableIngestionManifestSchema to TableIngestionManifest model."""
+        return TableIngestionManifest(
+            table_manifest_id=self.table_manifest_id,
+            table_name=self.table_name,
+            source_files=self.source_files,
+            file_size_bytes=self.file_size_bytes,
+            source_updated_at=self.source_updated_at,
+            created_at=self.created_at,
+            downloaded_at=self.downloaded_at,
+            processed_at=self.processed_at,
+            inserted_at=self.inserted_at,
+            audit_metadata=self.audit_metadata,
+            ingestion_year=self.ingestion_year,
+            ingestion_month=self.ingestion_month,
         )
 
 
 
-class AuditDB(AuditBase):
+class TableIngestionManifest(AuditBase):
     """
-    SQLAlchemy model for the audit table.
+    SQLAlchemy model for the table ingestion manifest.
+    Tracks high-level table processing metadata with proper temporal context.
     """
-    __tablename__ = "table_ingestion_manifest"
+    __tablename__ = "table_audit"
 
-    audi_id = Column(UUID(as_uuid=True), primary_key=True)
-    audi_table_name = Column(String(255), nullable=False)
-    audi_filenames = Column(JSON, nullable=False)
-    audi_file_size_bytes = Column(BigInteger, nullable=True)
-    audi_source_updated_at = Column(TIMESTAMP, nullable=True)
-    audi_created_at = Column(TIMESTAMP, nullable=True)
-    audi_downloaded_at = Column(TIMESTAMP, nullable=True)
-    audi_processed_at = Column(TIMESTAMP, nullable=True)
-    audi_inserted_at = Column(TIMESTAMP, nullable=True)
-    audi_metadata = Column(JSON, nullable=True)
-    audi_ingestion_year = Column(Integer, nullable=False, default=datetime.now().year)
-    audi_ingestion_month = Column(Integer, nullable=False, default=datetime.now().month)
+    table_manifest_id = Column(UUID(as_uuid=True), primary_key=True)
+    table_name = Column(String(255), nullable=False)
+    source_files = Column(JSON, nullable=False)
+    file_size_bytes = Column(BigInteger, nullable=True)
+    source_updated_at = Column(TIMESTAMP, nullable=True)
+    created_at = Column(TIMESTAMP, nullable=True)
+    downloaded_at = Column(TIMESTAMP, nullable=True)
+    processed_at = Column(TIMESTAMP, nullable=True)
+    inserted_at = Column(TIMESTAMP, nullable=True)
+    audit_metadata = Column(JSON, nullable=True)
+    ingestion_year = Column(Integer, nullable=False, default=datetime.now().year)
+    ingestion_month = Column(Integer, nullable=False, default=datetime.now().month)
     
-    # Relationship to manifest entries (one audit can have many manifest records)
-    manifests = relationship(
-            "AuditManifest",
-            back_populates="audit",
-            cascade="all, delete-orphan"
+    # Relationship to file manifests for this table
+    file_manifests = relationship(
+            "FileIngestionManifest",
+            back_populates="table_manifest",
+            cascade="all, delete-orphan",
+            foreign_keys="FileIngestionManifest.table_manifest_id"
         )
 
     @property
     def is_precedence_met(self) -> bool:
         previous_timestamps = [
-            self.audi_created_at,
-            self.audi_downloaded_at,
-            self.audi_processed_at,
-            self.audi_inserted_at,
+            self.created_at,
+            self.downloaded_at,
+            self.processed_at,
+            self.inserted_at,
         ]
         is_met = True
         and_map = lambda a, b: a and b
@@ -152,41 +154,39 @@ class AuditDB(AuditBase):
         return is_met
 
     def __get_pydantic_core_schema__(self):
-        return AuditDBSchema
+        return TableIngestionManifestSchema
 
     def __repr__(self):
-        source_updated_at = f"audi_source_updated_at={self.audi_source_updated_at}"
-        created_at = f"audi_created_at={self.audi_created_at}"
-        downloaded_at = f"audi_downloaded_at={self.audi_downloaded_at}"
-        processed_at = f"audi_processed_at={self.audi_processed_at}"
-        inserted_at = f"audi_inserted_at={self.audi_inserted_at}"
+        source_updated_at = f"source_updated_at={self.source_updated_at}"
+        created_at = f"created_at={self.created_at}"
+        downloaded_at = f"downloaded_at={self.downloaded_at}"
+        processed_at = f"processed_at={self.processed_at}"
+        inserted_at = f"inserted_at={self.inserted_at}"
         timestamps = f"{source_updated_at}, {created_at}, {downloaded_at}, {processed_at}, {inserted_at}"
-        table_name = f"audi_table_name={self.audi_table_name}"
-        file_size = f"audi_file_size_bytes={self.audi_file_size_bytes}"
-        filenames = f"audi_filenames={self.audi_filenames}"
-        temporal = f"ingestion_year={self.audi_ingestion_year}, ingestion_month={self.audi_ingestion_month}"
+        table_name = f"table_name={self.table_name}"
+        file_size = f"file_size_bytes={self.file_size_bytes}"
+        filenames = f"source_files={self.source_files}"
+        temporal = f"ingestion_year={self.ingestion_year}, ingestion_month={self.ingestion_month}"
         file_info = f"{table_name}, {filenames}, {file_size}, {temporal}"
-        args = f"audi_id={self.audi_id}, {file_info}, {timestamps}"
-        return f"AuditDB({args})"
+        args = f"table_manifest_id={self.table_manifest_id}, {file_info}, {timestamps}"
+        return f"TableIngestionManifest({args})"
 
 
 # Manifest table for loader ingestion events
-class AuditManifest(AuditBase):
+class FileIngestionManifest(AuditBase):
     """
-    SQLAlchemy model for the ingestion manifest table.
+    SQLAlchemy model for the file ingestion manifest table.
     Centralizes file-level ingestion metadata for loader/audit integration.
     """
-    __tablename__ = "file_ingestion_manifest"
+    __tablename__ = "file_audit"
 
     file_manifest_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    audit_id = Column(UUID(as_uuid=True), ForeignKey('table_ingestion_manifest.audi_id'), nullable=False)  # FIXED: Required audit_id
-    batch_id = Column(UUID(as_uuid=True), ForeignKey('batch_ingestion_manifest.batch_id'), nullable=True)
-    subbatch_id = Column(UUID(as_uuid=True), ForeignKey('subbatch_ingestion_manifest.subbatch_manifest_id'), nullable=True)
-    table_name = Column(String(100), nullable=True)
+    table_manifest_id = Column(UUID(as_uuid=True), ForeignKey('table_audit.table_manifest_id'), nullable=False)  # Primary link to table audit
+    table_name = Column(String(100), nullable=False)  # FIXED: Should not be nullable
     file_path = Column(Text, nullable=False)
     status = Column(String(64), nullable=False)
-    checksum = Column(Text, nullable=True)
-    filesize = Column(BigInteger, nullable=True)
+    checksum = Column(Text, nullable=True)  # FIXED: Nullable for chunk processing
+    filesize = Column(BigInteger, nullable=True)  # FIXED: Nullable for chunk processing
     rows_processed = Column(BigInteger, nullable=True)
     processed_at = Column(TIMESTAMP, nullable=True)
     error_message = Column(Text, nullable=True)  # Added: Store error messages
@@ -196,18 +196,15 @@ class AuditManifest(AuditBase):
         Index("idx_manifest_processed_at", "processed_at"),
         Index("idx_manifest_table_name", "table_name"),
         Index("idx_manifest_file_path", "file_path"),
-        Index("idx_manifest_batch_id", "batch_id"),
-        Index("idx_manifest_subbatch_id", "subbatch_id"),
+        Index("idx_manifest_table_manifest_id", "table_manifest_id"),
     )
 
-    # Foreign key relationships with explicit foreign_keys to avoid ambiguity
-    audit = relationship("AuditDB", back_populates="manifests")
-    batch = relationship("BatchIngestionManifest", back_populates="file_manifests", foreign_keys=[batch_id])
-    subbatch = relationship("SubbatchIngestionManifest", back_populates="file_manifests", foreign_keys=[subbatch_id])
+    # Foreign key relationships
+    table_manifest = relationship("TableIngestionManifest", back_populates="file_manifests", foreign_keys=[table_manifest_id])
 
     def __get_pydantic_core_schema__(self):
-        from ..core.schemas import AuditManifestSchema
-        return AuditManifestSchema
+        from ..core.schemas import FileIngestionManifestSchema
+        return FileIngestionManifestSchema
 
     def __repr__(self):
         error_msg = f", error='{self.error_message[:50]}...'" if self.error_message else ""
@@ -224,10 +221,11 @@ class BatchIngestionManifest(AuditBase):
     SQLAlchemy model for batch-level tracking in ETL processes.
     Tracks high-level batch execution for a single target table.
     """
-    __tablename__ = "batch_ingestion_manifest"
+    __tablename__ = "batch_audit"
 
     batch_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    file_manifest_id = Column(UUID(as_uuid=True), ForeignKey('file_ingestion_manifest.file_manifest_id'), nullable=True)  # ADDED: Reference to primary file manifest
+    file_manifest_id = Column(UUID(as_uuid=True), ForeignKey('file_audit.file_manifest_id'), nullable=False)  # Reference to source file
+    table_manifest_id = Column(UUID(as_uuid=True), ForeignKey('table_audit.table_manifest_id'), nullable=True)  # Reference to table (for backward compatibility)
     batch_name = Column(String(200), nullable=False)
     target_table = Column(String(100), nullable=False)  # Single table name
     status = Column(Enum(BatchStatus), nullable=False, default=BatchStatus.PENDING)
@@ -244,10 +242,10 @@ class BatchIngestionManifest(AuditBase):
         Index("idx_batch_primary_file_manifest", "file_manifest_id"),  # ADDED: Index for file manifest reference
     )
 
-    # Relationships with explicit foreign_keys to avoid ambiguity
+    # Relationships
     subbatches = relationship("SubbatchIngestionManifest", back_populates="batch", cascade="all, delete-orphan")
-    file_manifests = relationship("AuditManifest", back_populates="batch", cascade="all, delete-orphan", foreign_keys="AuditManifest.batch_id")
-    primary_file_manifest = relationship("AuditManifest", foreign_keys=[file_manifest_id], post_update=True)  # ADDED: Reference to primary file manifest
+    source_file = relationship("FileIngestionManifest", foreign_keys=[file_manifest_id])  # File that generated this batch
+    source_table = relationship("TableIngestionManifest", foreign_keys=[table_manifest_id])  # Original table reference
 
     def __repr__(self):
         return (
@@ -262,10 +260,10 @@ class SubbatchIngestionManifest(AuditBase):
     SQLAlchemy model for subbatch-level tracking in ETL processes.
     Tracks individual processing steps within a batch.
     """
-    __tablename__ = "subbatch_ingestion_manifest"
+    __tablename__ = "subbatch_audit"
 
     subbatch_manifest_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    batch_manifest_id = Column(UUID(as_uuid=True), ForeignKey('batch_ingestion_manifest.batch_id'), nullable=False)
+    batch_manifest_id = Column(UUID(as_uuid=True), ForeignKey('batch_audit.batch_id'), nullable=False)
     table_name = Column(String(100), nullable=False)
     status = Column(Enum(SubbatchStatus), nullable=False, default=SubbatchStatus.PENDING)
     started_at = Column(TIMESTAMP, nullable=False, default=datetime.now)
@@ -286,9 +284,6 @@ class SubbatchIngestionManifest(AuditBase):
 
     # Relationship to parent batch
     batch = relationship("BatchIngestionManifest", back_populates="subbatches")
-    
-    # Relationship to file manifests
-    file_manifests = relationship("AuditManifest", back_populates="subbatch", cascade="all, delete-orphan")
 
     def __repr__(self):
         return (

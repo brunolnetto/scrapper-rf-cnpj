@@ -117,14 +117,14 @@ class MemoryMonitor:
     def get_available_memory_budget(self) -> float:
         """Get remaining memory budget in MB considering baseline."""
         usage_above_baseline = self.get_memory_usage_above_baseline()
-        return max(0.0, self.config.max_memory_mb - usage_above_baseline)
+        return max(0.0, self.config.memory_limit_mb - usage_above_baseline)
 
     def get_memory_pressure_level(self) -> float:
         """Get memory pressure as a ratio (0.0 = no pressure, 1.0 = at limit)."""
         usage_above_baseline = self.get_memory_usage_above_baseline()
-        if self.config.max_memory_mb <= 0:
+        if self.config.memory_limit_mb <= 0:
             return 0.0
-        return min(1.0, usage_above_baseline / self.config.max_memory_mb)
+        return min(1.0, usage_above_baseline / self.config.memory_limit_mb)
 
     def is_memory_pressure_high(self) -> bool:
         """Check if memory pressure is above cleanup threshold."""
@@ -133,7 +133,7 @@ class MemoryMonitor:
     def is_memory_limit_exceeded(self) -> bool:
         """Check if memory usage exceeds the configured limit above baseline."""
         usage_above_baseline = self.get_memory_usage_above_baseline()
-        return usage_above_baseline > self.config.max_memory_mb
+        return usage_above_baseline > self.config.memory_limit_mb
 
     def should_prevent_processing(self) -> bool:
         """
@@ -223,7 +223,7 @@ class MemoryMonitor:
             "baseline_mb": self.baseline_snapshot.process_rss_mb if self.baseline_snapshot else 0,
             "current_process_mb": current.process_rss_mb,
             "usage_above_baseline_mb": usage_above_baseline,
-            "configured_limit_mb": self.config.max_memory_mb,
+            "configured_limit_mb": self.config.memory_limit_mb,
             "budget_remaining_mb": budget_remaining,
             "pressure_level": pressure,
             "system_available_mb": current.system_available_mb,
@@ -624,7 +624,7 @@ def convert_csvs_to_parquet(
         return
 
     logger.info(f"🚀 Starting conversion of {len(audit_map)} tables")
-    logger.info(f"Configuration: {config.max_memory_mb}MB memory limit above baseline")
+    logger.info(f"Configuration: {config.memory_limit_mb}MB memory limit above baseline")
 
     # Enhanced system info logging
     try:

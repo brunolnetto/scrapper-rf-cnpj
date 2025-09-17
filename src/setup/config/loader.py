@@ -193,7 +193,9 @@ class ConfigLoader:
             row_group_size=int(os.getenv("ETL_CONVERSION_ROW_GROUP_SIZE", os.getenv("ETL_ROW_GROUP_SIZE", "100000"))),
             flush_threshold=int(os.getenv("ETL_CONVERSION_FLUSH_THRESHOLD", "10")),
             auto_fallback=os.getenv("ETL_CONVERSION_AUTO_FALLBACK", "true").lower() == "true",
-            row_estimation_factor=int(os.getenv("ETL_CONVERSION_ROW_ESTIMATION_FACTOR", "8000"))
+            row_estimation_factor=int(os.getenv("ETL_CONVERSION_ROW_ESTIMATION_FACTOR", "8000")),
+            cleanup_threshold_ratio=float(os.getenv("ETL_CONVERSION_CLEANUP_THRESHOLD_RATIO", "0.8")),
+            baseline_buffer_mb=int(os.getenv("ETL_CONVERSION_BASELINE_BUFFER_MB", "256"))
         )
         
         # Load loading config

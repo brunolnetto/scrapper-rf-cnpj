@@ -2,11 +2,12 @@ from typing import List, Optional
 from datetime import datetime
 from pathlib import Path
 from uuid import UUID
+import os
 
 # Import new services
 from ..setup.logging import logger
 from ..setup.config import ConfigurationService, AppConfig
-from ..database.models import AuditDB, MainBase, AuditBase
+from ..database.models import TableIngestionManifest, MainBase, AuditBase
 from .interfaces import Pipeline
 
 
@@ -80,23 +81,23 @@ class ReceitaCNPJPipeline(Pipeline):
         from ..setup.base import init_database
 
         logger.info(
-            f"Initializing main database: {self.config.databases['main'].database_name}"
+            f"Initializing main database: {self.config.pipeline.database.database_name}"
         )
-        self._database = init_database(self.config.databases["main"], MainBase)
+        self._database = init_database(self.config.pipeline.database, MainBase)
 
         logger.info(
-            f"Creating tables in main database: {self.config.databases['main'].database_name}"
+            f"Creating tables in main database: {self.config.pipeline.database.database_name}"
         )
         self._database.create_tables()
 
         # Initialize audit database for audit records
         logger.info(
-            f"Initializing audit database: {self.config.databases['audit'].database_name}"
+            f"Initializing audit database: {self.config.audit.database.database_name}"
         )
-        audit_db = init_database(self.config.databases["audit"], AuditBase)
+        audit_db = init_database(self.config.audit.database, AuditBase)
 
         logger.info(
-            f"Creating tables in audit database: {self.config.databases['audit'].database_name}"
+            f"Creating tables in audit database: {self.config.audit.database.database_name}"
         )
         audit_db.create_tables()
         self._audit_service = AuditService(audit_db, self.config)
@@ -110,7 +111,7 @@ class ReceitaCNPJPipeline(Pipeline):
 
     def _start_batch_tracking(self, target_table: Optional[str] = None) -> UUID:
         """Start batch tracking for the pipeline execution."""
-        if not self.config.batch_config.enabled:
+        if not hasattr(self.config.pipeline, 'loading') or not self.config.pipeline.loading:
             return None
             
         self._batch_name = self._generate_batch_name()
@@ -127,7 +128,7 @@ class ReceitaCNPJPipeline(Pipeline):
 
     def _complete_batch_tracking(self, success: bool = True) -> None:
         """Complete batch tracking for the pipeline execution."""
-        if not self.config.batch_config.enabled or not self._current_batch_id:
+        if not hasattr(self.config.pipeline, 'loading') or not self.config.pipeline.loading or not self._current_batch_id:
             return
             
         logger.info(f"Completing batch tracking: {self._batch_name} (success={success})")
@@ -180,7 +181,7 @@ class ReceitaCNPJPipeline(Pipeline):
             logger.error(f"Failed to scrape data using discovery service: {e}")
             return []
 
-    def fetch_audit_data(self) -> List[AuditDB]:
+    def fetch_audit_data(self) -> List[TableIngestionManifest]:
         files_info = self.scrap_data()
 
         audits = self.audit_service.create_audits_from_files(files_info)
@@ -201,19 +202,28 @@ class ReceitaCNPJPipeline(Pipeline):
         return audits
 
     def download_and_extract(self, audits) -> None:
-        year_ = self.config.etl.year
-        month_ = self.config.etl.month
-        files = self.config.urls.get_files_url(year_, month_)
-
+        # Get the period URL for downloading files
+        period = self.discovery_service.find_period(
+            year=self.config.pipeline.year,
+            month=self.config.pipeline.month
+        )
+        
+        if not period:
+            raise ValueError(f"Period {self.config.pipeline.year}-{self.config.pipeline.month:02d} not found")
+        
+        # Ensure temporal directories exist before downloading
+        self.config.pipeline.ensure_temporal_directories_exist(self.config.year, self.config.month)
+        
+        # Use the period URL as the base URL for downloading
         self.file_downloader.download_and_extract(
             audits,
-            files,
-            str(self.config.pipeline.paths.download),
-            str(self.config.pipeline.paths.extraction),
+            period.url,  # Pass the period URL, not FileInfo objects
+            str(self.config.pipeline.get_temporal_download_path(self.config.year, self.config.month)),
+            str(self.config.pipeline.get_temporal_extraction_path(self.config.year, self.config.month)),
             parallel=self.config.pipeline.is_parallel,
         )
 
-    def retrieve_data(self) -> List[AuditDB]:
+    def retrieve_data(self) -> List[TableIngestionManifest]:
         audits = self.fetch_audit_data()
 
         if audits:
@@ -227,8 +237,8 @@ class ReceitaCNPJPipeline(Pipeline):
         from ..utils.misc import makedir
         from .services.conversion.service import convert_csvs_to_parquet_smart
 
-        num_workers = self.config.etl.parallel_workers
-        output_dir = Path(self.config.pipeline.data_sink.paths.conversion)
+        num_workers = self.config.pipeline.conversion.workers
+        output_dir = self.config.pipeline.get_temporal_conversion_path(self.config.year, self.config.month)
 
         makedir(output_dir)
 
@@ -254,7 +264,7 @@ class ReceitaCNPJPipeline(Pipeline):
         dev_filter = DevelopmentFilter(self.config)
         dev_filter.log_conversion_summary(audit_map)
 
-        extract_path = Path(self.config.pipeline.data_sink.paths.extraction)
+        extract_path = self.config.pipeline.get_temporal_extraction_path(self.config.year, self.config.month)
 
         convert_csvs_to_parquet_smart(audit_map, extract_path, output_dir)
         logger.info(f"Parquet conversion completed. Files saved to: {output_dir}")
@@ -263,44 +273,109 @@ class ReceitaCNPJPipeline(Pipeline):
 
     def create_audit_metadata_from_existing_csvs(self) -> Optional[AuditMetadata]:
         """
-        Create audit metadata from existing CSV files in EXTRACTED_FILES directory.
+        Create audit metadata from existing files (CSV or Parquet) in extraction/conversion directories.
 
         This reuses the existing audit metadata infrastructure but creates synthetic
-        entries that point to existing CSV files instead of downloaded/extracted ones.
+        entries that point to existing files instead of downloaded/extracted ones.
+        Priority: Parquet files (converted) > CSV files (extracted)
 
         Returns:
-            AuditMetadata: Compatible audit metadata for existing CSV files, or None if no files found
+            AuditMetadata: Compatible audit metadata for existing files, or None if no files found
         """
-        from pathlib import Path
         from ..core.constants import TABLES_INFO_DICT
         from ..core.schemas import AuditMetadata
-        from ..database.models import AuditDBSchema
+        from ..database.models import TableIngestionManifestSchema
         from datetime import datetime
         from uuid import uuid4
 
-        extract_path = Path(self.config.pipeline.data_sink.paths.extraction)
-        if not extract_path.exists():
+        # Check conversion directory first (Parquet files) - higher priority
+        conversion_path = self.config.pipeline.get_temporal_conversion_path(self.config.year, self.config.month)
+        parquet_files = []
+        if conversion_path.exists():
+            parquet_files = list(conversion_path.glob("*.parquet"))
+            logger.info(f"Found {len(parquet_files)} Parquet files in {conversion_path}")
+
+        # Check extraction directory for CSV files - fallback
+        extract_path = self.config.pipeline.get_temporal_extraction_path(self.config.year, self.config.month)
+        csv_files = []
+        if extract_path.exists():
+            csv_files = self._detect_csv_files(extract_path)
+            logger.info(f"Found {len(csv_files)} CSV files in {extract_path}")
+        else:
             logger.warning(f"Extract path does not exist: {extract_path}")
+
+        # Prioritize Parquet files over CSV files
+        if parquet_files:
+            logger.info(f"Using {len(parquet_files)} Parquet files for loading (preferred format)")
+            return self._create_audit_metadata_from_parquet_files(parquet_files, conversion_path)
+        elif csv_files:
+            logger.info(f"Using {len(csv_files)} CSV files for loading (fallback format)")
+            return self._create_audit_metadata_from_csv_files(csv_files, extract_path)
+        else:
+            logger.warning("No files found in conversion or extraction directories")
             return None
 
-        # Get all CSV files in extract directory using robust detection
-        csv_files = self._detect_csv_files(extract_path)
+    def _create_audit_metadata_from_parquet_files(self, parquet_files: List[Path], base_path: Path) -> Optional[AuditMetadata]:
+        """Create audit metadata for Parquet files."""
+        from ..core.constants import TABLES_INFO_DICT
+        from ..core.schemas import AuditMetadata
+        from ..database.models import TableIngestionManifestSchema
+        from datetime import datetime
+        from uuid import uuid4
 
-        if not csv_files:
-            logger.warning(f"No CSV files found in: {extract_path}")
+        # Development mode filtering
+        if self.config.is_development_mode():
+            from ..core.utils.development_filter import DevelopmentFilter
+            dev_filter = DevelopmentFilter(self.config)
+            original_count = len(parquet_files)
+            parquet_files = [f for f in parquet_files if dev_filter.check_blob_size_limit(f)]
+            dev_filter.log_simple_filtering(original_count, len(parquet_files), "Parquet files")
+
+        # Map Parquet files to table names (e.g., cnae.parquet -> cnae)
+        tablename_to_files = {}
+        for parquet_file in parquet_files:
+            table_name = parquet_file.stem  # Remove .parquet extension
+            if table_name in TABLES_INFO_DICT:
+                # Create synthetic zip filename for consistency
+                synthetic_zip = f"{table_name.title()}.zip"
+                tablename_to_files[table_name] = {synthetic_zip: [parquet_file.name]}
+                logger.debug(f"Mapped Parquet file: {parquet_file.name} -> table '{table_name}'")
+            else:
+                logger.debug(f"Skipping unknown table: {table_name} (from {parquet_file.name})")
+
+        if not tablename_to_files:
+            logger.warning("No valid table mappings found for Parquet files")
             return None
 
-        logger.info(f"Found {len(csv_files)} CSV files in {extract_path}")
+        # Create audit metadata entries
+        audit_list = []
+        for table_name, zip_to_files in tablename_to_files.items():
+            for zip_filename, file_list in zip_to_files.items():
+                audit_entry = TableIngestionManifestSchema(
+                    table_name=table_name,
+                    source_files=[zip_filename],
+                    processed_at=datetime.now(),
+                    inserted_at=None  # Will be set during loading
+                )
+                audit_list.append(audit_entry)
 
-        # Development mode filtering - filter CSV files by size
+        logger.info(f"Created audit metadata for {len(audit_list)} table(s) from Parquet files")
+        return AuditMetadata(audit_list=audit_list, tablename_to_zipfile_to_files=tablename_to_files)
+
+    def _create_audit_metadata_from_csv_files(self, csv_files: List[Path], base_path: Path) -> Optional[AuditMetadata]:
+        """Create audit metadata for CSV files (original implementation)."""
+        from ..core.constants import TABLES_INFO_DICT
+        from ..core.schemas import AuditMetadata  
+        from ..database.models import TableIngestionManifestSchema
+        from datetime import datetime
+        from uuid import uuid4
+
+        # Development mode filtering
         if self.config.is_development_mode():
             from ..core.utils.development_filter import DevelopmentFilter
             dev_filter = DevelopmentFilter(self.config)
             original_count = len(csv_files)
-
             csv_files = [f for f in csv_files if dev_filter.check_blob_size_limit(f)]
-
-            # Log filtering summary
             dev_filter.log_simple_filtering(original_count, len(csv_files), "CSV files")
 
         for csv_file in csv_files:
@@ -335,15 +410,15 @@ class ReceitaCNPJPipeline(Pipeline):
         # Create a minimal audit list for compatibility
         audit_list = []
         for table_name in tablename_to_files.keys():
-            synthetic_audit = AuditDBSchema(
-                audi_id=str(uuid4()),  # Generate a proper UUID string
-                audi_table_name=table_name,
-                audi_filenames=["synthetic_conversion"],  # Fake filename for compatibility
-                audi_file_size_bytes=0.0,  # Not relevant for convert-only
-                audi_source_updated_at=datetime.now(),
-                audi_processed_at=None,
-                audi_inserted_at=datetime.now(),  # Required field
-                audi_metadata={"convert_only": True}
+            synthetic_audit = TableIngestionManifestSchema(
+                table_manifest_id=str(uuid4()),  # Generate a proper UUID string
+                table_name=table_name,
+                source_files=["synthetic_conversion"],  # Fake filename for compatibility
+                file_size_bytes=0.0,  # Not relevant for convert-only
+                source_updated_at=datetime.now(),
+                processed_at=None,
+                inserted_at=datetime.now(),  # Required field
+                audit_metadata={"convert_only": True}
             )
             audit_list.append(synthetic_audit)
         
@@ -398,12 +473,16 @@ class ReceitaCNPJPipeline(Pipeline):
         year = kwargs.get('year')
         month = kwargs.get('month')
         if year:
-            self.config.etl.year = int(year)
+            self.config._year = int(year)
         if month:
-            self.config.pipeline.month = int(month)
+            self.config._month = int(month)
         
-        extract_path = str(self.config.pipeline.data_sink.paths.extraction)
-        download_path = str(self.config.pipeline.data_sink.paths.download)
+        # Use temporal paths for the current processing period
+        download_path = str(self.config.pipeline.get_temporal_download_path(self.config.year, self.config.month))
+        extract_path = str(self.config.pipeline.get_temporal_extraction_path(self.config.year, self.config.month))
+        
+        # Ensure temporal directories exist
+        self.config.pipeline.ensure_temporal_directories_exist(self.config.year, self.config.month)
 
         # No longer create umbrella batch - individual table batches will be created
         try:
@@ -413,7 +492,7 @@ class ReceitaCNPJPipeline(Pipeline):
                 audit_metadata = self.audit_service.create_audit_metadata(audits, download_path)
 
                 # Remove downloaded files
-                if self.config.etl.delete_files:
+                if self.config.pipeline.delete_files:
                     remove_folder(download_path)
 
                 # Convert to Parquet
@@ -431,7 +510,7 @@ class ReceitaCNPJPipeline(Pipeline):
             logger.error(f"Pipeline execution failed: {e}")
             raise
         finally:
-            if self.config.etl.delete_files:
+            if self.config.pipeline.delete_files:
                 remove_folder(extract_path)
 
     def _detect_csv_files(self, extract_path: Path) -> List[Path]:

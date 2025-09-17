@@ -31,7 +31,7 @@ class DownloadOnlyStrategy:
             audits = pipeline.retrieve_data()
             if audits:
                 logger.info(f"[DOWNLOAD-ONLY] Successfully downloaded {len(audits)} files")
-                logger.info(f"[DOWNLOAD-ONLY] Files saved to: {config_service.pipeline.data_sink.paths.download}")
+                logger.info(f"[DOWNLOAD-ONLY] Files saved to: {str(config_service.pipeline.get_temporal_download_path(config_service.year, config_service.month))}")
             else:
                 logger.warning("[DOWNLOAD-ONLY] No files were downloaded")
             return audits
@@ -140,7 +140,7 @@ class DownloadAndConvertStrategy:
                 return None
             
             # Create audit metadata and convert to Parquet
-            download_path = str(config_service.pipeline.data_sink.paths.download)
+            download_path = str(config_service.pipeline.get_temporal_download_path(config_service.year, config_service.month))
             audit_metadata = pipeline.audit_service.create_audit_metadata(audits, download_path)
             conversion_path = pipeline.convert_to_parquet(audit_metadata)
             
@@ -148,7 +148,7 @@ class DownloadAndConvertStrategy:
             logger.info(f"[DOWNLOAD-CONVERT] Files converted to Parquet and saved to: {conversion_path}")
             
             # Cleanup downloaded files if configured
-            if config_service.etl.delete_files:
+            if config_service.pipeline.delete_files:
                 from ..utils.misc import remove_folder
                 remove_folder(download_path)
                 logger.info("[DOWNLOAD-CONVERT] Cleaned up downloaded files")
@@ -216,7 +216,7 @@ class FullETLStrategy:
         year = int(year)
         
         # Database configuration
-        main_db_config = config_service.databases['main']
+        main_db_config = config_service.pipeline.database
         user = main_db_config.user
         password = main_db_config.password
         host = main_db_config.host
@@ -283,7 +283,7 @@ class FullETLStrategy:
 
     def _clear_production_tables(self, config_service: ConfigurationService, table_names=None):
         """Clear (truncate) production tables before upsert."""
-        main_db_config = config_service.databases['main']
+        main_db_config = config_service.pipeline.database
         prod_db = main_db_config.database_name
         
         logger.info(f"[CLEAR] Clearing tables in production database '{prod_db}'...")
@@ -320,11 +320,11 @@ class FullETLStrategy:
             # Find corresponding audit entry
             table_audit = [
                 audit for audit in audit_metadata.audit_list
-                if audit.audi_table_name == table_name
+                if audit.table_name == table_name
             ]
             
             if len(table_audit) == 1:
-                table_audit[0].audi_metadata = {"row_count": row_count_metadata}
+                table_audit[0].audit_metadata = {"row_count": row_count_metadata}
                 logger.info(f"[METRICS] Table '{table_name}': {initial_count} -> {final_count} (diff: {change:+d})")
             else:
                 logger.warning(f"[METRICS] Expected 1 audit entry for table '{table_name}', found {len(table_audit)}")

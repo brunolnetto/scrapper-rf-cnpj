@@ -57,7 +57,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             loader = UnifiedLoader(database, self.config)
             
             # Check Parquet first (maintain existing priority)
-            parquet_file = pipeline_config.get_conversion_path() / f"{table_name}.parquet"
+            parquet_file = pipeline_config.get_temporal_conversion_path(self.config.year, self.config.month) / f"{table_name}.parquet"
             if parquet_file.exists():
                 # Centralized Parquet filtering
                 from ....core.utils.development_filter import DevelopmentFilter
@@ -403,7 +403,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
         for file_path in file_paths:
             # file_path is already a Path object from the filtering
             if isinstance(file_path, str):
-                csv_file = path_config.get_extraction_path() / file_path
+                csv_file = path_config.get_temporal_extraction_path(self.config.year, self.config.month) / file_path
             else:
                 csv_file = file_path
             
@@ -425,8 +425,8 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
     
     def _create_manifest_entry(self, file_path: str, table_name: str, status: str,
                               rows_processed: Optional[int] = None, error_msg: Optional[str] = None,
-                              batch_id=None, subbatch_id=None, audit_id: Optional[str] = None) -> Optional[str]:
-        """Create manifest entry for loaded file with batch tracking."""
+                              table_manifest_id: Optional[str] = None) -> Optional[str]:
+        """Create manifest entry for loaded file."""
         # Log error messages if provided
         if error_msg and status in ["FAILED", "ERROR"]:
             logger.error(f"[LoadingStrategy] Error processing {file_path}: {error_msg}")
@@ -437,19 +437,27 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                 import json
                 file_path_obj = Path(file_path)
                 
-                # Find audit_id if not provided
-                if not audit_id:
-                    audit_id = self._find_audit_id_for_file(table_name, file_path_obj.name)
-                    if not audit_id:
-                        logger.warning(f"No audit entry found for table {table_name}, file {file_path_obj.name}")
-                        # Create a placeholder audit entry (this is a fallback)
-                        audit_id = self._create_placeholder_audit_entry(table_name, file_path_obj.name)
+                # Find table_manifest_id if not provided
+                if not table_manifest_id:
+                    table_manifest_id = self._find_table_audit_for_file(table_name, file_path_obj.name)
+                    if not table_manifest_id:
+                        logger.warning(f"No table audit entry found for table {table_name}, file {file_path_obj.name}")
+                        # Create a placeholder table audit entry (this is a fallback)
+                        table_manifest_id = self._create_placeholder_table_audit_entry(table_name, file_path_obj.name)
                 
                 # Calculate file info if file exists
                 checksum = None
                 filesize = None
                 if file_path_obj.exists():
                     filesize = file_path_obj.stat().st_size
+                    # Calculate SHA256 checksum
+                    import hashlib
+                    with open(file_path_obj, 'rb') as f:
+                        file_hash = hashlib.sha256()
+                        # Read file in chunks to handle large files efficiently
+                        for chunk in iter(lambda: f.read(4096), b""):
+                            file_hash.update(chunk)
+                        checksum = file_hash.hexdigest()
                 
                 # Create structured JSON notes
                 notes_data = {
@@ -468,25 +476,17 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                     
                 if error_msg:
                     notes_data["processing"]["error_message"] = error_msg
-                    
-                if batch_id:
-                    notes_data["tracking"] = {
-                        "batch_id": str(batch_id),
-                        "subbatch_id": str(subbatch_id) if subbatch_id else None
-                    }
                 
-                # Create manifest entry with batch tracking and audit reference
+                # Create manifest entry with table audit reference
                 manifest_id = self.audit_service.create_file_manifest(
                     str(file_path_obj),
                     status=status,
-                    audit_id=audit_id,  # FIXED: Required audit_id reference
+                    table_manifest_id=table_manifest_id,  # Table audit reference
                     checksum=checksum,
                     filesize=filesize,
                     rows=rows_processed,
                     table_name=table_name,
-                    notes=json.dumps(notes_data),
-                    batch_id=batch_id,
-                    subbatch_id=subbatch_id
+                    notes=json.dumps(notes_data)
                 )
                 return manifest_id
                         
@@ -651,25 +651,36 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
         """Fallback file loading without batch tracking."""
         return self.load_table(database, table_name, pipeline_config, csv_files)
 
-    def _find_audit_id_for_file(self, table_name: str, filename: str) -> Optional[str]:
-        """Find existing audit entry ID for a given table and filename."""
+    def _find_table_audit_for_file(self, table_name: str, filename: str) -> Optional[str]:
+        """Find existing table audit entry ID for a given table, preferring real files over placeholders."""
         try:
             from sqlalchemy import text
             
-            # Query audit table to find matching entry
-            query = '''
-            SELECT audi_id FROM table_ingestion_manifest 
-            WHERE audi_table_name = :table_name 
-            AND audi_filenames::jsonb ? :filename
-            ORDER BY audi_created_at DESC 
+            # First try to find a real audit entry (non-placeholder) for this table
+            query_real = '''
+            SELECT table_manifest_id FROM table_audit 
+            WHERE table_name = :table_name 
+            AND (audit_metadata IS NULL OR audit_metadata::jsonb ->> 'placeholder' IS NULL OR audit_metadata::jsonb ->> 'placeholder' != 'true')
+            ORDER BY created_at DESC 
             LIMIT 1
             '''
             
             with self.audit_service.database.engine.connect() as conn:
-                result = conn.execute(text(query), {
-                    'table_name': table_name,
-                    'filename': filename
-                })
+                result = conn.execute(text(query_real), {'table_name': table_name})
+                row = result.fetchone()
+                if row:
+                    return str(row[0])
+            
+            # Fallback: look for any audit entry for this table (including placeholders)
+            query_any = '''
+            SELECT table_manifest_id FROM table_audit 
+            WHERE table_name = :table_name 
+            ORDER BY created_at DESC 
+            LIMIT 1
+            '''
+            
+            with self.audit_service.database.engine.connect() as conn:
+                result = conn.execute(text(query_any), {'table_name': table_name})
                 row = result.fetchone()
                 return str(row[0]) if row else None
                 
@@ -677,28 +688,28 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             logger.error(f"Failed to find audit ID for {table_name}/{filename}: {e}")
             return None
 
-    def _create_placeholder_audit_entry(self, table_name: str, filename: str) -> str:
-        """Create a placeholder audit entry for files without existing audit records."""
+    def _create_placeholder_table_audit_entry(self, table_name: str, filename: str) -> str:
+        """Create a placeholder table audit entry for files without existing audit records."""
         try:
-            from ....database.models import AuditDB
+            from ....database.models import TableIngestionManifest
             from datetime import datetime
             import uuid
             
-            # Create minimal audit entry
-            audit_id = str(uuid.uuid4())
-            placeholder_audit = AuditDB(
-                audi_id=audit_id,
-                audi_table_name=table_name,
-                audi_filenames=[filename],
-                audi_file_size_bytes=0,
-                audi_source_updated_at=datetime.now(),
-                audi_created_at=datetime.now(),
-                audi_downloaded_at=None,
-                audi_processed_at=None,
-                audi_inserted_at=datetime.now(),
-                audi_ingestion_year=datetime.now().year,
-                audi_ingestion_month=datetime.now().month,
-                audi_metadata={"placeholder": True, "created_for": "file_manifest_requirement"}
+            # Create minimal table audit entry
+            table_manifest_id = str(uuid.uuid4())
+            placeholder_audit = TableIngestionManifest(
+                table_manifest_id=table_manifest_id,
+                table_name=table_name,
+                source_files=[filename],
+                file_size_bytes=0,
+                source_updated_at=datetime.now(),
+                created_at=datetime.now(),
+                downloaded_at=None,
+                processed_at=None,
+                inserted_at=datetime.now(),
+                ingestion_year=self.config.year,
+                ingestion_month=self.config.month,
+                audit_metadata={"placeholder": True, "created_for": "file_manifest_requirement"}
             )
             
             # Insert placeholder audit entry
@@ -706,9 +717,9 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                 session.add(placeholder_audit)
                 session.commit()
                 
-            logger.info(f"Created placeholder audit entry {audit_id} for {table_name}/{filename}")
-            return audit_id
+            logger.info(f"Created placeholder table audit entry {table_manifest_id} for {table_name}/{filename}")
+            return table_manifest_id
             
         except Exception as e:
-            logger.error(f"Failed to create placeholder audit entry for {table_name}/{filename}: {e}")
-            raise RuntimeError(f"Cannot create file manifest without audit_id: {e}")
+            logger.error(f"Failed to create placeholder table audit entry for {table_name}/{filename}: {e}")
+            raise RuntimeError(f"Cannot create file manifest without table_manifest_id: {e}")

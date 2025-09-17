@@ -399,8 +399,8 @@ class FederalRevenueDiscoveryService:
             # Use Brazil timezone as default, or try to get from config
             timezone_str = 'America/Sao_Paulo'
             try:
-                if hasattr(self.config, 'etl') and hasattr(self.config.etl, 'timezone'):
-                    timezone_str = self.config.etl.timezone
+                if hasattr(self.config, 'pipeline') and hasattr(self.config.pipeline.data_source, 'timezone'):
+                    timezone_str = self.config.pipeline.data_source.timezone
             except AttributeError:
                 pass  # Use default timezone
                 

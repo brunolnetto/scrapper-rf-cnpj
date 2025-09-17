@@ -5,10 +5,10 @@ from uuid import UUID
 
 # Use absolute import instead of relative import
 try:
-    from database.models import AuditDBSchema
+    from database.models import TableIngestionManifestSchema
 except ImportError:
     # Fallback for when running from different contexts
-    from ..database.models import AuditDBSchema
+    from ..database.models import TableIngestionManifestSchema
 
 
 class FileInfo(BaseModel):
@@ -40,13 +40,13 @@ class FileGroupInfo(BaseModel):
         return (end - start).days
 
 
-class AuditManifestSchema(BaseModel):
+class FileIngestionManifestSchema(BaseModel):
     """
-    Pydantic schema for AuditManifest model.
+    Pydantic schema for FileIngestionManifest model.
     Represents file-level ingestion metadata.
     """
     manifest_id: Optional[UUID] = None
-    audit_id: Optional[UUID] = None
+    table_manifest_id: Optional[UUID] = None
     table_name: Optional[str] = None
     file_path: str
     status: str
@@ -65,7 +65,7 @@ class AuditMetadata(BaseModel):
     Represents the metadata for auditing purposes.
     """
 
-    audit_list: List[AuditDBSchema]
+    audit_list: List[TableIngestionManifestSchema]
     tablename_to_zipfile_to_files: Dict[str, Dict[str, List[str]]]
 
     def __repr__(self) -> str:

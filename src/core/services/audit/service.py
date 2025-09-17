@@ -21,7 +21,7 @@ from sqlalchemy import text
 from ....setup.logging import logger
 from ....setup.config import get_config, ConfigurationService, AppConfig
 from ....database.engine import Database
-from ....database.models import AuditDB, BatchIngestionManifest, SubbatchIngestionManifest, BatchStatus, SubbatchStatus
+from ....database.models import TableIngestionManifest, BatchIngestionManifest, SubbatchIngestionManifest, BatchStatus, SubbatchStatus
 from ....database.utils.models import create_audits, create_audit_metadata, insert_audit
 from ...schemas import AuditMetadata, FileInfo, FileGroupInfo
 from ...utils.schemas import create_file_groups
@@ -77,7 +77,7 @@ class AuditService:
             batch_id: UUID for the created batch
         """
         # Use config's temporal context if enabled and not provided
-        if self.config.batch_config.enable_temporal_context:
+        if hasattr(self.config, 'year') and hasattr(self.config, 'month'):
             year = year or self.config.year
             month = month or self.config.month
             batch_name_with_context = f"{batch_name} ({year}-{month:02d})"
@@ -140,7 +140,7 @@ class AuditService:
         finally:
             self._cleanup_subbatch_context(subbatch_id)
 
-    def create_audits_from_files(self, files_info: List[FileInfo]) -> List[AuditDB]:
+    def create_audits_from_files(self, files_info: List[FileInfo]) -> List[TableIngestionManifest]:
         """
         Create audit records from a list of FileInfo objects.
         Filters for relevant files and groups them appropriately.
@@ -150,7 +150,7 @@ class AuditService:
         return self._create_audits_from_groups(file_groups)
 
     def create_audit_metadata(
-        self, audits: List[AuditDB], download_folder: str
+        self, audits: List[TableIngestionManifest], download_folder: str
     ) -> AuditMetadata:
         """
         Create audit metadata from audit records and download folder.
@@ -170,13 +170,13 @@ class AuditService:
                 # ✅ SUCCESS: Create manifest entry for successful insertion
                 self._create_audit_manifest_entry(audit, "success")
 
-                logger.info(f"Successfully inserted audit for {audit.audi_table_name}")
+                logger.info(f"Successfully inserted audit for {audit.table_name}")
 
             except Exception as e:
                 # ❌ FAILURE: Create manifest entry for failed insertion
                 self._create_audit_manifest_entry(audit, "failed", error_message=str(e))
 
-                logger.error(f"Failed to insert audit for {audit.audi_table_name}: {e}")
+                logger.error(f"Failed to insert audit for {audit.table_name}: {e}")
 
     def _create_audit_manifest_entry(self, audit, status: str, error_message: str = None) -> None:
         """Create a manifest entry for an audit insertion attempt.
@@ -188,8 +188,8 @@ class AuditService:
         try:
             # Extract file information from audit
             file_path = "unknown"
-            if hasattr(audit, 'audi_filenames') and audit.audi_filenames:
-                file_path = audit.audi_filenames[0]  # Use first filename
+            if hasattr(audit, 'source_files') and audit.source_files:
+                file_path = audit.source_files[0]  # Use first filename
 
             # Skip ZIP files - they shouldn't be in file_ingestion_manifests
             # Only processed CSV/Parquet files should be tracked there
@@ -198,17 +198,17 @@ class AuditService:
                 return
 
             # Extract table name
-            table_name = getattr(audit, 'audi_table_name', 'unknown')
+            table_name = getattr(audit, 'table_name', 'unknown')
 
             # Extract file size if available
-            filesize = getattr(audit, 'audi_file_size_bytes', 0)
+            filesize = getattr(audit, 'file_size_bytes', 0)
             if filesize is None:
                 filesize = 0
 
-            # Extract audit ID (required for manifest entry)
-            audit_id = getattr(audit, 'audi_id', None)
-            if not audit_id:
-                logger.error(f"Audit entry missing audi_id: {audit}")
+            # Extract audit ID (table manifest ID)
+            table_manifest_id = getattr(audit, 'table_manifest_id', None)
+            if not table_manifest_id:
+                logger.error(f"Audit entry missing table_manifest_id: {audit}")
                 return
 
             # Generate manifest ID for audit entry
@@ -224,9 +224,7 @@ class AuditService:
                 filesize=int(filesize),
                 rows_processed=0,  # Audit insertions don't have row counts
                 processed_at=datetime.now(),
-                audit_id=str(audit_id),  # FIXED: Required audit_id reference
-                batch_id=None,  # Audit entries don't have batch_id
-                subbatch_id=None  # Audit entries don't have subbatch_id
+                table_manifest_id=str(table_manifest_id)  # Table audit reference
             )
 
             logger.debug(f"Created {status} manifest entry for audit: {table_name}")
@@ -247,33 +245,52 @@ class AuditService:
 
     def _create_audits_from_groups(
         self, file_groups: List[FileGroupInfo]
-    ) -> List[AuditDB]:
+    ) -> List[TableIngestionManifest]:
         """
         Create audit records from file groups using the database with ETL temporal context.
         """
         return create_audits(self.database, file_groups, 
-                            etl_year=self.config.etl.year, 
-                            etl_month=self.config.etl.month)
+                            etl_year=self.config.year, 
+                            etl_month=self.config.month)
 
     # Manifest tracking capabilities
-    def create_file_manifest(self, file_path: str, status: str, audit_id: str, 
+    def _find_table_audit(self, table_name: str) -> Optional[str]:
+        """Find the most recent table audit ID for a given table name."""
+        try:
+            from sqlalchemy import text
+            
+            query = '''
+            SELECT table_manifest_id FROM table_audit 
+            WHERE table_name = :table_name 
+            ORDER BY created_at DESC 
+            LIMIT 1
+            '''
+            
+            with self.database.engine.connect() as conn:
+                result = conn.execute(text(query), {'table_name': table_name})
+                row = result.fetchone()
+                return row[0] if row else None
+                
+        except Exception as e:
+            logger.error(f"Failed to find table audit for {table_name}: {e}")
+            return None
+
+    def create_file_manifest(self, file_path: str, status: str, table_manifest_id: str, 
                            checksum: Optional[str] = None, filesize: Optional[int] = None, 
                            rows: Optional[int] = None, table_name: str = 'unknown', 
-                           notes: Optional[str] = None, batch_id: Optional[str] = None, 
-                           subbatch_id: Optional[str] = None) -> str:
+                           notes: Optional[str] = None) -> str:
         """
-        Create manifest entry for processed file with required audit reference.
+        Create manifest entry for processed file with required table audit reference.
         
         Args:
             file_path: Path to the file
             status: Processing status
-            audit_id: Required audit entry ID for referential integrity
+            table_manifest_id: Required table audit entry ID for referential integrity
             checksum: Optional file checksum
             filesize: Optional file size in bytes
             rows: Optional number of rows processed
             table_name: Table name associated with the file
             notes: Optional processing notes
-            subbatch_id: Optional subbatch ID for batch tracking
             
         Returns:
             manifest_id: The created manifest ID
@@ -281,6 +298,11 @@ class AuditService:
 
         try:
             file_path_obj = Path(file_path)
+
+            # Find the table audit ID for this table
+            table_manifest_id = self._find_table_audit(table_name)
+            if not table_manifest_id:
+                logger.warning(f"No table audit found for table {table_name}, file processing may be incomplete")
 
             # Calculate file metadata if not provided
             if file_path_obj.exists():
@@ -320,15 +342,9 @@ class AuditService:
                 filesize=filesize,
                 rows_processed=rows,
                 processed_at=datetime.now(),
-                audit_id=audit_id,  # FIXED: Required audit_id reference
-                notes=notes,
-                batch_id=batch_id,
-                subbatch_id=subbatch_id
+                table_manifest_id=table_manifest_id,  # Primary table audit reference
+                notes=notes
             )
-
-            # Collect metrics for batch tracking (no additional DB calls)
-            if subbatch_id:
-                self._collect_file_event(subbatch_id, status, rows or 0, filesize or 0)
 
             logger.info(f"Manifest entry created for {file_path_obj.name} (status: {status})")
             return manifest_id
@@ -362,19 +378,19 @@ class AuditService:
     def _insert_manifest_entry(self, manifest_id: str, table_name: str, file_path: str, status: str,
                               checksum: Optional[str], filesize: Optional[int],
                               rows_processed: Optional[int], processed_at: datetime, 
-                              audit_id: str, notes: Optional[str] = None, batch_id: Optional[str] = None, 
-                              subbatch_id: Optional[str] = None) -> None:
-        """Insert manifest entry into database with required audit_id and optional batch/subbatch references."""
+                              table_manifest_id: str, notes: Optional[str] = None) -> None:
+        """Insert manifest entry into database with required table_manifest_id."""
         try:
             insert_query = '''
             INSERT INTO file_ingestion_manifest
-            (file_manifest_id, table_name, file_path, status, checksum, filesize, rows_processed, processed_at, audit_id, notes, batch_id, subbatch_id)
-            VALUES (:file_manifest_id, :table_name, :file_path, :status, :checksum, :filesize, :rows_processed, :processed_at, :audit_id, :notes, :batch_id, :subbatch_id)
+            (file_manifest_id, table_manifest_id, table_name, file_path, status, checksum, filesize, rows_processed, processed_at, notes)
+            VALUES (:file_manifest_id, :table_manifest_id, :table_name, :file_path, :status, :checksum, :filesize, :rows_processed, :processed_at, :notes)
             '''
 
             with self.database.engine.begin() as conn:
                 conn.execute(text(insert_query), {
                     'file_manifest_id': manifest_id,
+                    'table_manifest_id': table_manifest_id,
                     'table_name': table_name,
                     'file_path': file_path,
                     'status': status,
@@ -382,10 +398,7 @@ class AuditService:
                     'filesize': filesize,
                     'rows_processed': rows_processed,
                     'processed_at': processed_at,
-                    'audit_id': audit_id,
-                    'notes': notes,
-                    'batch_id': batch_id,
-                    'subbatch_id': subbatch_id
+                    'notes': notes
                 })
 
         except Exception as e:

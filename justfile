@@ -50,12 +50,11 @@ clean: clean-logs clean-cache
 
 # Creates a virtual environment
 env:
-    pip install virtualenv
-    virtualenv .venv
+    uv venv
 
 # Installs the python requirements
 install:
-    uv pip install -r requirements.txt
+    uv sync
 
 # Searchs for a token in the code
 search token:

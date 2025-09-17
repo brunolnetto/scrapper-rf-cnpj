@@ -14,7 +14,7 @@ from ...setup.config.models import (
 )
             
 from ...setup.logging import logger
-from ...database.models import AuditDB
+from ...database.models import TableIngestionManifest
 
 class DevelopmentFilter:
     """Development mode filtering with comprehensive controls."""
@@ -40,7 +40,7 @@ class DevelopmentFilter:
             self.development = dev_config
             self.is_enabled = dev_config.enabled
 
-    def filter_audits_by_size(self, audits: List[AuditDB]) -> List[AuditDB]:
+    def filter_audits_by_size(self, audits: List[TableIngestionManifest]) -> List[TableIngestionManifest]:
         """Filter audits by file size limit."""
         if not self.is_enabled:
             return audits
@@ -48,7 +48,7 @@ class DevelopmentFilter:
         file_size_limit_bytes = self.development.file_size_limit_mb * 1024 * 1024
         filtered_audits = [
             audit for audit in audits
-            if audit.audi_file_size_bytes < file_size_limit_bytes
+            if audit.file_size_bytes < file_size_limit_bytes
         ]
 
         if len(filtered_audits) != len(audits):
@@ -59,7 +59,7 @@ class DevelopmentFilter:
         
         return filtered_audits
 
-    def filter_audits_by_table_limit(self, audits: List[AuditDB]) -> List[AuditDB]:
+    def filter_audits_by_table_limit(self, audits: List[TableIngestionManifest]) -> List[TableIngestionManifest]:
         """Filter audits by max files per table with strategic selection."""
         if not self.is_enabled:
             return audits
@@ -69,7 +69,7 @@ class DevelopmentFilter:
         
         # Group audits by table
         for audit in audits:
-            table_name = audit.audi_table_name
+            table_name = audit.table_name
             if table_name not in table_groups:
                 table_groups[table_name] = []
             table_groups[table_name].append(audit)

@@ -59,7 +59,6 @@ __all__ = [
     "LoadingConfig",
     "DownloadConfig",
     "DevelopmentConfig",
-    "ETLConfig",
     "PathConfig",
     "URLConfig",
     "BatchConfig",

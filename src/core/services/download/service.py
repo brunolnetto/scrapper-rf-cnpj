@@ -5,7 +5,7 @@ from datetime import datetime
 from tenacity import retry, stop_after_attempt, wait_exponential
 from tqdm import tqdm
 
-from ....database.models import AuditDB
+from ....database.models import TableIngestionManifest
 from ....setup.logging import logger
 from ....setup.config import ConfigurationService, AppConfig
 from ....utils.misc import get_file_size, get_max_workers
@@ -20,7 +20,7 @@ class FileDownloadService:
             self.max_workers = max_workers
         elif config and hasattr(config, 'etl'):
             # Use nested download config instead of legacy property
-            self.max_workers = config.etl.download.workers
+            self.max_workers = config.pipeline.download.workers
         else:
             self.max_workers = get_max_workers()
             
@@ -32,12 +32,12 @@ class FileDownloadService:
 
     def download_and_extract(
         self,
-        audits: List[AuditDB],
+        audits: List[TableIngestionManifest],
         url: str,
         download_path: str,
         extract_path: str,
         parallel: bool = True,
-    ) -> List[AuditDB]:
+    ) -> List[TableIngestionManifest]:
         """
         Download and extract all files for the given audits.
         Preserves retry, progress bar, and parallelization features.
@@ -79,7 +79,7 @@ class FileDownloadService:
         error_count = 0
         error_basefiles = []
         total_count = len(audits)
-        audits_ = sorted(audits, key=lambda x: x.audi_file_size_bytes)
+        audits_ = sorted(audits, key=lambda x: x.file_size_bytes)
         for index, audit in enumerate(audits_):
             try:
                 audit = self._download_and_extract_files(
@@ -87,10 +87,10 @@ class FileDownloadService:
                 )
             except OSError as e:
                 logger.error(
-                    f"Error downloading or extracting file for table {audit.audi_table_name}: {e}"
+                    f"Error downloading or extracting file for table {audit.table_name}: {e}"
                 )
                 error_count += 1
-                error_basefiles.append(audit.audi_table_name)
+                error_basefiles.append(audit.table_name)
             finally:
                 logger.info(
                     f"({index}/{total_count}) files processed. {error_count} errors: {error_basefiles}"
@@ -100,7 +100,7 @@ class FileDownloadService:
     def _download_and_extract_files(
         self, audit, url, download_path, extract_path, has_progress_bar
     ):
-        for zip_filename in audit.audi_filenames:
+        for zip_filename in audit.source_files:
             audit = self._download_and_extract_file(
                 audit, url, zip_filename, download_path, extract_path, has_progress_bar
             )
@@ -127,7 +127,7 @@ class FileDownloadService:
     )
     def _download_zipfile(
         self,
-        audit: AuditDB,
+        audit: TableIngestionManifest,
         url: str,
         zip_filename: str,
         download_path: str,
@@ -156,8 +156,8 @@ class FileDownloadService:
                 if has_progress_bar and progress:
                     progress.close()
             logger.info(f"Successfully downloaded file: {zip_filename}")
-            audit.audi_downloaded_at = datetime.now()
-            audit.audi_file_size_bytes = get_file_size(local_filename)
+            audit.downloaded_at = datetime.now()
+            audit.file_size_bytes = get_file_size(local_filename)
         except Exception as e:
             logger.error(f"Error downloading {zip_filename}: {e}")
             if has_progress_bar and progress:
@@ -180,5 +180,5 @@ class FileDownloadService:
             logger.error(f"Error extracting file {zip_filename}: {e}")
         finally:
             logger.info(f"Finished file extraction of file {zip_filename}.")
-            audit.audi_processed_at = datetime.now()
+            audit.processed_at = datetime.now()
             return audit

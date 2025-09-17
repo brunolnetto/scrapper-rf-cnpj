@@ -123,6 +123,18 @@ class ConversionConfig(BaseModel):
         le=50000,
         description="Estimation factor for memory usage per row (bytes)"
     )
+    cleanup_threshold_ratio: float = Field(
+        default=0.8,
+        ge=0.1,
+        le=1.0,
+        description="Memory pressure ratio threshold for triggering cleanup (0.0-1.0)"
+    )
+    baseline_buffer_mb: int = Field(
+        default=256,
+        ge=64,
+        le=1024,
+        description="Memory buffer in MB to maintain above baseline for system stability"
+    )
     
     @field_validator('chunk_size')
     @classmethod
@@ -374,9 +386,35 @@ class PathConfig(BaseModel):
         """Get conversion path as Path object."""
         return Path(self.conversion)
     
+    # Temporal path methods
+    def get_temporal_download_path(self, year: int, month: int) -> Path:
+        """Get download path with temporal period subdirectory."""
+        period_suffix = f"{year:04d}-{month:02d}"
+        return Path(self.download) / period_suffix
+    
+    def get_temporal_extraction_path(self, year: int, month: int) -> Path:
+        """Get extraction path with temporal period subdirectory."""
+        period_suffix = f"{year:04d}-{month:02d}"
+        return Path(self.extraction) / period_suffix
+    
+    def get_temporal_conversion_path(self, year: int, month: int) -> Path:
+        """Get conversion path with temporal period subdirectory."""
+        period_suffix = f"{year:04d}-{month:02d}"
+        return Path(self.conversion) / period_suffix
+    
     def ensure_directories_exist(self):
         """Create directories if they don't exist."""
         for path in [self.get_download_path(), self.get_extraction_path(), self.get_conversion_path()]:
+            path.mkdir(parents=True, exist_ok=True)
+    
+    def ensure_temporal_directories_exist(self, year: int, month: int):
+        """Create temporal directories for a specific period if they don't exist."""
+        temporal_paths = [
+            self.get_temporal_download_path(year, month),
+            self.get_temporal_extraction_path(year, month),
+            self.get_temporal_conversion_path(year, month)
+        ]
+        for path in temporal_paths:
             path.mkdir(parents=True, exist_ok=True)
 
 
@@ -408,9 +446,26 @@ class DataSinkConfig(BaseModel):
         """Get conversion path as Path object."""
         return self.paths.get_conversion_path()
     
+    # Delegated temporal path methods
+    def get_temporal_download_path(self, year: int, month: int) -> Path:
+        """Get download path with temporal period subdirectory."""
+        return self.paths.get_temporal_download_path(year, month)
+    
+    def get_temporal_extraction_path(self, year: int, month: int) -> Path:
+        """Get extraction path with temporal period subdirectory."""
+        return self.paths.get_temporal_extraction_path(year, month)
+    
+    def get_temporal_conversion_path(self, year: int, month: int) -> Path:
+        """Get conversion path with temporal period subdirectory."""
+        return self.paths.get_temporal_conversion_path(year, month)
+    
     def ensure_directories_exist(self):
         """Create directories if they don't exist."""
         self.paths.ensure_directories_exist()
+    
+    def ensure_temporal_directories_exist(self, year: int, month: int):
+        """Create temporal directories for a specific period if they don't exist."""
+        self.paths.ensure_temporal_directories_exist(year, month)
 
 
 class PipelineConfig(BaseModel):
@@ -458,9 +513,26 @@ class PipelineConfig(BaseModel):
         """Get conversion path as Path object."""
         return self.data_sink.get_conversion_path()
     
+    # Temporal utility methods (delegated to DataSinkConfig)
+    def get_temporal_download_path(self, year: int, month: int) -> Path:
+        """Get download path with temporal period subdirectory."""
+        return self.data_sink.get_temporal_download_path(year, month)
+    
+    def get_temporal_extraction_path(self, year: int, month: int) -> Path:
+        """Get extraction path with temporal period subdirectory."""
+        return self.data_sink.get_temporal_extraction_path(year, month)
+    
+    def get_temporal_conversion_path(self, year: int, month: int) -> Path:
+        """Get conversion path with temporal period subdirectory."""
+        return self.data_sink.get_temporal_conversion_path(year, month)
+    
     def ensure_directories_exist(self):
         """Create directories if they don't exist."""
         self.data_sink.ensure_directories_exist()
+    
+    def ensure_temporal_directories_exist(self, year: int, month: int):
+        """Create temporal directories for a specific period if they don't exist."""
+        self.data_sink.ensure_temporal_directories_exist(year, month)
     
     @model_validator(mode='after')
     def validate_config_relationships(self):
@@ -565,6 +637,10 @@ class AppConfig(BaseModel):
         """Check if in development mode."""
         return (self.environment == Environment.DEVELOPMENT or 
                 self.pipeline.development.enabled)
+    
+    def get_max_files_per_blob(self) -> int:
+        """Get maximum files per blob from development configuration."""
+        return self.pipeline.development.max_files_per_blob
     
     @model_validator(mode='after')
     def validate_app_config(self):

@@ -4,81 +4,11 @@ import argparse
 import sys
 
 # Find time bottleneck between calls
+from .setup.config import get_config
 from .core.orchestrator import PipelineOrchestrator
 from .core.etl import ReceitaCNPJPipeline
 from .core.strategies import StrategyFactory
-from .setup.config import get_config, ConfigurationService
-from .setup.logging import logger
-
-# Constants
-MIN_VALID_YEAR = 2000  # Minimum year for CNPJ data processing
-
-
-def validate_cli_arguments(args):
-    """
-    Validate CLI argument combinations to ensure valid strategy selection.
-    
-    Args:
-        args: Parsed command line arguments
-        
-    Raises:
-        SystemExit: If invalid argument combinations are detected
-    """
-    errors = []
-
-    # Check for valid strategy combinations
-
-    # Regular strategy combinations
-    strategy_key = (args.download, args.convert, args.load)
-    valid_combinations = [
-        (True, False, False),  # Download Only 
-        (False, True, False),  # Convert Only
-        (False, False, True),  # Load Only
-        (True, True, False),   # Download and Convert 
-        (True, False, True),   # Download and Load 
-        (False, True, True),   # Convert and Load
-        (True, True, True),    # Full ETL
-    ]
-
-    if strategy_key not in valid_combinations:
-        errors.append(
-            f"Invalid strategy combination: download={args.download}, convert={args.convert}, load={args.load}. "
-            "Valid combinations: 100 (download only), 110 (download+convert), 101 (download+load), 010 (convert only), "
-            "001 (load only), 011 (convert+load), 111 (full ETL)."
-        )
-
-    # Check for database-related options with non-database modes
-    if not args.load and (args.full_refresh or args.clear_tables):
-        errors.append(
-            "Cannot use --full-refresh or --clear-tables without --load flag. "
-            "Database operations require loading data to database."
-        )
-
-    are_both_not_none=args.year is not None and args.month is not None
-    are_both_none=args.year is None and args.month is None
-    both_or_none=not( are_both_not_none or are_both_none )
-    
-    if both_or_none:
-        errors.append("Either both or none of year and month must be specified.")
-    
-    if are_both_not_none:
-        valid_temporal_values=args.year <= MIN_VALID_YEAR or (args.month < 1 or args.month > 12)    
-        if valid_temporal_values:
-            errors.append(f"Invalid year (must be > {MIN_VALID_YEAR}) or month (1-12) specified.")
-
-    # Either both or none must be specified. If none, set to current
-    if not args.year and not args.month:
-        from datetime import datetime
-        args.year = datetime.now().year
-        args.month = datetime.now().month
-
-    # Log errors and exit if any found
-    if errors:
-        logger.error("❌ Invalid CLI argument combinations detected:")
-        for i, error in enumerate(errors, 1):
-            logger.error(f"  {i}. {error}")
-        logger.error("Use --help for valid usage examples.")
-        sys.exit(1)
+from .core.utils.cli import validate_cli_arguments
 
 def main():
     parser = argparse.ArgumentParser(
@@ -86,10 +16,13 @@ def main():
         epilog="""
 Examples:
   %(prog)s --download --year 2024 --month 12
-    Download files only (100)
+    Download files only for specific period (100)
+  
+  %(prog)s --download
+    Download files for latest available period (100)
   
   %(prog)s --download --convert --year 2024 --month 12
-    Download and convert to Parquet (110)
+    Download and convert to Parquet for specific period (110)
   
   %(prog)s --convert
     Convert existing CSV files to Parquet (010)
@@ -101,18 +34,22 @@ Examples:
     Convert existing CSV files and load to database (011)
   
   %(prog)s --download --convert --load --year 2024 --month 12
-    Full ETL pipeline (111)
+    Full ETL pipeline for specific period (111)
+    
+  %(prog)s
+    Full ETL pipeline for latest available period (111)
     
   %(prog)s --download --convert --load --full-refresh --year 2024 --month 12
     Full ETL with database table refresh
 
 Valid combinations: 100, 110, 101, 010, 001, 011 or 111
-Default (no flags): Full ETL (111)
+Default (no flags): Full ETL (111) for latest available period
+If no year/month specified: Auto-discovers latest available period from Federal Revenue
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--year", type=int, help="Year to process")
-    parser.add_argument("--month", type=int, help="Month to process")
+    parser.add_argument("--year", type=int, help="Year to process (if not specified, discovers latest available)")
+    parser.add_argument("--month", type=int, help="Month to process (if not specified, discovers latest available)")
     
     # Pipeline step flags
     step_group = parser.add_argument_group('Pipeline steps (combine as needed)')

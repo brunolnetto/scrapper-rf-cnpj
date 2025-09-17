@@ -8,7 +8,7 @@ from typing import Dict, Any, Optional
 from dataclasses import dataclass
 import math
 
-from ...setup.config import ETLConfig
+from ...setup.config import AppConfig
 from ...setup.logging import logger
 
 try:
@@ -35,9 +35,9 @@ class BatchConfiguration:
 class BatchSizeOptimizer:
     """Calculates optimal batch sizes for different scenarios."""
     
-    def __init__(self, config: ETLConfig):
+    def __init__(self, config: AppConfig):
         self.config = config
-        self.loading_config = config.loading
+        self.loading_config = config.pipeline.loading
         
         # Table-specific adjustment factors
         self.table_adjustments = {
@@ -169,7 +169,7 @@ class BatchSizeOptimizer:
             parallel_workers = min(2, self.loading_config.parallel_workers)
         
         # Estimate number of batches
-        estimated_rows = file_size_mb * self.config.etl.row_estimation_factor
+        estimated_rows = file_size_mb * self.config.pipeline.conversion.row_estimation_factor
         estimated_batches = max(1, math.ceil(estimated_rows / optimal_size))
         
         optimization_reason = " + ".join(optimization_reasons) if optimization_reasons else "default"

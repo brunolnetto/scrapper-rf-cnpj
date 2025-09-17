@@ -27,8 +27,21 @@ class PipelineOrchestrator:
         year = kwargs.get('year')
         month = kwargs.get('month')
         if year is not None or month is not None:
-            self.config_service.set_temporal_config(year=year, month=month)
-            logger.info(f"Configured temporal settings: year={self.config_service.get_year()}, month={self.config_service.get_month()}")
+            # Set temporal config directly on the config object
+            if year is not None:
+                self.config_service._year = year
+                # Also update pipeline config if it exists
+                if hasattr(self.config_service, 'pipeline'):
+                    self.config_service.pipeline.year = year
+            if month is not None:
+                self.config_service._month = month
+                # Also update pipeline config if it exists
+                if hasattr(self.config_service, 'pipeline'):
+                    self.config_service.pipeline.month = month
+            
+            current_year = getattr(self.config_service, '_year', year)
+            current_month = getattr(self.config_service, '_month', month)
+            logger.info(f"Configured temporal settings: year={current_year}, month={current_month}")
         
         # Validate pipeline configuration
         if not self.pipeline.validate_config():

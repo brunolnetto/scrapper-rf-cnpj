@@ -108,14 +108,14 @@ class DataLoadingService:
         # Update audit_metadata with insertion timestamps
         now = datetime.now()
         for audit in audit_metadata.audit_list:
-            result = results.get(audit.audi_table_name)
+            result = results.get(audit.table_name)
             if result and result[0]:  # success
-                audit.audi_inserted_at = now
-                logger.debug(f"Set audi_inserted_at for {audit.audi_table_name}: success with {result[2]} rows")
+                audit.inserted_at = now
+                logger.debug(f"Set inserted_at for {audit.table_name}: success with {result[2]} rows")
             else:
                 # Even if loading failed or had no changes, we processed it - set timestamp
-                audit.audi_inserted_at = now
+                audit.inserted_at = now
                 logger.warning(
-                    f"Setting audi_inserted_at despite issue with table {audit.audi_table_name}: {result[1] if result else 'No result'}"
+                    f"Setting inserted_at despite issue with table {audit.table_name}: {result[1] if result else 'No result'}"
                 )
         return audit_metadata
