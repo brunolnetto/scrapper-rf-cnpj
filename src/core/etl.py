@@ -1,12 +1,6 @@
 from typing import List, Optional
-import re
-from bs4 import BeautifulSoup
 from datetime import datetime
-import pytz
 from pathlib import Path
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from uuid import UUID
 
 # Import new services
@@ -37,8 +31,7 @@ class ReceitaCNPJPipeline(Pipeline):
 
         # Initialize file downloader and uploader (these are fast)
         self.file_downloader = FileDownloadService(config=config_service)
-        self.loading_strategy = DataLoadingStrategy(self.config)  # Use consolidated strategy
-        # Note: data_loader will be initialized when database is ready
+        self.loading_strategy = DataLoadingStrategy(self.config)
 
     @property
     def database(self):
@@ -68,6 +61,15 @@ class ReceitaCNPJPipeline(Pipeline):
                 audit_service=self.audit_service
             )
         return self._data_loader
+
+    @property
+    def discovery_service(self):
+        """Lazy discovery service initialization for Federal Revenue data periods."""
+        from .services.discovery.service import FederalRevenueDiscoveryService
+
+        if not hasattr(self, '_discovery_service') or self._discovery_service is None:
+            self._discovery_service = FederalRevenueDiscoveryService(self.config)
+        return self._discovery_service
 
     def _init_databases(self) -> None:
         """Initialize databases only when first accessed."""
@@ -142,70 +144,41 @@ class ReceitaCNPJPipeline(Pipeline):
         return self._current_batch_id
 
     def scrap_data(self) -> List[FileInfo]:
-        from ..utils.misc import convert_to_bytes
-
-        url = self.config.urls.get_files_url(self.config.pipeline.year, self.config.pipeline.month)
-
-        session = requests.Session()
-        retries = Retry(
-            total=5,
-            backoff_factor=2,
-            status_forcelist=[500, 502, 503, 504],
-            allowed_methods=["GET"]
-        )
-        session.mount("https://", HTTPAdapter(max_retries=retries))
-
+        """
+        Scrape data files for the configured year and month using discovery service.
+        
+        This method now uses the integrated discovery service instead of 
+        duplicating the scraping logic.
+        
+        Returns:
+            List of FileInfo objects for available files
+        """
         try:
-            resp = session.get(
-                url,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; CNPJ-Scraper/1.0)"},
-                timeout=30,
+            # Use discovery service to scrape files for the configured period
+            period_files = self.discovery_service.scrape_period_files(
+                year=self.config.pipeline.year,
+                month=self.config.pipeline.month
             )
-            resp.raise_for_status()
-        except requests.RequestException as e:
-            logger.error(f"Failed to fetch URL: {url}, error: {e}")
+            
+            # Convert PeriodFileInfo to FileInfo for compatibility
+            files_info = []
+            for period_file in period_files:
+                file_info = FileInfo(
+                    filename=period_file.filename,
+                    updated_at=period_file.updated_at,
+                    file_size=period_file.file_size
+                )
+                files_info.append(file_info)
+            
+            logger.info(f"Discovery service found {len(files_info)} files for {self.config.pipeline.year}-{self.config.pipeline.month:02d}")
+            return files_info
+            
+        except ValueError as e:
+            logger.error(f"Period not available: {e}")
             return []
-
-        page_items = BeautifulSoup(resp.content, "lxml")
-        table_rows = page_items.find_all("tr")
-
-        files_info = []
-        for row in table_rows:
-            filename_cell = row.find("a")
-            date_cell = row.find("td", text=lambda t: t and re.search(r"\d{4}-\d{2}-\d{2}", t))
-            size_cell = row.find(
-                "td",
-                text=lambda t: t and any(t.endswith(s) for s in ["K","M","G","T","P","E","Z","Y"])
-            )
-
-            if filename_cell and date_cell and size_cell:
-                filename = filename_cell.text.strip()
-                if filename.endswith(".zip"):
-                    updated_at = self._parse_date(date_cell.text.strip(), self.config.etl.timezone, filename)
-                    if not updated_at:
-                        continue
-
-                    file_info = FileInfo(
-                        filename=filename,
-                        updated_at=updated_at,
-                        file_size=convert_to_bytes(size_cell.text.strip()),
-                    )
-                    files_info.append(file_info)
-
-        return files_info
-
-    @staticmethod
-    def _parse_date(date_str: str, timezone: str, filename: str) -> Optional[datetime]:
-        try:
-            updated_at = datetime.strptime(date_str, "%Y-%m-%d %H:%M")
-            return (
-                pytz.timezone(timezone)
-                .localize(updated_at)
-                .replace(hour=0, minute=0, second=0, microsecond=0)
-            )
-        except ValueError:
-            logger.error(f"Error parsing date for file: {filename}")
-            return None
+        except Exception as e:
+            logger.error(f"Failed to scrape data using discovery service: {e}")
+            return []
 
     def fetch_audit_data(self) -> List[AuditDB]:
         files_info = self.scrap_data()
