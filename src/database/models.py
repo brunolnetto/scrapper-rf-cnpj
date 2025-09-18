@@ -224,8 +224,7 @@ class BatchIngestionManifest(AuditBase):
     __tablename__ = "batch_audit"
 
     batch_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    file_manifest_id = Column(UUID(as_uuid=True), ForeignKey('file_audit.file_manifest_id'), nullable=False)  # Reference to source file
-    table_manifest_id = Column(UUID(as_uuid=True), ForeignKey('table_audit.table_manifest_id'), nullable=True)  # Reference to table (for backward compatibility)
+    file_manifest_id = Column(UUID(as_uuid=True), ForeignKey('file_audit.file_manifest_id'), nullable=True)  # Reference to source file (optional for now)
     batch_name = Column(String(200), nullable=False)
     target_table = Column(String(100), nullable=False)  # Single table name
     status = Column(Enum(BatchStatus), nullable=False, default=BatchStatus.PENDING)
@@ -245,8 +244,6 @@ class BatchIngestionManifest(AuditBase):
     # Relationships
     subbatches = relationship("SubbatchIngestionManifest", back_populates="batch", cascade="all, delete-orphan")
     source_file = relationship("FileIngestionManifest", foreign_keys=[file_manifest_id])  # File that generated this batch
-    source_table = relationship("TableIngestionManifest", foreign_keys=[table_manifest_id])  # Original table reference
-
     def __repr__(self):
         return (
             f"BatchIngestionManifest(batch_id={self.batch_id}, batch_name={self.batch_name}, "
@@ -268,7 +265,6 @@ class SubbatchIngestionManifest(AuditBase):
     status = Column(Enum(SubbatchStatus), nullable=False, default=SubbatchStatus.PENDING)
     started_at = Column(TIMESTAMP, nullable=False, default=datetime.now)
     completed_at = Column(TIMESTAMP, nullable=True)
-    files_processed = Column(Integer, nullable=True, default=0)
     rows_processed = Column(BigInteger, nullable=True, default=0)
     description = Column(Text, nullable=True)
     error_message = Column(Text, nullable=True)
@@ -289,7 +285,7 @@ class SubbatchIngestionManifest(AuditBase):
         return (
             f"SubbatchIngestionManifest(subbatch_id={self.subbatch_manifest_id}, batch_id={self.batch_manifest_id}, "
             f"table_name={self.table_name}, status={self.status.value}, "
-            f"files_processed={self.files_processed}, rows_processed={self.rows_processed}, "
+            f"rows_processed={self.rows_processed}, "
             f"started_at={self.started_at}, completed_at={self.completed_at})"
         )
 

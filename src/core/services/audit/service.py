@@ -19,7 +19,7 @@ from threading import Lock
 from sqlalchemy import text
 
 from ....setup.logging import logger
-from ....setup.config import get_config, ConfigurationService, AppConfig
+from ....setup.config import get_config, ConfigurationService
 from ....database.engine import Database
 from ....database.models import TableIngestionManifest, BatchIngestionManifest, SubbatchIngestionManifest, BatchStatus, SubbatchStatus
 from ....database.utils.models import create_audits, create_audit_metadata, insert_audit
@@ -63,7 +63,9 @@ class AuditService:
 
     @contextmanager
     def batch_context(self, target_table: str, batch_name: str, 
-                     year: Optional[int] = None, month: Optional[int] = None) -> Generator[uuid.UUID, None, None]:
+                     year: Optional[int] = None, month: Optional[int] = None,
+                     file_manifest_id: Optional[str] = None, 
+                     table_manifest_id: Optional[str] = None) -> Generator[uuid.UUID, None, None]:
         """
         Enhanced batch context with temporal tracking and structured logging.
         
@@ -84,7 +86,9 @@ class AuditService:
         else:
             batch_name_with_context = batch_name
         
-        batch_id = self._start_batch(target_table, batch_name_with_context)
+        batch_id = self._start_batch(target_table, batch_name_with_context, 
+                                     file_manifest_id=file_manifest_id, 
+                                     table_manifest_id=table_manifest_id)
         
         try:
             logger.info(f"Starting batch processing for {target_table}", 
@@ -157,23 +161,31 @@ class AuditService:
         """
         return create_audit_metadata(audits, download_folder)
 
-    def insert_audits(self, audit_metadata: AuditMetadata) -> None:
+    def insert_audits(self, audit_metadata: AuditMetadata, create_file_manifests: bool = True) -> None:
         """
         Insert all audit records in audit_metadata into the database.
         Creates manifest entries for both successful and failed insertions.
+        
+        Args:
+            audit_metadata: Audit metadata with table information
+            create_file_manifests: If False, skip creating file manifest entries to avoid duplicates
+                                  when file processing will create its own manifests later
         """
         for audit in audit_metadata.audit_list:
             try:
                 # Attempt to insert the audit record
                 insert_audit(self.database, audit.to_audit_db())
 
-                # ✅ SUCCESS: Create manifest entry for successful insertion
-                self._create_audit_manifest_entry(audit, "success")
+                # ✅ SUCCESS: Create manifest entry for successful insertion (if enabled)
+                if create_file_manifests:
+                    self._create_audit_manifest_entry(audit, "success")
+                else:
+                    logger.debug(f"Skipping file manifest creation for {audit.table_name} (will be created during processing)")
 
                 logger.info(f"Successfully inserted audit for {audit.table_name}")
 
             except Exception as e:
-                # ❌ FAILURE: Create manifest entry for failed insertion
+                # ❌ FAILURE: Create manifest entry for failed insertion (always create for failures)
                 self._create_audit_manifest_entry(audit, "failed", error_message=str(e))
 
                 logger.error(f"Failed to insert audit for {audit.table_name}: {e}")
@@ -299,10 +311,11 @@ class AuditService:
         try:
             file_path_obj = Path(file_path)
 
-            # Find the table audit ID for this table
-            table_manifest_id = self._find_table_audit(table_name)
+            # Use provided table_manifest_id if available, otherwise find one
             if not table_manifest_id:
-                logger.warning(f"No table audit found for table {table_name}, file processing may be incomplete")
+                table_manifest_id = self._find_table_audit(table_name)
+                if not table_manifest_id:
+                    logger.warning(f"No table audit found for table {table_name}, file processing may be incomplete")
 
             # Calculate file metadata if not provided
             if file_path_obj.exists():
@@ -382,7 +395,7 @@ class AuditService:
         """Insert manifest entry into database with required table_manifest_id."""
         try:
             insert_query = '''
-            INSERT INTO file_ingestion_manifest
+            INSERT INTO file_audit
             (file_manifest_id, table_manifest_id, table_name, file_path, status, checksum, filesize, rows_processed, processed_at, notes)
             VALUES (:file_manifest_id, :table_manifest_id, :table_name, :file_path, :status, :checksum, :filesize, :rows_processed, :processed_at, :notes)
             '''
@@ -411,7 +424,7 @@ class AuditService:
 
             query = '''
             SELECT file_path, filename, status, checksum, filesize, rows_processed, processed_at
-            FROM file_ingestion_manifest
+            FROM file_audit
             WHERE filename = :filename
             ORDER BY processed_at DESC
             '''
@@ -433,7 +446,7 @@ class AuditService:
             # Get stored checksum
             with self.database.engine.connect() as conn:
                 result = conn.execute(text('''
-                    SELECT checksum FROM file_ingestion_manifest
+                    SELECT checksum FROM file_audit
                     WHERE file_path = :file_path
                     ORDER BY processed_at DESC LIMIT 1
                 '''), {'file_path': str(file_path_obj)})
@@ -471,7 +484,7 @@ class AuditService:
             if append:
                 with self.database.engine.connect() as conn:
                     result = conn.execute(text('''
-                        SELECT notes FROM file_ingestion_manifest
+                        SELECT notes FROM file_audit
                         WHERE file_path = :file_path
                         ORDER BY processed_at DESC LIMIT 1
                     '''), {'file_path': str(file_path_obj)})
@@ -489,11 +502,11 @@ class AuditService:
             # Update the notes
             with self.database.engine.begin() as conn:
                 conn.execute(text('''
-                    UPDATE file_ingestion_manifest
+                    UPDATE file_audit
                     SET notes = :notes, processed_at = :processed_at
                     WHERE file_path = :file_path
                     AND processed_at = (
-                        SELECT MAX(processed_at) FROM file_ingestion_manifest
+                        SELECT MAX(processed_at) FROM file_audit
                         WHERE file_path = :file_path
                     )
                 '''), {
@@ -506,6 +519,69 @@ class AuditService:
 
         except Exception as e:
             logger.error(f"Failed to update manifest notes for {file_path}: {e}")
+
+    def update_table_audit_after_conversion(self, table_name: str, processed_file_path: str, 
+                                          processing_metadata: dict = None) -> None:
+        """
+        Update table audit after file conversion to reference processed files instead of source files.
+        
+        Args:
+            table_name: Name of the table that was processed
+            processed_file_path: Path to the processed file (e.g., Parquet file)
+            processing_metadata: Optional metadata about the processing
+        """
+        try:
+            import json
+            from pathlib import Path
+            
+            processed_filename = Path(processed_file_path).name
+            
+            # Update table audit to reference processed file
+            with self.database.engine.begin() as conn:
+                # First, get the table audit for this table
+                result = conn.execute(text('''
+                    SELECT table_manifest_id FROM table_audit 
+                    WHERE table_name = :table_name
+                    ORDER BY created_at DESC 
+                    LIMIT 1
+                '''), {'table_name': table_name})
+                
+                row = result.fetchone()
+                if not row:
+                    logger.warning(f"No table audit found for {table_name}")
+                    return
+                
+                table_manifest_id = row[0]
+                
+                # Prepare metadata
+                metadata = processing_metadata or {}
+                metadata.update({
+                    "conversion_completed": True,
+                    "converted_file": processed_filename,
+                    "conversion_timestamp": datetime.now().isoformat()
+                })
+                
+                # Update the table audit
+                source_files_json = json.dumps([processed_filename])
+                metadata_json = json.dumps(metadata)
+                
+                conn.execute(text('''
+                    UPDATE table_audit 
+                    SET source_files = :source_files,
+                        audit_metadata = :metadata,
+                        processed_at = :processed_at
+                    WHERE table_manifest_id = :table_manifest_id
+                '''), {
+                    'source_files': source_files_json,
+                    'metadata': metadata_json,
+                    'processed_at': datetime.now(),
+                    'table_manifest_id': str(table_manifest_id)
+                })
+                
+                logger.info(f"Updated table audit for {table_name} to reference {processed_filename}")
+                
+        except Exception as e:
+            logger.error(f"Failed to update table audit after conversion for {table_name}: {e}")
 
     def update_file_manifest(self, manifest_id: str, status: str, 
                             rows_processed: Optional[int] = None, 
@@ -539,34 +615,41 @@ class AuditService:
             # Execute update
             with self.database.engine.begin() as conn:
                 conn.execute(text(f'''
-                    UPDATE file_ingestion_manifest 
+                    UPDATE file_audit 
                     SET {', '.join(update_fields)}
                     WHERE file_manifest_id = :manifest_id
                 '''), params)
                 
-            # Collect metrics for batch accumulation if this is a completion
-            if status in ['COMPLETED', 'FAILED'] and rows_processed is not None:
-                # Get subbatch_id for metrics collection
-                try:
-                    with self.database.engine.connect() as conn:
-                        result = conn.execute(text('''
-                            SELECT subbatch_id FROM file_ingestion_manifest
-                            WHERE file_manifest_id = :manifest_id
-                        '''), {'manifest_id': manifest_id})
-                        row = result.fetchone()
-                        if row and row[0]:
-                            subbatch_id = str(row[0])
-                            self._collect_file_event(subbatch_id, status, rows_processed or 0, 0)
-                            logger.debug(f"Collected file metrics: {status}, {rows_processed} rows")
-                except Exception as metrics_error:
-                    logger.warning(f"Failed to collect metrics for manifest {manifest_id}: {metrics_error}")
-                
+                # Collect metrics for batch accumulation if this is a completion
+                if status in ['COMPLETED', 'FAILED'] and rows_processed is not None:
+                    # Get subbatch_id for metrics collection through batch relationship
+                    try:
+                        with self.database.engine.connect() as conn:
+                            # Query chain: file_audit → batch_audit → subbatch_audit (latest subbatch)
+                            result = conn.execute(text('''
+                                SELECT s.subbatch_manifest_id 
+                                FROM file_audit f
+                                JOIN batch_audit b ON f.file_manifest_id = b.file_manifest_id
+                                JOIN subbatch_audit s ON b.batch_id = s.batch_manifest_id
+                                WHERE f.file_manifest_id = :manifest_id
+                                ORDER BY s.started_at DESC
+                                LIMIT 1
+                            '''), {'manifest_id': manifest_id})
+                            row = result.fetchone()
+                            if row and row[0]:
+                                subbatch_id = str(row[0])
+                                self.collect_file_processing_event(subbatch_id, status, rows_processed or 0, 0)
+                                logger.debug(f"Collected file metrics: {status}, {rows_processed} rows")
+                    except Exception as metrics_error:
+                        logger.debug(f"Could not collect metrics for manifest {manifest_id}: {metrics_error}")
+                        # This is not critical, so we just log it as debug
+                        
             logger.debug(f"Updated manifest {manifest_id} with status {status}")
             
         except Exception as e:
             logger.error(f"Failed to update file manifest {manifest_id}: {e}")
 
-    def _collect_file_event(self, subbatch_id: str, status: str, rows: int = 0, bytes_: int = 0) -> None:
+    def collect_file_processing_event(self, subbatch_id: str, status: str, rows: int = 0, bytes_: int = 0) -> None:
         """
         Collect file processing events for batch metrics (in-memory accumulation).
         No database operations - just accumulates metrics for later batch updates.
@@ -597,12 +680,15 @@ class AuditService:
             logger.debug(f"Failed to collect file event: {e}")  # Non-critical
 
     # Batch lifecycle management methods
-    def _start_batch(self, target_table: str, batch_name: str) -> uuid.UUID:
+    def _start_batch(self, target_table: str, batch_name: str, 
+                     file_manifest_id: Optional[str] = None, 
+                     table_manifest_id: Optional[str] = None) -> uuid.UUID:
         """Start a new batch for a single target table and return its ID."""
         try:
             batch_id = uuid.uuid4()
             batch_data = {
                 'batch_id': str(batch_id),
+                'file_manifest_id': file_manifest_id,
                 'batch_name': batch_name,
                 'target_table': target_table,
                 'status': BatchStatus.RUNNING.value,
@@ -612,9 +698,9 @@ class AuditService:
 
             with self.database.engine.begin() as conn:
                 conn.execute(text('''
-                    INSERT INTO batch_ingestion_manifest
-                    (batch_id, batch_name, target_table, status, started_at, description)
-                    VALUES (:batch_id, :batch_name, :target_table, :status, :started_at, :description)
+                    INSERT INTO batch_audit
+                    (batch_id, file_manifest_id, batch_name, target_table, status, started_at, description)
+                    VALUES (:batch_id, :file_manifest_id, :batch_name, :target_table, :status, :started_at, :description)
                 '''), batch_data)
 
             # Start in-memory tracking
@@ -643,7 +729,7 @@ class AuditService:
 
             with self.database.engine.begin() as conn:
                 conn.execute(text('''
-                    INSERT INTO subbatch_ingestion_manifest
+                    INSERT INTO subbatch_audit
                     (subbatch_manifest_id, batch_manifest_id, table_name, status, started_at, description)
                     VALUES (:subbatch_manifest_id, :batch_manifest_id, :table_name, :status, :started_at, :description)
                 '''), subbatch_data)
@@ -685,7 +771,7 @@ class AuditService:
 
             with self.database.engine.begin() as conn:
                 conn.execute(text('''
-                    UPDATE batch_ingestion_manifest
+                    UPDATE batch_audit
                     SET status = :status, completed_at = :completed_at, error_message = :error_message,
                         description = description || ' | ' || :metrics_summary
                     WHERE batch_id = :batch_id
@@ -717,15 +803,14 @@ class AuditService:
                 'status': status.value,
                 'completed_at': completed_at,
                 'error_message': error_message,
-                'files_processed': accumulator.files_completed + accumulator.files_failed,
                 'rows_processed': accumulator.total_rows
             }
 
             with self.database.engine.begin() as conn:
                 conn.execute(text('''
-                    UPDATE subbatch_ingestion_manifest
+                    UPDATE subbatch_audit
                     SET status = :status, completed_at = :completed_at, error_message = :error_message,
-                        files_processed = :files_processed, rows_processed = :rows_processed
+                        rows_processed = :rows_processed
                     WHERE subbatch_manifest_id = :subbatch_id
                 '''), update_data)
 
@@ -745,13 +830,12 @@ class AuditService:
             self._active_subbatches.pop(str(subbatch_id), None)
             self._subbatch_to_batch.pop(str(subbatch_id), None)
 
-    def update_subbatch_metrics(self, subbatch_id: uuid.UUID, files_processed: int = None, 
-                               rows_processed: int = None, notes: str = None) -> None:
-        """Update metrics for a subbatch."""
+    def update_subbatch_metrics(self, subbatch_id: uuid.UUID, rows_processed: int = None, 
+                               notes: str = None) -> None:
+        """Update metrics for a subbatch (files_processed removed since subbatches always handle 1 file)."""
         try:
             update_data = {
                 'subbatch_id': str(subbatch_id),
-                'files_processed': files_processed,
                 'rows_processed': rows_processed,
                 'notes': notes
             }
@@ -764,7 +848,7 @@ class AuditService:
                 
                 with self.database.engine.begin() as conn:
                     conn.execute(text(f'''
-                        UPDATE subbatch_ingestion_manifest
+                        UPDATE subbatch_audit
                         SET {set_clause}
                         WHERE subbatch_manifest_id = :subbatch_id
                     '''), update_data)
@@ -781,7 +865,7 @@ class AuditService:
                 result = conn.execute(text('''
                     SELECT batch_id, batch_name, target_table, status, started_at, completed_at, 
                            error_message, description
-                    FROM batch_ingestion_manifest
+                    FROM batch_audit
                     WHERE batch_id = :batch_id
                 '''), {'batch_id': str(batch_id)})
                 

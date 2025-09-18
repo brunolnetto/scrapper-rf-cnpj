@@ -58,33 +58,22 @@ class DownloadAndLoadStrategy:
             return self._execute_standard_flow(pipeline, config_service, **kwargs)
         
         try:
-            # Step 1: Download files
-            logger.info("[DOWNLOAD+LOAD] Step 1: Downloading files...")
+            # Download data first
             downloaded_files = pipeline.retrieve_data()
             if not downloaded_files:
-                logger.error("[DOWNLOAD+LOAD] No files were downloaded")
+                logger.error("[DOWNLOAD+LOAD] Download failed, no files retrieved")
                 return None
             
-            logger.info(f"[DOWNLOAD+LOAD] Downloaded {len(downloaded_files)} files")
+            logger.info(f"[DOWNLOAD+LOAD] Downloaded {len(downloaded_files)} file(s), proceeding with direct CSV loading")
             
-            # Step 2: Extract files (if they're compressed)
-            logger.info("[DOWNLOAD+LOAD] Step 2: Extracting files...")
-            extracted_files = pipeline.extract_downloaded_files()
-            if not extracted_files:
-                logger.warning("[DOWNLOAD+LOAD] No files were extracted, using downloaded files directly")
-                extracted_files = downloaded_files
-            
-            # Step 3: Load CSV files directly to database
-            logger.info("[DOWNLOAD+LOAD] Step 3: Loading CSV files directly to database...")
-            loading_result = pipeline.load_csv_files_directly(extracted_files, config_service, **kwargs)
-            
-            if loading_result:
-                logger.info("[DOWNLOAD+LOAD] Strategy completed successfully")
-                logger.info("[DOWNLOAD+LOAD] Files processed directly without conversion step")
-            else:
-                logger.error("[DOWNLOAD+LOAD] Direct CSV loading failed")
-            
-            return loading_result
+            # Load CSV files directly without conversion
+            audit_metadata = pipeline.load_csv_files_directly()
+            if not audit_metadata:
+                logger.warning("[DOWNLOAD+LOAD] Direct CSV loading returned no results")
+                return None
+                
+            logger.info("[DOWNLOAD+LOAD] Successfully completed download+load without conversion")
+            return audit_metadata
             
         except (OSError, IOError, ValueError, RuntimeError) as e:
             logger.error(f"[DOWNLOAD+LOAD] Strategy failed: {e}")
@@ -99,14 +88,24 @@ class DownloadAndLoadStrategy:
             if not downloaded_files:
                 return None
             
+            # Create audit metadata for loading
+            from pathlib import Path
+            year = kwargs.get('year', config_service.year)
+            month = kwargs.get('month', config_service.month)
+            download_path = str(config_service.pipeline.get_temporal_download_path(year, month))
+            audit_metadata = pipeline.audit_service.create_audit_metadata(downloaded_files, download_path)
+            
+            # Insert table audits before loading
+            pipeline.audit_service.insert_audits(audit_metadata)
+            
             # Convert
-            converted_files = pipeline.convert_existing_csvs_to_parquet()
+            converted_files = pipeline.convert_to_parquet(audit_metadata)
             if not converted_files:
                 logger.warning("[DOWNLOAD+LOAD] Conversion failed in fallback")
                 return None
             
-            # Load
-            loading_result = pipeline.load_parquet_files(config_service, **kwargs)
+            # Load data using the proper method
+            loading_result = pipeline.data_loader.load_data(audit_metadata)
             return loading_result
             
         except (OSError, IOError, ConnectionError, TimeoutError, ValueError, RuntimeError) as e:
@@ -245,15 +244,43 @@ class FullETLStrategy:
         initial_row_counts = get_table_row_counts(user, password, host, port, prod_db)
         logger.info(f"[FULL-ETL] Current row counts: {initial_row_counts}")
         
-        # Run the ETL job
+        # Run the ETL job  
         try:
             logger.info("[FULL-ETL] Starting data processing and upsert to database...")
-            audit_metadata = pipeline.run(
-                year=year, 
-                month=month, 
-                full_refresh=full_refresh,
-                clear_tables=clear_tables
-            )
+            
+            # Step 1: Download and create audit metadata
+            logger.info("[FULL-ETL] Step 1: Downloading and creating audit metadata...")
+            audits = pipeline.retrieve_data()
+            if not audits:
+                logger.warning("[FULL-ETL] No data downloaded")
+                return None
+                
+            # Create audit metadata
+            from pathlib import Path
+            download_path = str(config_service.pipeline.get_temporal_download_path(year, month))
+            audit_metadata = pipeline.audit_service.create_audit_metadata(audits, download_path)
+            
+            # Step 2: Insert table audits BEFORE loading (critical for file manifest linking)
+            logger.info("[FULL-ETL] Step 2: Inserting table audits before loading...")
+            if hasattr(pipeline, 'audit_service'):
+                pipeline.audit_service.insert_audits(audit_metadata)
+                logger.info("[FULL-ETL] Table audits inserted successfully - file manifests can now link properly")
+            
+            # Step 3: Convert to Parquet
+            logger.info("[FULL-ETL] Step 3: Converting to Parquet...")
+            pipeline.convert_to_parquet(audit_metadata)
+            
+            # Step 4: Load data (file manifests can now link to existing table audits)
+            logger.info("[FULL-ETL] Step 4: Loading data to database...")
+            pipeline.data_loader.load_data(audit_metadata)
+            
+            # Step 5: Cleanup downloaded files if configured
+            if config_service.pipeline.delete_files:
+                from ..utils.misc import remove_folder
+                remove_folder(download_path)
+                extract_path = str(config_service.pipeline.get_temporal_extraction_path(year, month))
+                remove_folder(extract_path)
+                logger.info("[FULL-ETL] Cleaned up temporary files")
             
             if audit_metadata:
                 # Get final row counts for validation
@@ -266,10 +293,6 @@ class FullETLStrategy:
                 
                 # Log row count changes and update audit metadata
                 self._update_audit_metadata(audit_metadata, initial_row_counts, final_row_counts)
-                
-                # Insert audits into the database
-                if hasattr(pipeline, 'audit_service'):
-                    pipeline.audit_service.insert_audits(audit_metadata)
                 
                 return audit_metadata
             else:
@@ -354,6 +377,13 @@ class LoadOnlyStrategy:
                 logger.warning("[LOAD-ONLY] No existing files found to load")
                 return None
             
+            # Insert table audits into the database first
+            if hasattr(pipeline, 'audit_service'):
+                pipeline.audit_service.insert_audits(audit_metadata)
+                logger.info("[LOAD-ONLY] Table audits inserted successfully")
+            else:
+                logger.warning("[LOAD-ONLY] Pipeline does not have audit service - table audits not created")
+            
             # Use data loader to load into database
             if hasattr(pipeline, 'data_loader'):
                 pipeline.data_loader.load_data(audit_metadata)
@@ -396,6 +426,13 @@ class ConvertAndLoadStrategy:
             # Convert to Parquet
             conversion_path = pipeline.convert_to_parquet(audit_metadata)
             logger.info(f"[CONVERT-LOAD] Files converted to Parquet: {conversion_path}")
+            
+            # Insert table audits into the database first
+            if hasattr(pipeline, 'audit_service'):
+                pipeline.audit_service.insert_audits(audit_metadata)
+                logger.info("[CONVERT-LOAD] Table audits inserted successfully")
+            else:
+                logger.warning("[CONVERT-LOAD] Pipeline does not have audit service - table audits not created")
             
             # Load to database
             pipeline.data_loader.load_data(audit_metadata)

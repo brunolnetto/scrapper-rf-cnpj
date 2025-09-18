@@ -102,6 +102,9 @@ class ReceitaCNPJPipeline(Pipeline):
         audit_db.create_tables()
         self._audit_service = AuditService(audit_db, self.config)
         
+        # Connect the audit service to the loading strategy
+        self.loading_strategy.audit_service = self._audit_service
+        
         self._initialized = True
 
     def _generate_batch_name(self) -> str:
@@ -269,6 +272,25 @@ class ReceitaCNPJPipeline(Pipeline):
         convert_csvs_to_parquet_smart(audit_map, extract_path, output_dir)
         logger.info(f"Parquet conversion completed. Files saved to: {output_dir}")
 
+        # IMPROVEMENT: Update table audits to reference Parquet files instead of ZIP files
+        if hasattr(self, 'audit_service') and self.audit_service:
+            logger.info("Updating table audits to reference converted Parquet files...")
+            for table_name in audit_map.keys():
+                parquet_file_path = output_dir / f"{table_name}.parquet" 
+                if parquet_file_path.exists():
+                    processing_metadata = {
+                        "conversion_method": "convert_csvs_to_parquet_smart",
+                        "output_format": "parquet",
+                        "file_size_bytes": parquet_file_path.stat().st_size
+                    }
+                    self.audit_service.update_table_audit_after_conversion(
+                        table_name, str(parquet_file_path), processing_metadata
+                    )
+                else:
+                    logger.warning(f"Expected Parquet file not found: {parquet_file_path}")
+        else:
+            logger.warning("No audit service available - table audits will not be updated with Parquet file references")
+
         return output_dir
 
     def create_audit_metadata_from_existing_csvs(self) -> Optional[AuditMetadata]:
@@ -353,7 +375,7 @@ class ReceitaCNPJPipeline(Pipeline):
             for zip_filename, file_list in zip_to_files.items():
                 audit_entry = TableIngestionManifestSchema(
                     table_name=table_name,
-                    source_files=[zip_filename],
+                    source_files=file_list,  # Store actual processed files, not ZIP file
                     processed_at=datetime.now(),
                     inserted_at=None  # Will be set during loading
                 )
@@ -449,6 +471,116 @@ class ReceitaCNPJPipeline(Pipeline):
         
         # Reuse the existing convert_to_parquet method
         return self.convert_to_parquet(audit_metadata)
+
+    def load_csv_files_directly(self) -> Optional[AuditMetadata]:
+        """
+        Load CSV files directly from EXTRACTED_FILES without conversion.
+        
+        This method forces CSV file usage even if Parquet files exist,
+        enabling true direct CSV loading for --download --load strategy.
+        
+        Returns:
+            AuditMetadata: Audit metadata for loaded CSV files, or None if no CSV files found
+        """
+        from ..core.constants import TABLES_INFO_DICT
+        from ..core.schemas import AuditMetadata
+        from ..database.models import TableIngestionManifestSchema
+        from datetime import datetime
+        from uuid import uuid4
+
+        # Only check extraction directory for CSV files - ignore conversion directory
+        extract_path = self.config.pipeline.get_temporal_extraction_path(self.config.year, self.config.month)
+        
+        if not extract_path.exists():
+            logger.warning(f"Extract path does not exist: {extract_path}")
+            return None
+
+        csv_files = self._detect_csv_files(extract_path)
+        
+        if not csv_files:
+            logger.warning(f"No CSV files found in {extract_path}")
+            return None
+
+        logger.info(f"Found {len(csv_files)} CSV files for direct loading in {extract_path}")
+
+        # Development mode filtering
+        if self.config.is_development_mode():
+            from ..core.utils.development_filter import DevelopmentFilter
+            dev_filter = DevelopmentFilter(self.config)
+            original_count = len(csv_files)
+            csv_files = [f for f in csv_files if dev_filter.check_blob_size_limit(f)]
+            dev_filter.log_simple_filtering(original_count, len(csv_files), "CSV files (direct loading)")
+
+        # Map CSV files to table names using expression patterns
+        tablename_to_files = {}
+        for table_name, table_info in TABLES_INFO_DICT.items():
+            expression = table_info.get("expression")
+            if not expression:
+                continue
+
+            # Find CSV files matching this table's expression
+            matching_files = [str(f) for f in csv_files if expression in f.name]
+
+            if matching_files:
+                tablename_to_files[table_name] = {"direct_csv_load": matching_files}
+                logger.info(f"Table '{table_name}': Found {len(matching_files)} CSV files for direct loading")
+
+        if not tablename_to_files:
+            logger.warning("No CSV files matched any known table patterns for direct loading")
+            return None
+
+        # Create audit metadata for CSV loading with complete file information
+        audit_list = []
+        for table_name, zip_to_files in tablename_to_files.items():
+            for zip_filename, file_list in zip_to_files.items():
+                # Calculate total file size from CSV files
+                total_size_bytes = 0
+                oldest_file_time = None
+                
+                for file_path_str in file_list:
+                    file_path = Path(file_path_str)
+                    if file_path.exists():
+                        # Get file size
+                        total_size_bytes += file_path.stat().st_size
+                        
+                        # Get file modification time (oldest as source update time)
+                        file_mtime = datetime.fromtimestamp(file_path.stat().st_mtime)
+                        if oldest_file_time is None or file_mtime < oldest_file_time:
+                            oldest_file_time = file_mtime
+                
+                # Use current time for created_at and downloaded_at (since we're loading existing files)
+                current_time = datetime.now()
+                
+                audit_entry = TableIngestionManifestSchema(
+                    table_name=table_name,
+                    source_files=file_list,  # Store actual CSV files
+                    file_size_bytes=total_size_bytes,  # Total size of CSV files
+                    source_updated_at=oldest_file_time,  # Oldest file modification time
+                    created_at=current_time,  # When audit entry was created
+                    downloaded_at=current_time,  # Treat as "downloaded" since files exist
+                    processed_at=current_time,  # When processing started
+                    inserted_at=None,  # Will be set during loading
+                    ingestion_year=self.config.year,  # Use configured year
+                    ingestion_month=self.config.month  # Use configured month
+                )
+                audit_list.append(audit_entry)
+
+        # Create metadata with CSV files
+        audit_metadata = AuditMetadata(audit_list=audit_list, tablename_to_zipfile_to_files=tablename_to_files)
+        
+        # Insert table audits before loading (without creating file manifests to avoid duplicates)
+        if hasattr(self, 'audit_service'):
+            self.audit_service.insert_audits(audit_metadata, create_file_manifests=False)
+            logger.info("[CSV-DIRECT] Table audits inserted successfully (file manifests will be created during processing)")
+
+        # Load data directly using the data loader with force_csv=True
+        if hasattr(self, 'data_loader'):
+            self.data_loader.load_data(audit_metadata, force_csv=True)
+            logger.info("[CSV-DIRECT] Successfully loaded CSV files directly to database")
+            return audit_metadata
+        else:
+            logger.error("[CSV-DIRECT] Pipeline does not have data loader")
+            return None
 
     def validate_config(self) -> bool:
         """Validate pipeline configuration."""

@@ -21,7 +21,7 @@ async def record_manifest(
 ):
     await conn.execute(
         """
-        INSERT INTO file_ingestion_manifest (file_manifest_id, file_path, status, checksum, filesize, rows_processed, processed_at, notes)
+        INSERT INTO file_audit (file_manifest_id, file_path, status, checksum, filesize, rows_processed, processed_at, notes)
         VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7)
         """,
         str(uuid.uuid4()), filename, status, checksum, filesize, rows_processed, notes

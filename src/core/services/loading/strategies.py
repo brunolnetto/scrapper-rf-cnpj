@@ -46,8 +46,13 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
 
     def load_table(self, database: Database, table_name: str, pipeline_config,
                    table_files: Optional[List[str]] = None, 
-                   batch_id=None, subbatch_id=None) -> Tuple[bool, Optional[str], int]:
-        """Load table using EnhancedUnifiedLoader with batch tracking."""
+                   batch_id=None, subbatch_id=None, force_csv: bool = False) -> Tuple[bool, Optional[str], int]:
+        """
+        Load table using EnhancedUnifiedLoader with batch tracking.
+        
+        Args:
+            force_csv: If True, skip Parquet file detection and force CSV loading
+        """
         
         logger.info(f"[LoadingStrategy] Loading table '{table_name}' with UnifiedLoader")
         
@@ -56,23 +61,26 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             from ....database.dml import UnifiedLoader
             loader = UnifiedLoader(database, self.config)
             
-            # Check Parquet first (maintain existing priority)
-            parquet_file = pipeline_config.get_temporal_conversion_path(self.config.year, self.config.month) / f"{table_name}.parquet"
-            if parquet_file.exists():
-                # Centralized Parquet filtering
-                from ....core.utils.development_filter import DevelopmentFilter
-                dev_filter = DevelopmentFilter(self.config.pipeline.development)
+            # Check Parquet first (maintain existing priority) - UNLESS force_csv=True
+            if not force_csv:
+                parquet_file = pipeline_config.get_temporal_conversion_path(self.config.year, self.config.month) / f"{table_name}.parquet"
+                if parquet_file.exists():
+                    # Centralized Parquet filtering
+                    from ....core.utils.development_filter import DevelopmentFilter
+                    dev_filter = DevelopmentFilter(self.config.pipeline.development)
 
-                if not dev_filter.check_blob_size_limit(parquet_file):
-                    return True, "Skipped large file in development mode", 0
+                    if not dev_filter.check_blob_size_limit(parquet_file):
+                        return True, "Skipped large file in development mode", 0
 
-                logger.info(f"[LoadingStrategy] Loading Parquet file: {parquet_file.name}")
-                return self._create_manifest_and_load(
-                    loader, table_info, parquet_file, table_name, 
-                    batch_id=batch_id, subbatch_id=subbatch_id
-                )
+                    logger.info(f"[LoadingStrategy] Loading Parquet file: {parquet_file.name}")
+                    return self._create_manifest_and_load(
+                        loader, table_info, parquet_file, table_name, 
+                        batch_id=batch_id, subbatch_id=subbatch_id
+                    )
+            else:
+                logger.info(f"[LoadingStrategy] Forcing CSV loading for table '{table_name}' (skipping Parquet)")
 
-            elif table_files:
+            if table_files:
                 # Centralized CSV filtering
                 from ....core.utils.development_filter import DevelopmentFilter
                 dev_filter = DevelopmentFilter(self.config.pipeline.development)
@@ -159,6 +167,11 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
         from pathlib import Path
         
         try:
+            # Initialize variables early to avoid scope issues
+            file_manifest_id = None
+            total_processed_rows = 0
+            batch_num = 0
+            
             # Initialize FileLoader with encoding detection for CNPJ files
             from .file_loader import FileLoader
             
@@ -171,12 +184,28 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             # Get table headers from table_info (columns is already a list of strings)
             headers = table_info.columns
             
-            batch_num = 0
-            total_processed_rows = 0
+            # Variables already initialized above
             
             if not self.audit_service:
                 # Fallback: load via FileLoader without context management
                 return self._load_file_without_batching(file_loader, loader, table_info, headers, batch_size)
+            
+            # Find the table manifest ID for proper audit linking
+            logger.debug(f"FileLoader path: Looking up table audit for {table_name}")
+            table_manifest_id = self._find_table_audit_by_table_name(table_name)
+            logger.info(f"FileLoader table audit lookup result for {table_name}: {table_manifest_id}")
+            if not table_manifest_id:
+                logger.warning(f"No table audit found for {table_name}, proceeding without audit linking")
+            
+            # Create a file manifest entry for this processing session
+            file_manifest_id = None
+            if table_manifest_id:
+                # Create initial manifest entry with PROCESSING status
+                file_manifest_id = self._create_manifest_entry(
+                    str(file_path), table_name, "PROCESSING", 
+                    table_manifest_id=table_manifest_id
+                )
+                logger.debug(f"[LoadingStrategy] Created file manifest {file_manifest_id} with PROCESSING status")
             
             # Use FileLoader's batch_generator for actual row processing
             for batch_chunk in file_loader.batch_generator(headers, chunk_size=batch_size):
@@ -188,7 +217,9 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                 
                 with self.audit_service.batch_context(
                     target_table=table_name, 
-                    batch_name=batch_name
+                    batch_name=batch_name,
+                    file_manifest_id=file_manifest_id,
+                    table_manifest_id=table_manifest_id
                 ) as batch_id:
                     
                     logger.info(f"[LoadingStrategy] Processing FileLoader batch {batch_num}: {len(batch_chunk)} rows")
@@ -210,18 +241,64 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                                 loader, table_info, subbatch_chunk, table_name, batch_id, subbatch_id
                             )
                             
+                            # Collect file processing event for subbatch metrics
+                            if self.audit_service and subbatch_id:
+                                status = "COMPLETED" if success else "FAILED"
+                                self.audit_service.collect_file_processing_event(
+                                    subbatch_id=subbatch_id,
+                                    status=status, 
+                                    rows=rows or 0,
+                                    bytes_=0  # We don't have byte count for in-memory chunks
+                                )
+                            
                             if not success:
                                 logger.error(f"[LoadingStrategy] Subbatch failed: {error}")
+                                
+                                # Update file manifest to FAILED status
+                                if file_manifest_id and self.audit_service:
+                                    self._update_manifest_entry(
+                                        manifest_id=file_manifest_id,
+                                        status="FAILED", 
+                                        rows_processed=total_processed_rows,
+                                        error_msg=error
+                                    )
+                                    logger.debug(f"[LoadingStrategy] Updated file manifest {file_manifest_id} to FAILED")
+                                
                                 return False, error, total_processed_rows
                                 
                             total_processed_rows += rows
                             logger.debug(f"[LoadingStrategy] Subbatch completed: {rows} rows")
             
             logger.info(f"[LoadingStrategy] FileLoader processing complete: {total_processed_rows} total rows")
+            
+            # Update file manifest to COMPLETED status with final metrics
+            if file_manifest_id and self.audit_service:
+                logger.info(f"[LoadingStrategy] Updating file manifest {file_manifest_id} to COMPLETED with {total_processed_rows} rows")
+                self._update_manifest_entry(
+                    manifest_id=file_manifest_id,
+                    status="COMPLETED",
+                    rows_processed=total_processed_rows,
+                    error_msg=None
+                )
+                logger.debug(f"[LoadingStrategy] Updated file manifest {file_manifest_id} to COMPLETED")
+            else:
+                logger.warning(f"[LoadingStrategy] Cannot update file manifest: file_manifest_id={file_manifest_id}, audit_service={bool(self.audit_service)}")
+                
             return True, None, total_processed_rows
             
         except Exception as e:
             logger.error(f"[LoadingStrategy] FileLoader batching failed for {file_path}: {e}")
+            
+            # Update file manifest to FAILED status on exception (only if it was created)
+            if file_manifest_id and self.audit_service:
+                self._update_manifest_entry(
+                    manifest_id=file_manifest_id,
+                    status="FAILED",
+                    rows_processed=total_processed_rows,
+                    error_msg=str(e)
+                )
+                logger.debug(f"[LoadingStrategy] Updated file manifest {file_manifest_id} to FAILED due to exception")
+                
             return False, str(e), 0
 
     def _split_batch_into_subbatches(self, batch_chunk, subbatch_size):
@@ -237,12 +314,9 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
         Load a specific batch chunk (list of tuples) using existing loader infrastructure.
         """
         try:
-            # Create manifest entry for this chunk  
+            # Chunks should NOT create file manifest entries - they are tracked in batch_audit/subbatch_audit
             chunk_description = f"chunk_{len(batch_chunk)}rows"
-            manifest_id = self._create_manifest_entry(
-                chunk_description, table_name, "PROCESSING",
-                batch_id=batch_id, subbatch_id=subbatch_id
-            )
+            manifest_id = None  # No file manifest for chunks
             
             # Load batch chunk using existing UnifiedLoader
             # Note: This requires UnifiedLoader to support batch data loading
@@ -256,10 +330,11 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                     loader, table_info, batch_chunk, batch_id, subbatch_id
                 )
             
-            # Update manifest
-            status = "COMPLETED" if success else "FAILED"
-            error_msg = str(error) if error else None
-            self._update_manifest_entry(manifest_id, status, rows, error_msg)
+            # Update manifest only if one was created (not for chunks)
+            if manifest_id:
+                status = "COMPLETED" if success else "FAILED"
+                error_msg = str(error) if error else None
+                self._update_manifest_entry(manifest_id, status, rows, error_msg)
             
             return success, error, rows
             
@@ -269,13 +344,50 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
 
     def _load_chunk_via_temporary_method(self, loader, table_info, batch_chunk, batch_id, subbatch_id):
         """
-        Fallback method to load chunk data when UnifiedLoader doesn't support batch data loading.
-        This would create a temporary file or use in-memory loading.
+        Load chunk data by creating a temporary in-memory file and using UnifiedLoader's load_file method.
+        This bridges the gap between chunk data and file-based loading.
         """
-        # For now, return success with chunk size as a placeholder
-        # In a full implementation, this would need to interface with UnifiedLoader
-        logger.warning("[LoadingStrategy] Using placeholder chunk loading - needs UnifiedLoader integration")
-        return True, None, len(batch_chunk)
+        try:
+            import tempfile
+            import pandas as pd
+            from pathlib import Path
+            
+            # Convert chunk data to DataFrame for consistent handling
+            if not isinstance(batch_chunk, pd.DataFrame):
+                # Assume batch_chunk is a list of rows or dict-like objects
+                df = pd.DataFrame(batch_chunk)
+            else:
+                df = batch_chunk
+            
+            if df.empty:
+                logger.warning("[LoadingStrategy] Empty batch chunk provided")
+                return True, None, 0
+            
+            # Create temporary Parquet file (more efficient than CSV for memory chunks)
+            with tempfile.NamedTemporaryFile(suffix='.parquet', delete=False) as temp_file:
+                temp_path = Path(temp_file.name)
+                
+                # Write chunk to temporary Parquet file
+                df.to_parquet(temp_path, index=False)
+                logger.debug(f"[LoadingStrategy] Created temporary file {temp_path} with {len(df)} rows")
+                
+                # Use UnifiedLoader to load the temporary file
+                success, error, rows = loader.load_file(
+                    table_info=table_info,
+                    file_path=temp_path,
+                    batch_id=batch_id,
+                    subbatch_id=subbatch_id
+                )
+                
+                # Clean up temporary file
+                temp_path.unlink(missing_ok=True)
+                logger.debug(f"[LoadingStrategy] Cleaned up temporary file {temp_path}")
+                
+                return success, error, rows
+                
+        except Exception as e:
+            logger.error(f"[LoadingStrategy] Failed to load chunk via temporary method: {e}")
+            return False, str(e), 0
 
     def _load_file_without_batching(self, file_loader, loader, table_info, headers, chunk_size):
         """Fallback for loading entire file when no audit service available."""
@@ -309,6 +421,25 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
         
         logger.info(f"[LoadingStrategy] Unified batching: {total_rows:,} rows")
         
+        # Debug audit service state
+        logger.debug(f"Audit service available: {self.audit_service is not None}")
+        if self.audit_service:
+            logger.debug(f"Audit service database available: {self.audit_service.database is not None}")
+        
+        # Find the table manifest ID for proper audit linking
+        table_manifest_id = self._find_table_audit_by_table_name(table_name)
+        logger.info(f"Table audit lookup result for {table_name}: {table_manifest_id}")
+        if not table_manifest_id:
+            logger.warning(f"No table audit found for {table_name}, proceeding without audit linking")
+        
+        # Create a file manifest entry for this processing session
+        file_manifest_id = None
+        if table_manifest_id:
+            file_manifest_id = self._create_manifest_entry(
+                str(file_path), table_name, "PROCESSING", 
+                table_manifest_id=table_manifest_id
+            )
+        
         if not self.audit_service:
             # Fallback without batch tracking
             return self._load_entire_file(loader, table_info, file_path, table_name, None, None)
@@ -329,7 +460,9 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             # Create batch with proper context management
             with self.audit_service.batch_context(
                 target_table=table_name, 
-                batch_name=batch_name
+                batch_name=batch_name,
+                file_manifest_id=file_manifest_id,
+                table_manifest_id=table_manifest_id
             ) as row_batch_id:
                 
                 logger.info(f"[LoadingStrategy] Processing batch {batch_num+1}/{total_batches}: rows {batch_start}-{batch_end}")
@@ -425,8 +558,15 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
     
     def _create_manifest_entry(self, file_path: str, table_name: str, status: str,
                               rows_processed: Optional[int] = None, error_msg: Optional[str] = None,
-                              table_manifest_id: Optional[str] = None) -> Optional[str]:
+                              table_manifest_id: Optional[str] = None, batch_id: Optional[str] = None, 
+                              subbatch_id: Optional[str] = None) -> Optional[str]:
         """Create manifest entry for loaded file."""
+        # Early return for chunks - they should NOT create file manifest entries
+        # Chunks are tracked in batch_audit and subbatch_audit only
+        if "chunk_" in file_path or file_path.startswith("chunk"):
+            logger.debug(f"Skipping file manifest creation for chunk: {file_path}")
+            return None
+        
         # Log error messages if provided
         if error_msg and status in ["FAILED", "ERROR"]:
             logger.error(f"[LoadingStrategy] Error processing {file_path}: {error_msg}")
@@ -442,7 +582,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                     table_manifest_id = self._find_table_audit_for_file(table_name, file_path_obj.name)
                     if not table_manifest_id:
                         logger.warning(f"No table audit entry found for table {table_name}, file {file_path_obj.name}")
-                        # Create a placeholder table audit entry (this is a fallback)
+                        # Create a placeholder table audit entry (this is a fallback for real files only)
                         table_manifest_id = self._create_placeholder_table_audit_entry(table_name, file_path_obj.name)
                 
                 # Calculate file info if file exists
@@ -534,12 +674,15 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
         else:
             logger.debug("No audit service available for manifest update")
 
-    def load_multiple_tables(self, database, table_to_files, pipeline_config):
+    def load_multiple_tables(self, database, table_to_files, pipeline_config, force_csv: bool = False):
         """
         Load multiple tables with proper hierarchical batch tracking:
         - One table-level context contains all file processing for all tables
         - Each file gets its own batch via FileLoader chunking
         - Each file batch can have parallel subbatches
+        
+        Args:
+            force_csv: If True, force CSV loading and skip Parquet file detection
         """
         # Create table-level audit context for all tables
         table_names = list(table_to_files.keys())
@@ -572,7 +715,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                     
                     # Process files using FileLoader batch processing
                     file_batch_result = self._process_file_batch_with_fileloader(
-                        database, table_name, zip_filename, csv_files, pipeline_config
+                        database, table_name, zip_filename, csv_files, pipeline_config, force_csv
                     )
                     
                     success, error, rows = file_batch_result
@@ -591,15 +734,87 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                     error_msg = "; ".join(table_errors)
                     results[table_name] = (False, error_msg, table_total_rows)
                     logger.error(f"[LoadingStrategy] Table '{table_name}' failed: {error_msg}")
+                
+                # IMPROVEMENT: Update table audit completion immediately after each table finishes
+                # This ensures individual completion timestamps rather than bulk timestamps
+                if self.audit_service:
+                    try:
+                        from datetime import datetime
+                        from sqlalchemy import text
+                        import json
+                        
+                        # Prepare completion metadata for this table
+                        table_result = results[table_name]
+                        completion_metadata = {
+                            "loading_completed": True,
+                            "completion_timestamp": datetime.now().isoformat(),
+                            "loading_success": table_result[0],
+                            "rows_loaded": table_result[2],
+                            "error_message": table_result[1] if not table_result[0] else None
+                        }
+                        
+                        # Update table audit completion immediately for this table
+                        with self.audit_service.database.engine.begin() as conn:
+                            # Get year and month from config
+                            year = self.config.year if hasattr(self.config, 'year') else self.config.pipeline.year
+                            month = self.config.month if hasattr(self.config, 'month') else self.config.pipeline.month
+                            
+                            # First, get current audit_metadata for this specific table
+                            current_result = conn.execute(text('''
+                                SELECT audit_metadata FROM table_audit 
+                                WHERE table_name = :table_name 
+                                AND ingestion_year = :year 
+                                AND ingestion_month = :month
+                            '''), {
+                                'table_name': table_name,
+                                'year': year,
+                                'month': month
+                            })
+                            
+                            row = current_result.fetchone()
+                            current_metadata = row[0] if row and row[0] else {}
+                            
+                            # Merge with completion metadata
+                            if isinstance(current_metadata, str):
+                                current_metadata = json.loads(current_metadata)
+                            elif current_metadata is None:
+                                current_metadata = {}
+                            
+                            # Merge the completion metadata
+                            merged_metadata = {**current_metadata, **completion_metadata}
+                            
+                            # Update with individual timestamp and merged metadata
+                            conn.execute(text('''
+                                UPDATE table_audit 
+                                SET inserted_at = :inserted_at,
+                                    audit_metadata = :metadata_json
+                                WHERE table_name = :table_name 
+                                AND ingestion_year = :year 
+                                AND ingestion_month = :month
+                            '''), {
+                                'inserted_at': datetime.now(),  # Individual timestamp per table
+                                'metadata_json': json.dumps(merged_metadata),
+                                'table_name': table_name,
+                                'year': year,
+                                'month': month
+                            })
+                            
+                            logger.info(f"[LoadingStrategy] Updated completion timestamp for table '{table_name}' individually")
+                        
+                    except Exception as e:
+                        logger.warning(f"[LoadingStrategy] Failed to update completion timestamp for '{table_name}': {e}")
                     
             logger.info(f"[LoadingStrategy] Completed table-level processing for {len(table_names)} tables")
             return results
 
     def _process_file_batch_with_fileloader(self, database, table_name: str, zip_filename: str, 
-                                          csv_files: List[str], pipeline_config) -> Tuple[bool, Optional[str], int]:
+                                          csv_files: List[str], pipeline_config, force_csv: bool = False) -> Tuple[bool, Optional[str], int]:
         """
         Process files using FileLoader batch processing with proper hierarchy.
         Each file creates its own batch/subbatch structure via FileLoader.
+        
+        Args:
+            force_csv: If True, force CSV loading and skip Parquet file detection
         """
         logger.info(f"[LoadingStrategy] Processing {len(csv_files)} files for {table_name} using FileLoader")
         
@@ -617,7 +832,8 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                 success, error, rows = self.load_table(
                     database, table_name, pipeline_config, [csv_file],
                     batch_id=None,  # FileLoader will create its own batch hierarchy
-                    subbatch_id=None
+                    subbatch_id=None,
+                    force_csv=force_csv
                 )
                 
                 if success:
@@ -647,9 +863,9 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             return False, error_summary, total_processed_rows
 
     def _load_files_without_batch_tracking(self, database, table_name: str, 
-                                          csv_files: List[str], pipeline_config) -> Tuple[bool, Optional[str], int]:
+                                          csv_files: List[str], pipeline_config, force_csv: bool = False) -> Tuple[bool, Optional[str], int]:
         """Fallback file loading without batch tracking."""
-        return self.load_table(database, table_name, pipeline_config, csv_files)
+        return self.load_table(database, table_name, pipeline_config, csv_files, force_csv=force_csv)
 
     def _find_table_audit_for_file(self, table_name: str, filename: str) -> Optional[str]:
         """Find existing table audit entry ID for a given table, preferring real files over placeholders."""
@@ -686,6 +902,31 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                 
         except Exception as e:
             logger.error(f"Failed to find audit ID for {table_name}/{filename}: {e}")
+            return None
+
+    def _find_table_audit_by_table_name(self, table_name: str) -> Optional[str]:
+        """Find existing table audit entry ID for a given table name."""
+        try:
+            from sqlalchemy import text
+            
+            query = '''
+            SELECT table_manifest_id FROM table_audit 
+            WHERE table_name = :table_name 
+            ORDER BY created_at DESC 
+            LIMIT 1
+            '''
+            
+            with self.audit_service.database.engine.connect() as conn:
+                result = conn.execute(text(query), {'table_name': table_name})
+                row = result.fetchone()
+                manifest_id = str(row[0]) if row else None
+                logger.debug(f"Table audit lookup for {table_name}: found={manifest_id is not None}, id={manifest_id}")
+                return manifest_id
+                
+        except Exception as e:
+            logger.error(f"Failed to find table audit ID for {table_name}: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             return None
 
     def _create_placeholder_table_audit_entry(self, table_name: str, filename: str) -> str:

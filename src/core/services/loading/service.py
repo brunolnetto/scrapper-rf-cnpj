@@ -84,7 +84,7 @@ class DataLoadingService:
             logger.warning(f"Batch optimization failed for {table_name}, using defaults: {e}")
             return {"batch_size": 50000, "parallel_workers": 1, "use_streaming": False}
 
-    def load_data(self, audit_metadata: AuditMetadata) -> AuditMetadata:
+    def load_data(self, audit_metadata: AuditMetadata, force_csv: bool = False) -> AuditMetadata:
         """
         Load data for all tables using the configured strategy.
         Updates audit_metadata with insertion timestamps.
@@ -92,6 +92,7 @@ class DataLoadingService:
 
         Args:
             audit_metadata: Audit metadata with table-to-files mapping
+            force_csv: If True, force CSV loading and skip Parquet file detection
 
         Returns:
             Updated AuditMetadata
@@ -103,19 +104,94 @@ class DataLoadingService:
             database=self.database,
             table_to_files=table_to_files,
             pipeline_config=self.pipeline_config,
+            force_csv=force_csv,
         )
 
-        # Update audit_metadata with insertion timestamps
-        now = datetime.now()
+        # Update audit_metadata with insertion timestamps and persist to database
         for audit in audit_metadata.audit_list:
             result = results.get(audit.table_name)
             if result and result[0]:  # success
-                audit.inserted_at = now
+                audit.inserted_at = datetime.now()  # Individual timestamp per table
                 logger.debug(f"Set inserted_at for {audit.table_name}: success with {result[2]} rows")
             else:
                 # Even if loading failed or had no changes, we processed it - set timestamp
-                audit.inserted_at = now
+                audit.inserted_at = datetime.now()  # Individual timestamp per table
                 logger.warning(
                     f"Setting inserted_at despite issue with table {audit.table_name}: {result[1] if result else 'No result'}"
                 )
+                
+            # Persist inserted_at to database
+            self._persist_table_audit_completion(audit, result)
+            
         return audit_metadata
+
+    def _persist_table_audit_completion(self, audit, result) -> None:
+        """Persist table audit completion timestamp and metadata to database."""
+        try:
+            import json
+            from sqlalchemy import text
+            
+            # Prepare completion metadata
+            completion_metadata = {
+                "loading_completed": True,
+                "completion_timestamp": audit.inserted_at.isoformat() if audit.inserted_at else None,
+                "loading_success": result[0] if result else False,
+                "rows_loaded": result[2] if result and len(result) > 2 else 0,
+                "error_message": result[1] if result and not result[0] else None
+            }
+            
+            # Get year and month from config (handle different config structures)
+            year = self.config.pipeline.year
+            month = self.config.pipeline.month            
+            
+            # Update table audit in database - Use audit service's database connection
+            if self.audit_service is None:
+                logger.warning(f"No audit service available, cannot persist table audit completion for {audit.table_name}")
+                return
+                
+            with self.audit_service.database.engine.begin() as conn:
+                # First, get current audit_metadata
+                current_result = conn.execute(text('''
+                    SELECT audit_metadata FROM table_audit 
+                    WHERE table_name = :table_name 
+                    AND ingestion_year = :year 
+                    AND ingestion_month = :month
+                '''), {
+                    'table_name': audit.table_name,
+                    'year': year,
+                    'month': month
+                })
+                
+                row = current_result.fetchone()
+                current_metadata = row[0] if row and row[0] else {}
+                
+                # Merge with completion metadata
+                if isinstance(current_metadata, str):
+                    import json as json_module
+                    current_metadata = json_module.loads(current_metadata)
+                elif current_metadata is None:
+                    current_metadata = {}
+                
+                # Merge the completion metadata
+                merged_metadata = {**current_metadata, **completion_metadata}
+                
+                # Update with merged metadata
+                conn.execute(text('''
+                    UPDATE table_audit 
+                    SET inserted_at = :inserted_at,
+                        audit_metadata = :metadata_json
+                    WHERE table_name = :table_name 
+                    AND ingestion_year = :year 
+                    AND ingestion_month = :month
+                '''), {
+                    'inserted_at': audit.inserted_at,
+                    'metadata_json': json.dumps(merged_metadata),
+                    'table_name': audit.table_name,
+                    'year': year,
+                    'month': month
+                })
+                
+                logger.debug(f"Persisted completion data for table audit: {audit.table_name}")
+                
+        except Exception as e:
+            logger.error(f"Failed to persist table audit completion for {audit.table_name}: {e}")
