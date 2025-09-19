@@ -272,11 +272,11 @@ Since we're in a development environment where data persistence is not critical,
   - [ ] Update error handling
 
 #### Day 2: Loading and Download Services
-- [ ] Update `loading/strategies.py`
+  - [ ] Update `loading/strategies.py`
   - [ ] Update table audit lookup methods
   - [ ] Update file loading strategies
   - [ ] Update all SQL queries
-- [ ] Update `loading/service.py` and `download/service.py`
+  - [ ] Update `loading/service.py` and `download/service.py`
   - [ ] Update completion tracking
   - [ ] Update type hints and imports
 
@@ -284,13 +284,13 @@ Since we're in a development environment where data persistence is not critical,
 **Priority: MEDIUM**
 
 #### ETL Core and Schemas
-- [ ] Update `core/etl.py`
+  - [ ] Update `core/etl.py`
   - [ ] Update audit data retrieval
   - [ ] Update return types and imports
-- [ ] Update `core/schemas.py`
+  - [ ] Update `core/schemas.py`
   - [ ] Update Pydantic schemas
   - [ ] Update API contracts
-- [ ] Update `core/utils/development_filter.py`
+  - [ ] Update `core/utils/development_filter.py`
 
 ### Phase 4: Testing & Validation (0.5 days)
 **Priority: HIGH**
