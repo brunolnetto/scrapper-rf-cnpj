@@ -29,11 +29,12 @@ Este projeto implementa um pipeline ETL robusto e escalável para processamento 
 
 ### 🚀 Arquitetura
 
-- **Carregador de Arquivos Aprimorado**: Detecção automática de formato (CSV/Parquet) com validação robusta
-- **Processamento Assíncrono**: Processamento paralelo interno com controle de concorrência
-- **Estratégia de Carregamento Unificado**: Interface simplificada para todos os tipos de arquivo
-- **Pool de Conexões**: Pool de conexões async para máxima performance
-- **Eficiente em Memória**: Streaming processing para arquivos de qualquer tamanho
+- **Strategy Pattern**: Múltiplas estratégias de execução (download-only, conversion, full ETL)
+- **Configuração Pydantic**: Sistema de configuração tipado com validação automática
+- **Arquitetura de Serviços**: Serviços especializados (audit, download, conversion, loading)
+- **Orquestração Centralizada**: Pipeline orchestrator com controle unificado de fluxo
+- **Pool de Conexões Async**: Máxima performance com pools de conexão configuráveis
+- **Dual Database**: Separação entre dados de produção e auditoria
 
 ## 📚 Fonte de Dados
 
@@ -100,6 +101,9 @@ pip install -r requirements.txt
 ```
 
 ### 4. Configuração do `.env`
+
+> 📖 **Documentação Completa**: Consulte [docs/ENVIRONMENT_VARIABLES.md](docs/ENVIRONMENT_VARIABLES.md) para detalhes completos sobre todas as variáveis de ambiente.
+
 ```env
 # Ambiente
 ENVIRONMENT=development
@@ -118,26 +122,61 @@ AUDIT_DB_USER=postgres
 AUDIT_DB_PASSWORD=sua_senha
 AUDIT_DB_NAME=dadosrfb_analysis
 
-# Diretórios (opcionais)
-OUTPUT_PATH=data/DOWNLOAD_FILES
-EXTRACT_PATH=data/EXTRACTED_FILES
+# Diretórios de processamento
+DOWNLOAD_PATH=DOWNLOADED_FILES
+EXTRACT_PATH=EXTRACTED_FILES
+CONVERT_PATH=CONVERTED_FILES
 
-# Carregamento
-ETL_CHUNK_SIZE=50000
-ETL_SUB_BATCH_SIZE=5000
-ETL_INTERNAL_CONCURRENCY=3
-ETL_ASYNC_POOL_MIN_SIZE=2
+# Configuração de conversão (CSV → Parquet)
+ETL_CONVERSION_CHUNK_SIZE=50000
+ETL_CONVERSION_WORKERS=2
+ETL_CONVERSION_MEMORY_LIMIT_MB=1024
+
+# Configuração de carregamento (Database)
+ETL_LOADING_BATCH_SIZE=1000
+ETL_LOADING_SUB_BATCH_SIZE=500
+ETL_LOADING_WORKERS=3
+
+# Configuração de download
+ETL_DOWNLOAD_WORKERS=4
+ETL_DOWNLOAD_CHUNK_SIZE_MB=50
+
+# Pool de conexões async
+ETL_ASYNC_POOL_MIN_SIZE=1
 ETL_ASYNC_POOL_MAX_SIZE=10
+```
+
+### 🔧 Validação da Configuração
+
+Para validar sua configuração antes de executar o ETL:
+
+```bash
+# Validar configuração do ambiente
+python scripts/validate_env.py
+
+# Guia rápido de referência
+cat docs/ENV_QUICK_REFERENCE.md
 ```
 
 ### 🔧 Configurações Avançadas
 
-O sistema suporta configurações avançadas para otimização de performance:
+O sistema suporta configurações avançadas organizadas por estágio de processamento:
 
-- **`ETL_CHUNK_SIZE`**: Tamanho do batch principal (padrão: 50,000)
-- **`ETL_SUB_BATCH_SIZE`**: Tamanho dos sub-batches internos (padrão: 5,000)  
-- **`ETL_INTERNAL_CONCURRENCY`**: Paralelismo interno por arquivo (padrão: 3)
-- **`ETL_ASYNC_POOL_*`**: Configurações do pool de conexões async
+**Conversão (CSV → Parquet):**
+- **`ETL_CONVERSION_CHUNK_SIZE`**: Tamanho do batch de conversão (padrão: 50,000)
+- **`ETL_CONVERSION_WORKERS`**: Workers de conversão (padrão: 2)
+- **`ETL_CONVERSION_MEMORY_LIMIT_MB`**: Limite de memória (padrão: 1,024MB)
+
+**Carregamento (Database):**
+- **`ETL_LOADING_BATCH_SIZE`**: Tamanho do batch de inserção (padrão: 1,000)
+- **`ETL_LOADING_SUB_BATCH_SIZE`**: Sub-batches paralelos (padrão: 500)
+- **`ETL_LOADING_WORKERS`**: Workers de carregamento (padrão: 3)
+
+**Download:**
+- **`ETL_DOWNLOAD_WORKERS`**: Workers de download (padrão: 4)
+- **`ETL_DOWNLOAD_CHUNK_SIZE_MB`**: Chunks de download (padrão: 50MB)
+
+> 💡 **Dica**: Use `python scripts/validate_env.py` para recomendações específicas baseadas nos recursos do seu sistema.
 
 ### 📁 Arquivos Suportados
 
@@ -162,14 +201,20 @@ just help
 
 ### Execução Manual
 ```bash
-# ETL para período atual
+# ETL completo para período atual
 python -m src.main
 
 # ETL para período específico
 python -m src.main --year 2024 --month 12
 
+# Estratégias específicas
+python -m src.main --download              # Apenas download
+python -m src.main --download --convert    # Download + conversão
+python -m src.main --download --load       # Download + carregamento
+python -m src.main --convert --load        # Conversão + carregamento
+
 # ETL com refresh completo (limpa tabelas)
-python -m src.main --year 2024 --month 12 --full-refresh true
+python -m src.main --year 2024 --month 12 --full-refresh
 
 # Limpar tabelas específicas
 python -m src.main --clear-tables "empresa,estabelecimento"
@@ -228,15 +273,36 @@ Para informações detalhadas, consulte o [layout oficial](https://www.gov.br/re
 ```
 scrapper-rf-cnpj/
 ├── src/                   # Código fonte principal
-│   ├── main.py            # Ponto de entrada do ETL
+│   ├── main.py            # Ponto de entrada com Strategy Pattern
 │   ├── core/              # Componentes principais do ETL
+│   │   ├── etl.py         # Pipeline principal (ReceitaCNPJPipeline)
+│   │   ├── orchestrator.py# Orquestração de estratégias
+│   │   ├── strategies.py  # Estratégias de execução (download, convert, full)
+│   │   ├── interfaces.py  # Interfaces e contratos
+│   │   ├── services/      # Serviços especializados
+│   │   │   ├── audit/     # Serviço de auditoria e rastreamento
+│   │   │   ├── download/  # Serviço de download de arquivos
+│   │   │   ├── conversion/# Serviço de conversão CSV→Parquet
+│   │   │   └── loading/   # Serviço de carregamento no banco
+│   │   └── utils/         # Utilitários (batch optimizer, dev filter)
 │   ├── database/          # Modelos e conexões de banco
+│   │   ├── models.py      # Modelos SQLAlchemy (MainBase, AuditBase)
+│   │   ├── engine.py      # Database connection factory
+│   │   └── utils/         # Utilitários de banco
 │   ├── setup/             # Configurações e logging
-│   └── utils/             # Utilitários diversos
+│   │   ├── config/        # Sistema de configuração Pydantic
+│   │   │   ├── models.py  # Modelos de configuração tipados
+│   │   │   ├── profiles.py# Perfis por ambiente (dev, prod)
+│   │   │   ├── validation.py# Validação de configuração
+│   │   │   └── loader.py  # Carregamento de configuração
+│   │   ├── base.py        # Configurações base
+│   │   └── logging.py     # Configuração de logs
+│   └── utils/             # Utilitários gerais
 ├── data/                  # Dados processados
-│   ├── DOWNLOAD_FILES/    # Arquivos ZIP baixados
+│   ├── DOWNLOADED_FILES/  # Arquivos ZIP baixados
 │   ├── EXTRACTED_FILES/   # Arquivos CSV extraídos
 │   └── CONVERTED_FILES/   # Arquivos Parquet convertidos
+├── docs/                  # Documentação do projeto
 ├── examples/              # Exemplos de uso
 ├── lab/                   # Notebooks para análise
 ├── logs/                  # Logs do sistema
@@ -268,10 +334,11 @@ scrapper-rf-cnpj/
 ## 🛠️ Desenvolvimento
 
 ### Estrutura de Código
-- **Configuração Centralizada**: `src/setup/config.py`
-- **Padrão Lazy Loading**: Conexões de banco sob demanda
-- **Strategy Pattern**: Diferentes estratégias de carregamento
-- **Auditoria Integrada**: Rastreamento automático de operações
+- **Configuração Pydantic**: `src/setup/config/` - Sistema tipado com validação automática
+- **Strategy Pattern**: `src/core/strategies.py` - Múltiplas estratégias de execução
+- **Service Architecture**: `src/core/services/` - Serviços especializados independentes
+- **Pipeline Orchestrator**: `src/core/orchestrator.py` - Coordenação centralizada
+- **Auditoria Integrada**: `src/core/services/audit/` - Rastreamento completo automático
 
 ### Executando Testes
 ```bash

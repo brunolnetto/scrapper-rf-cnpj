@@ -17,6 +17,7 @@ help:
     @echo "  install         Install Python dependencies using uv"
     @echo "  env             Create virtual environment"
     @echo "  lint            Run ruff linter with auto-fix"
+    @echo "  validate-env    Validate environment configuration"
     @echo ""
     @echo "Maintenance Commands:"
     @echo "  clean           Remove logs and cache files"
@@ -49,12 +50,11 @@ clean: clean-logs clean-cache
 
 # Creates a virtual environment
 env:
-    pip install virtualenv
-    virtualenv .venv
+    uv venv
 
 # Installs the python requirements
 install:
-    uv pip install -r requirements.txt
+    uv sync
 
 # Searchs for a token in the code
 search token:
@@ -93,4 +93,8 @@ run-etl year month:
 
 # Run ETL for current date
 run-current:
-    python3 -m src.main 
+    python3 -m src.main
+
+# Validate environment configuration
+validate-env:
+    python3 scripts/validate_env.py 

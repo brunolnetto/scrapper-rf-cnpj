@@ -12,7 +12,7 @@ from . import base
 
 logging.basicConfig(level=logging.INFO)
 
-async def record_manifest(conn: asyncpg.Connection, filename: str, status: str, checksum: Optional[bytes], filesize: Optional[int], run_id: str, notes: Optional[str] = None, rows: Optional[int] = None):
+async def record_manifest(conn: asyncpg.Connection, filename: str, status: str, checksum: Optional[bytes], filesize: Optional[int], run_id: str, notes: Optional[str] = None, rows_processed: Optional[int] = None):
     await conn.execute(
         """
         INSERT INTO ingestion_manifest (filename, checksum, filesize, processed_at, rows, status, run_id, notes)
@@ -53,13 +53,28 @@ async def async_upsert(
     checksum = None
     
     emit_log("file_processing_started", run_id=run_id, filename=filename, file_path=file_path)
+    
+    # MEMORY-EFFICIENT: Calculate file size and checksum without loading entire file into memory
     try:
-        with open(file_path, "rb") as f:
-            data = f.read()
-            filesize = len(data)
-            checksum = hashlib.sha256(data).digest()
-    except Exception:
-        pass
+        filesize = os.path.getsize(file_path)
+        
+        # Skip checksum for very large files to avoid performance issues
+        checksum_threshold_mb = int(os.getenv("ETL_CHECKSUM_THRESHOLD_MB", "1000"))  # 1000MB (1GB) default
+        checksum_threshold_bytes = checksum_threshold_mb * 1024 * 1024
+        if filesize > checksum_threshold_bytes:
+            logging.info(f"[PERFORMANCE] Skipping checksum for large file {filename}: {filesize:,} bytes (> {checksum_threshold_mb}MB)")
+            checksum = None
+        else:
+            # Calculate checksum in chunks to avoid memory issues
+            sha256 = hashlib.sha256()
+            with open(file_path, "rb") as f:
+                for chunk in iter(lambda: f.read(8192), b""):
+                    sha256.update(chunk)
+            checksum = sha256.digest()
+            logging.info(f"[MEMORY] File {filename}: {filesize:,} bytes, checksum calculated efficiently")
+    except Exception as e:
+        logging.warning(f"Could not calculate checksum for {filename}: {e}")
+        checksum = None
 
     async with pool.acquire() as conn:
         await conn.execute(base.ensure_table_sql(table, headers, base.map_types(headers, types), primary_keys))
@@ -95,7 +110,8 @@ async def async_upsert(
 
         emit_log("file_completed", run_id=run_id, filename=filename, rows=rows_total,
                 parallel_mode=enable_internal_parallelism)
-        await record_manifest(conn, filename, "success", checksum, filesize, run_id, rows=rows_total)
+        # Note: Manifest recording is handled by the audit service at the loading strategy level
+        # await record_manifest(conn, filename, "success", checksum, filesize, run_id, rows_processed=rows_total)
     
     return rows_total  # Return the total number of rows processed
 

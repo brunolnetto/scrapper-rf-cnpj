@@ -4,7 +4,7 @@ from datetime import datetime
 from ..setup.logging import logger
 from .interfaces import Pipeline, OrchestrationStrategy
 
-class GenericOrchestrator:
+class PipelineOrchestrator:
     def __init__(self, pipeline: Pipeline, strategy: OrchestrationStrategy, config_service):
         self.pipeline = pipeline
         self.strategy = strategy
@@ -22,6 +22,26 @@ class GenericOrchestrator:
         logger.info(f"Orchestrator start: {datetime.now():%Y-%m-%d %H:%M:%S}")
         logger.info(f"Pipeline: {self.pipeline.get_name()}")
         logger.info(f"Strategy: {self.strategy.get_name()}")
+        
+        # Handle temporal configuration (year/month)
+        year = kwargs.get('year')
+        month = kwargs.get('month')
+        if year is not None or month is not None:
+            # Set temporal config directly on the config object
+            if year is not None:
+                self.config_service._year = year
+                # Also update pipeline config if it exists
+                if hasattr(self.config_service, 'pipeline'):
+                    self.config_service.pipeline.year = year
+            if month is not None:
+                self.config_service._month = month
+                # Also update pipeline config if it exists
+                if hasattr(self.config_service, 'pipeline'):
+                    self.config_service.pipeline.month = month
+            
+            current_year = getattr(self.config_service, '_year', year)
+            current_month = getattr(self.config_service, '_month', month)
+            logger.info(f"Configured temporal settings: year={current_year}, month={current_month}")
         
         # Validate pipeline configuration
         if not self.pipeline.validate_config():

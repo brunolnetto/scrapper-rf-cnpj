@@ -1,8 +1,14 @@
-from typing import NamedTuple, List, Dict, Tuple, Callable
+from typing import NamedTuple, List, Dict, Tuple, Callable, Optional
 from datetime import datetime
 from pydantic import BaseModel
+from uuid import UUID
 
-from ..database.models import AuditDBSchema
+# Use absolute import instead of relative import
+try:
+    from database.models import TableIngestionManifestSchema
+except ImportError:
+    # Fallback for when running from different contexts
+    from ..database.models import TableIngestionManifestSchema
 
 
 class FileInfo(BaseModel):
@@ -34,51 +40,37 @@ class FileGroupInfo(BaseModel):
         return (end - start).days
 
 
+class FileIngestionManifestSchema(BaseModel):
+    """
+    Pydantic schema for FileIngestionManifest model.
+    Represents file-level ingestion metadata.
+    """
+    manifest_id: Optional[UUID] = None
+    table_manifest_id: Optional[UUID] = None
+    table_name: Optional[str] = None
+    file_path: str
+    status: str
+    checksum: Optional[str] = None
+    filesize: Optional[int] = None
+    rows: Optional[int] = None
+    processed_at: Optional[datetime] = None    
+    notes: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
 class AuditMetadata(BaseModel):
     """
     Represents the metadata for auditing purposes.
     """
 
-    audit_list: List[AuditDBSchema]
+    audit_list: List[TableIngestionManifestSchema]
     tablename_to_zipfile_to_files: Dict[str, Dict[str, List[str]]]
 
     def __repr__(self) -> str:
         args = f"audit_list={self.audit_list}, tablename_to_zipfile_to_files={self.tablename_to_zipfile_to_files}"
         return f"AuditMetadata({args})"
-
-
-class TableIndexInfo(BaseModel):
-    """
-    Represents information about a table index.
-    """
-
-    table_name: str
-    columns: List[str]
-    algorithm: str = "btree"
-
-    def __index_name(self, column: str) -> str:
-        """
-        Returns the name of the index for a given column.
-        """
-        return f"{self.table_name}_{column}_idx"
-
-    def index_names(self) -> List[str]:
-        """
-        Returns the list of index names for the columns.
-        """
-        return [self.__index_name(column) for column in self.columns]
-
-    def query(self) -> str:
-        """
-        Returns the SQL query to create the index.
-        """
-        columns = ", ".join(self.columns)
-        index_names = ", ".join(self.index_names())
-        return f"CREATE INDEX {index_names} ON {self.table_name} ({columns}) USING {self.algorithm}; COMMIT;"
-
-    def __repr__(self) -> str:
-        args = f"table_name={self.table_name}, columns={self.columns}, algorithm={self.algorithm}"
-        return f"TableIndexInfo({args})"
 
 
 class TableInfo(NamedTuple):
@@ -93,3 +85,6 @@ class TableInfo(NamedTuple):
     encoding: str
     transform_map: Callable
     expression: str
+    table_model: object = None
+
+

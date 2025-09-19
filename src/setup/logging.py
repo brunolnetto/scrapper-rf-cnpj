@@ -1,5 +1,6 @@
 import logging
 import sys
+import threading
 from datetime import datetime
 from dotenv import load_dotenv
 from os import getenv, makedirs, path
@@ -33,32 +34,41 @@ FIELDS = [
 load_dotenv()
 ENVIRONMENT = getenv("ENVIRONMENT", "development")
 
-# Configure logger
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)  # Set to the lowest level to capture all messages
+# Get the root logger and configure it properly to prevent duplication
+root_logger = logging.getLogger()
 
-# Formatter
-logging_format = " ".join(map(lambda field_name: f"%({field_name})s", FIELDS))
-formatter = jsonlogger.JsonFormatter(logging_format)
+# Global flag to prevent multiple setup with thread safety
+_logging_configured = False
+_logging_lock = threading.Lock()
 
-
-def setup_stream_handlers():
-    """Setup stream handlers for development environment."""
-    stdout_handler = logging.StreamHandler(sys.stdout)
-    stderr_handler = logging.StreamHandler(sys.stderr)
-
-    stdout_handler.setFormatter(formatter)
-    stderr_handler.setFormatter(formatter)
-
-    stdout_handler.setLevel(logging.INFO)
-    stderr_handler.setLevel(logging.WARN)
-
-    logger.addHandler(stdout_handler)
-    logger.addHandler(stderr_handler)
-
-
-def setup_file_handlers():
-    """Setup file handlers for logging."""
+def configure_logging():
+    """Configure logging once globally (thread-safe)."""
+    global _logging_configured, root_logger
+    
+    with _logging_lock:
+        if _logging_configured:
+            return
+        
+        # Clear all existing handlers on the root logger to prevent duplication
+        root_logger.handlers.clear()
+        
+        # Set root logger level
+        root_logger.setLevel(logging.DEBUG)
+    root_logger.setLevel(logging.DEBUG)
+    
+    # Formatters
+    json_format = " ".join(map(lambda field_name: f"%({field_name})s", FIELDS))
+    json_formatter = jsonlogger.JsonFormatter(json_format)
+    console_formatter = logging.Formatter('%(levelname)s:%(name)s:%(message)s')
+    
+    # Console handler for development
+    if ENVIRONMENT == "development":
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setFormatter(console_formatter)
+        console_handler.setLevel(logging.INFO)
+        root_logger.addHandler(console_handler)
+    
+    # File handlers
     date_str = datetime.now().strftime("%Y-%m-%d")
     time_str = datetime.now().strftime("%H_%M")
     log_root_path = f"logs/{date_str}"
@@ -73,22 +83,23 @@ def setup_file_handlers():
     makedirs(path.dirname(error_file), exist_ok=True)
     makedirs(path.dirname(info_file), exist_ok=True)
 
-    log_infos = [
-        (error_file, logging.ERROR),
-        (info_file, logging.INFO),
-        (info_file, logging.WARN),
-    ]
+    # Error file handler
+    error_handler = logging.FileHandler(error_file, mode="a")
+    error_handler.setFormatter(json_formatter)
+    error_handler.setLevel(logging.ERROR)
+    root_logger.addHandler(error_handler)
+    
+    # Info file handler (for INFO and WARNING)
+    info_handler = logging.FileHandler(info_file, mode="a")
+    info_handler.setFormatter(json_formatter)
+    info_handler.setLevel(logging.INFO)
+    root_logger.addHandler(info_handler)
+    
+    _logging_configured = True
 
-    for log_file, log_level in log_infos:
-        file_handler = logging.FileHandler(log_file, mode="a")
-        file_handler.setFormatter(formatter)
-        file_handler.setLevel(log_level)
-        logger.addHandler(file_handler)
+# Configure logging on import
+configure_logging()
 
-
-if ENVIRONMENT == "development":
-    setup_stream_handlers()
-
-setup_file_handlers()
-
+# Create a logger for this module
+logger = logging.getLogger(__name__)
 logger.info("Logging started.")

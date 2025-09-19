@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 from typing import Union
 from psycopg2 import OperationalError
@@ -6,14 +7,12 @@ from sqlalchemy_utils import database_exists, create_database
 from sqlalchemy import text
 
 from .config import DatabaseConfig
-from ..database.schemas import Database
-from ..database.engine import create_database_instance as create_db_engine
-
+from ..database.engine import create_database_instance as create_db_engine, Database
 from .logging import logger
 
 def load_environment_variables(env_file: str = ".env") -> None:
     """Load environment variables from a file."""
-    env_path = os.path.join(os.getcwd(), env_file)
+    env_path = Path.cwd() / env_file
     load_dotenv(env_path)
 
 
