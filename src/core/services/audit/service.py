@@ -6,7 +6,6 @@ Includes comprehensive manifest tracking, file integrity verification, and batch
 """
 
 import hashlib
-import os
 import uuid
 import time
 from datetime import datetime
@@ -371,7 +370,7 @@ class AuditService:
         try:
             # Skip checksum for very large files to avoid performance issues
             filesize = file_path.stat().st_size
-            checksum_threshold_mb = int(os.getenv("ETL_CHECKSUM_THRESHOLD_MB", "1000"))  # 1000MB (1GB) default
+            checksum_threshold_mb = self.config.download.checksum_threshold_mb
             checksum_threshold_bytes = checksum_threshold_mb * 1024 * 1024
             
             if filesize > checksum_threshold_bytes:

@@ -376,7 +376,8 @@ class UnifiedLoader(BaseFileLoader):
             max_retries=max_retries,
             types=column_types,
             enable_internal_parallelism=config_params['enable_parallelism'],
-            internal_concurrency=config_params['internal_concurrency']
+            internal_concurrency=config_params['internal_concurrency'],
+            checksum_threshold_mb=self.config.download.checksum_threshold_mb if self.config else 1000
         )
     
     def _apply_transforms_to_batches(self, batch_generator, table_info: TableInfo, headers: List[str], file_path: Path = None):

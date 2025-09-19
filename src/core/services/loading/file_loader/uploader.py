@@ -45,7 +45,8 @@ async def async_upsert(
     run_id: Optional[str] = None,
     types: dict = None,
     enable_internal_parallelism: bool = False,
-    internal_concurrency: int = 3
+    internal_concurrency: int = 3,
+    checksum_threshold_mb: int = 1000
 ):
     # Generate unique run_id for this file processing session
     run_id = run_id or f"{uuid.uuid4().hex[:8]}_{os.getpid()}"
@@ -59,7 +60,6 @@ async def async_upsert(
         filesize = os.path.getsize(file_path)
         
         # Skip checksum calculation for very large files to avoid performance issues
-        checksum_threshold_mb = int(os.getenv("ETL_CHECKSUM_THRESHOLD_MB", "1000"))  # 1000MB (1GB) default
         checksum_threshold_bytes = checksum_threshold_mb * 1024 * 1024
         if filesize > checksum_threshold_bytes:
             logger.info(f"[PERFORMANCE] Skipping checksum for large file {filename}: {filesize:,} bytes (> {checksum_threshold_mb}MB)")
