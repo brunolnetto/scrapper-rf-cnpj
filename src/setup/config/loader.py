@@ -7,14 +7,12 @@ and provides backward compatibility with the legacy system.
 
 from typing import Dict, Any, Optional, List
 import os
-import logging
 from pathlib import Path
 from dotenv import load_dotenv
 
 from .models import AppConfig, DatabaseConfig, PipelineConfig, AuditConfig, DataSourceConfig, DataSinkConfig, PathConfig
 from .validation import ConfigurationValidator
-
-logger = logging.getLogger(__name__)
+from ..logging import logger
 
 
 class ConfigLoader:
@@ -190,7 +188,7 @@ class ConfigLoader:
             memory_limit_mb=int(os.getenv("ETL_CONVERSION_MEMORY_LIMIT_MB", "1024")),
             workers=int(os.getenv("ETL_CONVERSION_WORKERS", "2")),
             compression=os.getenv("ETL_CONVERSION_COMPRESSION", "snappy"),
-            row_group_size=int(os.getenv('ETL_CONVERSION_ROW_GROUP_SIZE'), "100000"),  # Rarely needs tuning
+            row_group_size=int(os.getenv('ETL_CONVERSION_ROW_GROUP_SIZE', '100000')),  # Rarely needs tuning
             flush_threshold=10,  # Hardcoded - internal optimization
             auto_fallback=True,  # Hardcoded - should always be enabled
             row_estimation_factor=8000,  # Hardcoded - internal calculation
@@ -205,7 +203,7 @@ class ConfigLoader:
         
         loading = LoadingConfig(
             batch_size=int(os.getenv("ETL_LOADING_BATCH_SIZE", "50000")),
-            sub_batch_size=int(os.getenv("ETL_LOADING_SUB_BATCH_SIZE"), "20_000"),  # Hardcoded - internal optimization detail
+            sub_batch_size=int(os.getenv("ETL_LOADING_SUB_BATCH_SIZE", "20_000")),  # Hardcoded - internal optimization detail
             workers=int(os.getenv("ETL_LOADING_WORKERS", "4")),
             max_retries=max_retries,
             timeout_seconds=timeout_seconds,
