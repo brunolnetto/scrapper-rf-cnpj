@@ -2,7 +2,21 @@
 """
 Environment Configuration Validator for CNPJ ETL Pipeline
 
-This script validates environment variables and provides recommendations
+This script validates environment variables and                # Loading batch size
+        chunk_size = self._get_int_env('ETL_LOADING_BATCH_SIZE', 50000)
+        if chunk_size < 10000:
+            self.warnings.append("⚠️ ETL_LOADING_BATCH_SIZE is very small. May impact performance.")
+        elif chunk_size > 200000:
+            self.warnings.append("⚠️ ETL_LOADING_BATCH_SIZE is very large. May cause memory issues.")
+        else:
+            print(f"✅ ETL_LOADING_BATCH_SIZE: {chunk_size:,}")ng chunk size
+        chunk_size = self._get_int_env('ETL_LOADING_BATCH_SIZE', 50000)
+        if chunk_size < 10000:
+            self.warnings.append("⚠️ ETL_LOADING_BATCH_SIZE is very small. May impact performance.")
+        elif chunk_size > 200000:
+            self.warnings.append("⚠️ ETL_LOADING_BATCH_SIZE is very large. May cause memory issues.")
+        else:
+            print(f"✅ ETL_LOADING_BATCH_SIZE: {chunk_size:,}") recommendations
 for optimal configuration based on system resources.
 """
 
@@ -99,7 +113,7 @@ class EnvironmentValidator:
         """Validate file system paths."""
         print("\n📁 File System Paths")
         
-        path_vars = ['DOWNLOAD_PATH', 'EXTRACT_PATH', 'CONVERT_PATH']
+        path_vars = ['DOWNLOAD_PATH', 'EXTRACTION_PATH', 'CONVERSION_PATH']
         
         for var in path_vars:
             path_str = os.getenv(var)
@@ -121,32 +135,32 @@ class EnvironmentValidator:
         """Validate performance-related settings."""
         print("\n🚀 Performance Settings")
         
-        # ETL Workers
-        workers = self._get_int_env('ETL_WORKERS', 4)
+        # ETL Loading Workers
+        workers = self._get_int_env('ETL_LOADING_WORKERS', 4)
         cpu_count = psutil.cpu_count()
         
         if workers > cpu_count:
-            self.warnings.append(f"⚠️ ETL_WORKERS ({workers}) > CPU cores ({cpu_count}). Consider reducing.")
+            self.warnings.append(f"⚠️ ETL_LOADING_WORKERS ({workers}) > CPU cores ({cpu_count}). Consider reducing.")
         elif workers < cpu_count // 2:
-            self.info.append(f"💡 ETL_WORKERS ({workers}) is conservative. You could increase up to {cpu_count}.")
+            self.info.append(f"💡 ETL_LOADING_WORKERS ({workers}) is conservative. You could increase up to {cpu_count}.")
         else:
-            print(f"✅ ETL_WORKERS: {workers} (CPU cores: {cpu_count})")
+            print(f"✅ ETL_LOADING_WORKERS: {workers} (CPU cores: {cpu_count})")
         
-        # Chunk size
-        chunk_size = self._get_int_env('ETL_CHUNK_SIZE', 50000)
+        # Loading batch size
+        chunk_size = self._get_int_env('ETL_LOADING_BATCH_SIZE', 50000)
         if chunk_size < 10000:
-            self.warnings.append("⚠️ ETL_CHUNK_SIZE is very small. May impact performance.")
+            self.warnings.append("⚠️ ETL_LOADING_BATCH_SIZE is very small. May impact performance.")
         elif chunk_size > 200000:
-            self.warnings.append("⚠️ ETL_CHUNK_SIZE is very large. May cause memory issues.")
+            self.warnings.append("⚠️ ETL_LOADING_BATCH_SIZE is very large. May cause memory issues.")
         else:
-            print(f"✅ ETL_CHUNK_SIZE: {chunk_size:,}")
+            print(f"✅ ETL_LOADING_BATCH_SIZE: {chunk_size:,}")
         
         # Parallelism settings
         is_parallel = os.getenv('ETL_IS_PARALLEL', 'true').lower() == 'true'
         internal_parallel = os.getenv('ETL_ENABLE_INTERNAL_PARALLELISM', 'true').lower() == 'true'
         
         if not is_parallel and workers > 1:
-            self.warnings.append("⚠️ ETL_IS_PARALLEL=false but ETL_WORKERS > 1. Enable parallelism for better performance.")
+            self.warnings.append("⚠️ ETL_IS_PARALLEL=false but ETL_LOADING_WORKERS > 1. Enable parallelism for better performance.")
         
         print(f"✅ Parallelism: External={is_parallel}, Internal={internal_parallel}")
     
@@ -154,22 +168,22 @@ class EnvironmentValidator:
         """Validate memory-related settings."""
         print("\n🧠 Memory Settings")
         
-        max_memory_mb = self._get_int_env('ETL_MAX_MEMORY_MB', 1024)
+        max_memory_mb = self._get_int_env('ETL_CONVERSION_MEMORY_LIMIT_MB', 1024)
         system_memory_gb = psutil.virtual_memory().total / (1024**3)
         
         if max_memory_mb > system_memory_gb * 1024 * 0.8:
-            self.warnings.append(f"⚠️ ETL_MAX_MEMORY_MB ({max_memory_mb}MB) is > 80% of system memory ({system_memory_gb:.1f}GB)")
+            self.warnings.append(f"⚠️ ETL_CONVERSION_MEMORY_LIMIT_MB ({max_memory_mb}MB) is > 80% of system memory ({system_memory_gb:.1f}GB)")
         elif max_memory_mb < 512:
-            self.warnings.append("⚠️ ETL_MAX_MEMORY_MB is very low. May impact performance.")
+            self.warnings.append("⚠️ ETL_CONVERSION_MEMORY_LIMIT_MB is very low. May impact performance.")
         else:
-            print(f"✅ ETL_MAX_MEMORY_MB: {max_memory_mb}MB (System: {system_memory_gb:.1f}GB)")
+            print(f"✅ ETL_CONVERSION_MEMORY_LIMIT_MB: {max_memory_mb}MB (System: {system_memory_gb:.1f}GB)")
         
-        # Pool sizes
-        pool_max = self._get_int_env('ETL_ASYNC_POOL_MAX_SIZE', 10)
-        workers = self._get_int_env('ETL_WORKERS', 4)
+        # Pool sizes (using consolidated pool variable)
+        pool_max = self._get_int_env('ETL_POOL_SIZE', 10)
+        workers = self._get_int_env('ETL_LOADING_WORKERS', 4)
         
         if pool_max < workers:
-            self.warnings.append(f"⚠️ ETL_ASYNC_POOL_MAX_SIZE ({pool_max}) < ETL_WORKERS ({workers}). May cause connection bottlenecks.")
+            self.warnings.append(f"⚠️ ETL_POOL_SIZE ({pool_max}) < ETL_LOADING_WORKERS ({workers}). May cause connection bottlenecks.")
         else:
             print(f"✅ Connection pool: max={pool_max}, workers={workers}")
     
@@ -213,7 +227,7 @@ class EnvironmentValidator:
         print(f"CPU: {cpu_count} cores")
         
         # Disk space for paths
-        path_vars = ['DOWNLOAD_PATH', 'EXTRACT_PATH', 'CONVERT_PATH']
+        path_vars = ['DOWNLOAD_PATH', 'EXTRACTION_PATH', 'CONVERSION_PATH']
         for var in path_vars:
             path_str = os.getenv(var)
             if path_str:

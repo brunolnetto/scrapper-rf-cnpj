@@ -1274,7 +1274,7 @@ class LargeDatasetConfig(ConversionConfig):
         super().__init__()
         
         # More aggressive memory settings for better performance
-        self.max_memory_mb = 1500  # Increased to allow larger chunks
+        self.memory_limit_mb = 1500  # Increased to allow larger chunks
         self.cleanup_threshold_ratio = 0.8  # Less frequent cleanup
         self.baseline_buffer_mb = 256  # Reduced buffer for more working memory
         
@@ -1284,11 +1284,6 @@ class LargeDatasetConfig(ConversionConfig):
         
         # Single-threaded for memory control but larger chunks
         self.workers = 1
-        
-        # Performance-oriented settings
-        self.enable_file_splitting = False  # Disable splitting - use streaming instead
-        self.max_file_size_mb = 10000  # Much larger threshold before splitting
-        self.chunk_processing_delay = 0  # No delay between chunks
 
 
 # Smart processing strategy selector

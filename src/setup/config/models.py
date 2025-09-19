@@ -135,6 +135,12 @@ class ConversionConfig(BaseModel):
         le=1024,
         description="Memory buffer in MB to maintain above baseline for system stability"
     )
+    max_file_size_mb: int = Field(
+        default=1000,
+        ge=100,
+        le=10000,
+        description="Maximum file size in MB for processing before using file splitting strategy"
+    )
     
     @field_validator('chunk_size')
     @classmethod

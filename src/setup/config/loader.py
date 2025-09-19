@@ -186,44 +186,48 @@ class ConfigLoader:
         
         # Load conversion config
         conversion = ConversionConfig(
-            chunk_size=int(os.getenv("ETL_CONVERSION_CHUNK_SIZE", os.getenv("ETL_CHUNK_SIZE", "50000"))),
-            memory_limit_mb=int(os.getenv("ETL_CONVERSION_MEMORY_LIMIT_MB", os.getenv("ETL_MAX_MEMORY_MB", "1024"))),
+            chunk_size=int(os.getenv("ETL_CONVERSION_CHUNK_SIZE", "50000")),
+            memory_limit_mb=int(os.getenv("ETL_CONVERSION_MEMORY_LIMIT_MB", "1024")),
             workers=int(os.getenv("ETL_CONVERSION_WORKERS", "2")),
-            compression=os.getenv("ETL_CONVERSION_COMPRESSION", os.getenv("ETL_COMPRESSION", "snappy")),
-            row_group_size=int(os.getenv("ETL_CONVERSION_ROW_GROUP_SIZE", os.getenv("ETL_ROW_GROUP_SIZE", "100000"))),
-            flush_threshold=int(os.getenv("ETL_CONVERSION_FLUSH_THRESHOLD", "10")),
-            auto_fallback=os.getenv("ETL_CONVERSION_AUTO_FALLBACK", "true").lower() == "true",
-            row_estimation_factor=int(os.getenv("ETL_CONVERSION_ROW_ESTIMATION_FACTOR", "8000")),
-            cleanup_threshold_ratio=float(os.getenv("ETL_CONVERSION_CLEANUP_THRESHOLD_RATIO", "0.8")),
-            baseline_buffer_mb=int(os.getenv("ETL_CONVERSION_BASELINE_BUFFER_MB", "256"))
+            compression=os.getenv("ETL_CONVERSION_COMPRESSION", "snappy"),
+            row_group_size=int(os.getenv('ETL_CONVERSION_ROW_GROUP_SIZE'), "100000"),  # Rarely needs tuning
+            flush_threshold=10,  # Hardcoded - internal optimization
+            auto_fallback=True,  # Hardcoded - should always be enabled
+            row_estimation_factor=8000,  # Hardcoded - internal calculation
+            cleanup_threshold_ratio=0.8,  # Hardcoded - memory management
+            baseline_buffer_mb=256  # Hardcoded - internal buffer
         )
         
-        # Load loading config
+        # Load loading config (consolidated timeout/retry, removed micro-optimizations)
+        timeout_seconds = int(os.getenv("ETL_TIMEOUT_SECONDS", "300"))  # Consolidated timeout
+        max_retries = int(os.getenv("ETL_MAX_RETRIES", "3"))  # Consolidated retries
+        pool_size = int(os.getenv("ETL_POOL_SIZE", "10"))  # Consolidated pool settings
+        
         loading = LoadingConfig(
-            batch_size=int(os.getenv("ETL_LOADING_BATCH_SIZE", os.getenv("ETL_CHUNK_SIZE", "1000"))),
-            sub_batch_size=int(os.getenv("ETL_LOADING_SUB_BATCH_SIZE", os.getenv("ETL_SUB_BATCH_SIZE", "500"))),
-            workers=int(os.getenv("ETL_LOADING_WORKERS", os.getenv("ETL_WORKERS", "3"))),
-            max_retries=int(os.getenv("ETL_LOADING_MAX_RETRIES", os.getenv("ETL_MAX_RETRIES", "3"))),
-            timeout_seconds=int(os.getenv("ETL_LOADING_TIMEOUT_SECONDS", os.getenv("ETL_TIMEOUT_SECONDS", "300"))),
-            use_copy=os.getenv("ETL_LOADING_USE_COPY", os.getenv("ETL_USE_COPY", "true")).lower() == "true",
-            enable_internal_parallelism=os.getenv("ETL_LOADING_ENABLE_INTERNAL_PARALLELISM", os.getenv("ETL_ENABLE_INTERNAL_PARALLELISM", "true")).lower() == "true",
-            max_batch_size=int(os.getenv("ETL_LOADING_MAX_BATCH_SIZE", os.getenv("ETL_MAX_BATCH_SIZE", "500000"))),
-            min_batch_size=int(os.getenv("ETL_LOADING_MIN_BATCH_SIZE", os.getenv("ETL_MIN_BATCH_SIZE", "10000"))),
-            batch_size_mb=int(os.getenv("ETL_LOADING_BATCH_SIZE_MB", os.getenv("ETL_BATCH_SIZE_MB", "100"))),
-            # Async operations and connection pooling (moved from pipeline)
+            batch_size=int(os.getenv("ETL_LOADING_BATCH_SIZE", "50000")),
+            sub_batch_size=int(os.getenv("ETL_LOADING_SUB_BATCH_SIZE"), "20_000"),  # Hardcoded - internal optimization detail
+            workers=int(os.getenv("ETL_LOADING_WORKERS", "4")),
+            max_retries=max_retries,
+            timeout_seconds=timeout_seconds,
+            use_copy=True,  # Hardcoded - should always be enabled for performance
+            enable_internal_parallelism=True,  # Hardcoded - should always be enabled
+            max_batch_size=500000,  # Hardcoded - internal constraint
+            min_batch_size=10000,  # Hardcoded - internal constraint
+            batch_size_mb=100,  # Hardcoded - redundant with batch_size
+            # Async operations and connection pooling
             internal_concurrency=int(os.getenv("ETL_INTERNAL_CONCURRENCY", "3")),
-            async_pool_min_size=int(os.getenv("ETL_ASYNC_POOL_MIN_SIZE", "1")),
-            async_pool_max_size=int(os.getenv("ETL_ASYNC_POOL_MAX_SIZE", "10"))
+            async_pool_min_size=1,  # Hardcoded - always start with 1
+            async_pool_max_size=pool_size
         )
         
-        # Load download config
+        # Load download config (using consolidated settings)
         download = DownloadConfig(
-            workers=int(os.getenv("ETL_DOWNLOAD_WORKERS", os.getenv("ETL_WORKERS", "4"))),
+            workers=int(os.getenv("ETL_DOWNLOAD_WORKERS", "4")),
             chunk_size_mb=int(os.getenv("ETL_DOWNLOAD_CHUNK_SIZE_MB", "50")),
-            verify_checksums=os.getenv("ETL_DOWNLOAD_VERIFY_CHECKSUMS", os.getenv("ETL_CHECKSUM_VERIFICATION", "true")).lower() == "true",
-            checksum_threshold_mb=int(os.getenv("ETL_DOWNLOAD_CHECKSUM_THRESHOLD_MB", os.getenv("ETL_CHECKSUM_THRESHOLD_MB", "1000"))),
-            timeout_seconds=int(os.getenv("ETL_DOWNLOAD_TIMEOUT_SECONDS", os.getenv("ETL_TIMEOUT_SECONDS", "300"))),
-            max_retries=int(os.getenv("ETL_DOWNLOAD_MAX_RETRIES", os.getenv("ETL_MAX_RETRIES", "3")))
+            verify_checksums=os.getenv("ETL_DOWNLOAD_VERIFY_CHECKSUMS", "true").lower() == "true",
+            checksum_threshold_mb=int(os.getenv("ETL_DOWNLOAD_CHECKSUM_THRESHOLD_MB", "1000")),
+            timeout_seconds=timeout_seconds,  # Using consolidated timeout
+            max_retries=max_retries  # Using consolidated retries
         )
         
         # Load development config
@@ -274,13 +278,13 @@ class ConfigLoader:
         """Load audit tracking configuration from environment variables."""
         return AuditConfig(
             manifest_tracking=os.getenv("ETL_MANIFEST_TRACKING", "false").lower() == "true",
-            update_threshold=int(os.getenv("BATCH_UPDATE_THRESHOLD", "100")),
-            update_interval=int(os.getenv("BATCH_UPDATE_INTERVAL", "30")),
-            enable_bulk_updates=os.getenv("ENABLE_BULK_UPDATES", "true").lower() == "true",
-            enable_temporal_context=os.getenv("ENABLE_TEMPORAL_CONTEXT", "true").lower() == "true",
-            default_batch_size=int(os.getenv("DEFAULT_BATCH_SIZE", "20000")),
-            retention_days=int(os.getenv("BATCH_RETENTION_DAYS", "30")),
-            enable_monitoring=os.getenv("ENABLE_BATCH_MONITORING", "true").lower() == "true"
+            update_threshold=100,  # Hardcoded - internal optimization detail
+            update_interval=30,  # Hardcoded - internal optimization detail
+            enable_bulk_updates=True,  # Hardcoded - should always be enabled
+            enable_temporal_context=True,  # Hardcoded - should always be enabled
+            default_batch_size=20000,  # Hardcoded - internal batch size
+            retention_days=30,  # Hardcoded - sensible default retention
+            enable_monitoring=True  # Hardcoded - should always be enabled
         )
     
     def _validate_config(self, config: AppConfig):
@@ -341,6 +345,17 @@ class ConfigLoader:
             "ETL_WORKERS": "Use ETL_CONVERSION_WORKERS, ETL_LOADING_WORKERS, and ETL_DOWNLOAD_WORKERS instead",
             "ETL_MAX_RETRIES": "Use ETL_LOADING_MAX_RETRIES and ETL_DOWNLOAD_MAX_RETRIES instead",
             "ETL_TIMEOUT_SECONDS": "Use ETL_LOADING_TIMEOUT_SECONDS and ETL_DOWNLOAD_TIMEOUT_SECONDS instead",
+            "ETL_MAX_MEMORY_MB": "Use ETL_CONVERSION_MEMORY_LIMIT_MB instead",
+            "ETL_COMPRESSION": "Use ETL_CONVERSION_COMPRESSION instead",
+            "ETL_ROW_GROUP_SIZE": "Use ETL_CONVERSION_ROW_GROUP_SIZE instead",
+            "ETL_SUB_BATCH_SIZE": "Use ETL_LOADING_SUB_BATCH_SIZE instead",
+            "ETL_USE_COPY": "Use ETL_LOADING_USE_COPY instead",
+            "ETL_ENABLE_INTERNAL_PARALLELISM": "Use ETL_LOADING_ENABLE_INTERNAL_PARALLELISM instead",
+            "ETL_MAX_BATCH_SIZE": "Use ETL_LOADING_MAX_BATCH_SIZE instead",
+            "ETL_MIN_BATCH_SIZE": "Use ETL_LOADING_MIN_BATCH_SIZE instead",
+            "ETL_BATCH_SIZE_MB": "Use ETL_LOADING_BATCH_SIZE_MB instead",
+            "ETL_CHECKSUM_VERIFICATION": "Use ETL_DOWNLOAD_VERIFY_CHECKSUMS instead",
+            "ETL_CHECKSUM_THRESHOLD_MB": "Use ETL_DOWNLOAD_CHECKSUM_THRESHOLD_MB instead",
         }
         
         for var, recommendation in deprecated_mappings.items():
