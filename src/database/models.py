@@ -26,7 +26,16 @@ MainBase = declarative_base()
 
 T = TypeVar("T", bound=BaseModel)
 
-# Define status enums for batch tracking
+# Define unified status enum for all audit models
+class AuditStatus(enum.Enum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING" 
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+    SKIPPED = "SKIPPED"
+
+# Legacy enums - to be removed after migration
 class BatchStatus(enum.Enum):
     PENDING = "PENDING"
     RUNNING = "RUNNING" 
@@ -82,10 +91,10 @@ class TableIngestionManifestSchema(BaseModel, Generic[T]):
     )
 
     def to_audit_db(self) -> Any:
-        """Convert TableIngestionManifestSchema to TableIngestionManifest model."""
-        return TableIngestionManifest(
-            table_manifest_id=self.table_manifest_id,
-            table_name=self.table_name,
+        """Convert TableIngestionManifestSchema to TableAuditManifest model."""
+        return TableAuditManifest(
+            table_audit_id=self.table_manifest_id,
+            entity_name=self.table_name,
             source_files=self.source_files,
             file_size_bytes=self.file_size_bytes,
             source_updated_at=self.source_updated_at,
@@ -100,197 +109,251 @@ class TableIngestionManifestSchema(BaseModel, Generic[T]):
 
 
 
-class TableIngestionManifest(AuditBase):
-    """
-    SQLAlchemy model for the table ingestion manifest.
-    Tracks high-level table processing metadata with proper temporal context.
-    """
-    __tablename__ = "table_audit"
+# =============================================================================
+# UNIFORM AUDIT MODELS - New Schema Implementation
+# =============================================================================
 
-    table_manifest_id = Column(UUID(as_uuid=True), primary_key=True)
-    table_name = Column(String(255), nullable=False)
-    source_files = Column(JSON, nullable=False)
+class TableAuditManifest(AuditBase):
+    """
+    Uniform audit model for table-level processing metadata.
+    Consistent naming: table_audit_manifest with table_audit_id primary key.
+    """
+    __tablename__ = "table_audit_manifest"
+
+    # Standard primary key pattern: {entity}_audit_id
+    table_audit_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    
+    # Standard entity identification
+    entity_name = Column(String(200), nullable=False)  # table_name
+    
+    # Standard status using unified enum
+    status = Column(Enum(AuditStatus), nullable=False, default=AuditStatus.PENDING)
+    
+    # Standard timestamps
+    created_at = Column(TIMESTAMP, nullable=False, default=datetime.now)
+    started_at = Column(TIMESTAMP, nullable=True)
+    completed_at = Column(TIMESTAMP, nullable=True)
+    updated_at = Column(TIMESTAMP, nullable=True, onupdate=datetime.now)
+    
+    # Standard error handling
+    description = Column(Text, nullable=True)
+    error_message = Column(Text, nullable=True)
+    
+    # Standard metadata storage
+    audit_metadata = Column(JSON, nullable=True)  # Renamed to avoid SQLAlchemy conflict
+    metrics = Column(JSON, nullable=True)  # Performance metrics (rows, bytes, duration)
+    
+    # Table-specific fields
+    source_files = Column(JSON, nullable=True)
     file_size_bytes = Column(BigInteger, nullable=True)
-    source_updated_at = Column(TIMESTAMP, nullable=True)
-    created_at = Column(TIMESTAMP, nullable=True)
-    downloaded_at = Column(TIMESTAMP, nullable=True)
-    processed_at = Column(TIMESTAMP, nullable=True)
-    inserted_at = Column(TIMESTAMP, nullable=True)
-    audit_metadata = Column(JSON, nullable=True)
     ingestion_year = Column(Integer, nullable=False, default=datetime.now().year)
     ingestion_month = Column(Integer, nullable=False, default=datetime.now().month)
     
-    # Relationship to file manifests for this table
-    file_manifests = relationship(
-            "FileIngestionManifest",
-            back_populates="table_manifest",
-            cascade="all, delete-orphan",
-            foreign_keys="FileIngestionManifest.table_manifest_id"
-        )
-
-    @property
-    def is_precedence_met(self) -> bool:
-        previous_timestamps = [
-            self.created_at,
-            self.downloaded_at,
-            self.processed_at,
-            self.inserted_at,
-        ]
-        is_met = True
-        and_map = lambda a, b: a and b
-        for index, current_timestamp in enumerate(previous_timestamps):
-            # Skip validation if current timestamp is None
-            if current_timestamp is None:
-                continue
-                
-            previous_t = previous_timestamps[0:index]
-            if index > 0:
-                # Only compare with non-None previous timestamps
-                non_none_previous = [t for t in previous_t if t is not None]
-                if non_none_previous:
-                    greater_than_map = lambda a: a <= current_timestamp
-                    this_is_met = reduce(and_map, map(greater_than_map, non_none_previous))
-                    is_met = is_met and this_is_met
-        return is_met
-
-    def __get_pydantic_core_schema__(self):
-        return TableIngestionManifestSchema
+    # Standard index pattern
+    __table_args__ = (
+        Index("idx_table_audit_status", "status"),
+        Index("idx_table_audit_created_at", "created_at"),
+        Index("idx_table_audit_completed_at", "completed_at"),
+        Index("idx_table_audit_entity_name", "entity_name"),
+    )
+    
+    # Relationships using new naming convention
+    file_audits = relationship("FileAuditManifest", back_populates="table_audit", cascade="all, delete-orphan")
 
     def __repr__(self):
-        source_updated_at = f"source_updated_at={self.source_updated_at}"
-        created_at = f"created_at={self.created_at}"
-        downloaded_at = f"downloaded_at={self.downloaded_at}"
-        processed_at = f"processed_at={self.processed_at}"
-        inserted_at = f"inserted_at={self.inserted_at}"
-        timestamps = f"{source_updated_at}, {created_at}, {downloaded_at}, {processed_at}, {inserted_at}"
-        table_name = f"table_name={self.table_name}"
-        file_size = f"file_size_bytes={self.file_size_bytes}"
-        filenames = f"source_files={self.source_files}"
-        temporal = f"ingestion_year={self.ingestion_year}, ingestion_month={self.ingestion_month}"
-        file_info = f"{table_name}, {filenames}, {file_size}, {temporal}"
-        args = f"table_manifest_id={self.table_manifest_id}, {file_info}, {timestamps}"
-        return f"TableIngestionManifest({args})"
+        return (
+            f"TableAuditManifest(table_audit_id={self.table_audit_id}, entity_name={self.entity_name}, "
+            f"status={self.status.value}, ingestion_year={self.ingestion_year}, "
+            f"created_at={self.created_at}, completed_at={self.completed_at})"
+        )
 
 
-# Manifest table for loader ingestion events
-class FileIngestionManifest(AuditBase):
+class FileAuditManifest(AuditBase):
     """
-    SQLAlchemy model for the file ingestion manifest table.
-    Centralizes file-level ingestion metadata for loader/audit integration.
+    Uniform audit model for file-level processing metadata.
+    Consistent naming: file_audit_manifest with file_audit_id primary key.
     """
-    __tablename__ = "file_audit"
+    __tablename__ = "file_audit_manifest"
 
-    file_manifest_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    table_manifest_id = Column(UUID(as_uuid=True), ForeignKey('table_audit.table_manifest_id'), nullable=False)  # Primary link to table audit
-    table_name = Column(String(100), nullable=False)  # FIXED: Should not be nullable
+    # Standard primary key pattern: {entity}_audit_id
+    file_audit_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    
+    # Standard foreign key pattern: parent_{entity}_audit_id
+    parent_table_audit_id = Column(UUID(as_uuid=True), ForeignKey('table_audit_manifest.table_audit_id'), nullable=False)
+    
+    # Standard entity identification
+    entity_name = Column(String(200), nullable=False)  # file_name or file_path
+    
+    # Standard status using unified enum
+    status = Column(Enum(AuditStatus), nullable=False, default=AuditStatus.PENDING)
+    
+    # Standard timestamps
+    created_at = Column(TIMESTAMP, nullable=False, default=datetime.now)
+    started_at = Column(TIMESTAMP, nullable=True)
+    completed_at = Column(TIMESTAMP, nullable=True)
+    updated_at = Column(TIMESTAMP, nullable=True, onupdate=datetime.now)
+    
+    # Standard error handling
+    description = Column(Text, nullable=True)
+    error_message = Column(Text, nullable=True)
+    
+    # Standard metadata storage
+    audit_metadata = Column(JSON, nullable=True)  # Renamed to avoid SQLAlchemy conflict
+    metrics = Column(JSON, nullable=True)  # Performance metrics (rows, bytes, duration)
+    
+    # File-specific fields
     file_path = Column(Text, nullable=False)
-    status = Column(String(64), nullable=False)
-    checksum = Column(Text, nullable=True)  # FIXED: Nullable for chunk processing
-    filesize = Column(BigInteger, nullable=True)  # FIXED: Nullable for chunk processing
+    checksum = Column(Text, nullable=True)
+    filesize = Column(BigInteger, nullable=True)
     rows_processed = Column(BigInteger, nullable=True)
-    processed_at = Column(TIMESTAMP, nullable=True)
-    error_message = Column(Text, nullable=True)  # Added: Store error messages
-    notes = Column(Text, nullable=True)
+    
+    # Standard index pattern
     __table_args__ = (
-        Index("idx_manifest_status", "status"),
-        Index("idx_manifest_processed_at", "processed_at"),
-        Index("idx_manifest_table_name", "table_name"),
-        Index("idx_manifest_file_path", "file_path"),
-        Index("idx_manifest_table_manifest_id", "table_manifest_id"),
+        Index("idx_file_audit_status", "status"),
+        Index("idx_file_audit_created_at", "created_at"),
+        Index("idx_file_audit_completed_at", "completed_at"),
+        Index("idx_file_audit_entity_name", "entity_name"),
+        Index("idx_file_audit_parent_id", "parent_table_audit_id"),
+        Index("idx_file_audit_file_path", "file_path"),
     )
-
-    # Foreign key relationships
-    table_manifest = relationship("TableIngestionManifest", back_populates="file_manifests", foreign_keys=[table_manifest_id])
-
-    def __get_pydantic_core_schema__(self):
-        from ..core.schemas import FileIngestionManifestSchema
-        return FileIngestionManifestSchema
+    
+    # Relationships using new naming convention
+    table_audit = relationship("TableAuditManifest", back_populates="file_audits", foreign_keys=[parent_table_audit_id])
+    batch_audits = relationship("BatchAuditManifest", back_populates="file_audit", cascade="all, delete-orphan")
 
     def __repr__(self):
-        error_msg = f", error='{self.error_message[:50]}...'" if self.error_message else ""
         return (
-            f"FileIngestionManifest(id={self.file_manifest_id}, file_path={self.file_path}, "
-            f"status={self.status}, checksum={self.checksum}, filesize={self.filesize}, "
-            f"rows={self.rows_processed}, processed_at={self.processed_at}, table_name={self.table_name}{error_msg})"
+            f"FileAuditManifest(file_audit_id={self.file_audit_id}, entity_name={self.entity_name}, "
+            f"status={self.status.value}, file_path={self.file_path}, "
+            f"filesize={self.filesize}, rows_processed={self.rows_processed})"
         )
 
 
-# Batch tracking models for hierarchical ETL observability
-class BatchIngestionManifest(AuditBase):
+class BatchAuditManifest(AuditBase):
     """
-    SQLAlchemy model for batch-level tracking in ETL processes.
-    Tracks high-level batch execution for a single target table.
+    Uniform audit model for batch-level processing metadata.
+    Consistent naming: batch_audit_manifest with batch_audit_id primary key.
     """
-    __tablename__ = "batch_audit"
+    __tablename__ = "batch_audit_manifest"
 
-    batch_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    file_manifest_id = Column(UUID(as_uuid=True), ForeignKey('file_audit.file_manifest_id'), nullable=True)  # Reference to source file (optional for now)
-    batch_name = Column(String(200), nullable=False)
+    # Standard primary key pattern: {entity}_audit_id
+    batch_audit_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    
+    # Standard foreign key pattern: parent_{entity}_audit_id
+    parent_file_audit_id = Column(UUID(as_uuid=True), ForeignKey('file_audit_manifest.file_audit_id'), nullable=True)
+    
+    # Standard entity identification
+    entity_name = Column(String(200), nullable=False)  # batch_name
+    
+    # Standard status using unified enum
+    status = Column(Enum(AuditStatus), nullable=False, default=AuditStatus.PENDING)
+    
+    # Standard timestamps
+    created_at = Column(TIMESTAMP, nullable=False, default=datetime.now)
+    started_at = Column(TIMESTAMP, nullable=True)
+    completed_at = Column(TIMESTAMP, nullable=True)
+    updated_at = Column(TIMESTAMP, nullable=True, onupdate=datetime.now)
+    
+    # Standard error handling
+    description = Column(Text, nullable=True)
+    error_message = Column(Text, nullable=True)
+    
+    # Standard metadata storage
+    audit_metadata = Column(JSON, nullable=True)  # Renamed to avoid SQLAlchemy conflict
+    metrics = Column(JSON, nullable=True)  # Performance metrics (rows, bytes, duration)
+    
+    # Batch-specific fields
     target_table = Column(String(100), nullable=False)  # Single table name
-    status = Column(Enum(BatchStatus), nullable=False, default=BatchStatus.PENDING)
-    started_at = Column(TIMESTAMP, nullable=False, default=datetime.now)
-    completed_at = Column(TIMESTAMP, nullable=True)
-    description = Column(Text, nullable=True)
-    error_message = Column(Text, nullable=True)
     
+    # Standard index pattern
     __table_args__ = (
-        Index("idx_batch_status", "status"),
-        Index("idx_batch_target_table", "target_table"),
-        Index("idx_batch_started_at", "started_at"),
-        Index("idx_batch_completed_at", "completed_at"),
-        Index("idx_batch_primary_file_manifest", "file_manifest_id"),  # ADDED: Index for file manifest reference
+        Index("idx_batch_audit_status", "status"),
+        Index("idx_batch_audit_created_at", "created_at"),
+        Index("idx_batch_audit_completed_at", "completed_at"),
+        Index("idx_batch_audit_entity_name", "entity_name"),
+        Index("idx_batch_audit_parent_id", "parent_file_audit_id"),
+        Index("idx_batch_audit_target_table", "target_table"),
+    )
+    
+    # Relationships using new naming convention
+    file_audit = relationship("FileAuditManifest", back_populates="batch_audits", foreign_keys=[parent_file_audit_id])
+    subbatch_audits = relationship(
+        "SubbatchAuditManifest",
+        back_populates="batch_audit",
+        cascade="all, delete-orphan",
+        foreign_keys="SubbatchAuditManifest.parent_batch_audit_id"
     )
 
-    # Relationships
-    subbatches = relationship("SubbatchIngestionManifest", back_populates="batch", cascade="all, delete-orphan")
-    source_file = relationship("FileIngestionManifest", foreign_keys=[file_manifest_id])  # File that generated this batch
     def __repr__(self):
         return (
-            f"BatchIngestionManifest(batch_id={self.batch_id}, batch_name={self.batch_name}, "
-            f"target_table={self.target_table}, status={self.status.value}, "
+            f"BatchAuditManifest(batch_audit_id={self.batch_audit_id}, entity_name={self.entity_name}, "
+            f"status={self.status.value}, target_table={self.target_table}, "
             f"started_at={self.started_at}, completed_at={self.completed_at})"
         )
 
 
-class SubbatchIngestionManifest(AuditBase):
+class SubbatchAuditManifest(AuditBase):
     """
-    SQLAlchemy model for subbatch-level tracking in ETL processes.
-    Tracks individual processing steps within a batch.
+    Uniform audit model for subbatch-level processing metadata.
+    Consistent naming: subbatch_audit_manifest with subbatch_audit_id primary key.
     """
-    __tablename__ = "subbatch_audit"
+    __tablename__ = "subbatch_audit_manifest"
 
-    subbatch_manifest_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    batch_manifest_id = Column(UUID(as_uuid=True), ForeignKey('batch_audit.batch_id'), nullable=False)
-    table_name = Column(String(100), nullable=False)
-    status = Column(Enum(SubbatchStatus), nullable=False, default=SubbatchStatus.PENDING)
-    started_at = Column(TIMESTAMP, nullable=False, default=datetime.now)
+    # Standard primary key pattern: {entity}_audit_id
+    subbatch_audit_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    
+    # Standard foreign key pattern: parent_{entity}_audit_id
+    parent_batch_audit_id = Column(UUID(as_uuid=True), ForeignKey('batch_audit_manifest.batch_audit_id'), nullable=False)
+    
+    # Standard entity identification
+    entity_name = Column(String(200), nullable=False)  # table_name or step_name
+    
+    # Standard status using unified enum
+    status = Column(Enum(AuditStatus), nullable=False, default=AuditStatus.PENDING)
+    
+    # Standard timestamps
+    created_at = Column(TIMESTAMP, nullable=False, default=datetime.now)
+    started_at = Column(TIMESTAMP, nullable=True)
     completed_at = Column(TIMESTAMP, nullable=True)
+    updated_at = Column(TIMESTAMP, nullable=True, onupdate=datetime.now)
+    
+    # Standard error handling
+    description = Column(Text, nullable=True)
+    error_message = Column(Text, nullable=True)
+    
+    # Standard metadata storage
+    audit_metadata = Column(JSON, nullable=True)  # Renamed to avoid SQLAlchemy conflict
+    metrics = Column(JSON, nullable=True)  # Performance metrics (rows, bytes, duration)
+    
+    # Subbatch-specific fields
+    table_name = Column(String(100), nullable=False)  # Processing table
     rows_processed = Column(BigInteger, nullable=True, default=0)
-    description = Column(Text, nullable=True)
-    error_message = Column(Text, nullable=True)
-    notes = Column(Text, nullable=True)
     
+    # Standard index pattern
     __table_args__ = (
-        Index("idx_subbatch_batch_manifest_id", "batch_manifest_id"),
-        Index("idx_subbatch_table_name", "table_name"),
-        Index("idx_subbatch_status", "status"),
-        Index("idx_subbatch_started_at", "started_at"),
-        Index("idx_subbatch_completed_at", "completed_at"),
+        Index("idx_subbatch_audit_status", "status"),
+        Index("idx_subbatch_audit_created_at", "created_at"),
+        Index("idx_subbatch_audit_completed_at", "completed_at"),
+        Index("idx_subbatch_audit_entity_name", "entity_name"),
+        Index("idx_subbatch_audit_parent_id", "parent_batch_audit_id"),
+        Index("idx_subbatch_audit_table_name", "table_name"),
     )
-
-    # Relationship to parent batch
-    batch = relationship("BatchIngestionManifest", back_populates="subbatches")
+    
+    # Relationships using new naming convention
+    batch_audit = relationship("BatchAuditManifest", back_populates="subbatch_audits", foreign_keys=[parent_batch_audit_id])
 
     def __repr__(self):
         return (
-            f"SubbatchIngestionManifest(subbatch_id={self.subbatch_manifest_id}, batch_id={self.batch_manifest_id}, "
-            f"table_name={self.table_name}, status={self.status.value}, "
-            f"rows_processed={self.rows_processed}, "
-            f"started_at={self.started_at}, completed_at={self.completed_at})"
+            f"SubbatchAuditManifest(subbatch_audit_id={self.subbatch_audit_id}, entity_name={self.entity_name}, "
+            f"status={self.status.value}, table_name={self.table_name}, "
+            f"rows_processed={self.rows_processed}, started_at={self.started_at})"
         )
 
 
-# Main CNPJ/source tables use MainBase
+# =============================================================================
+# MAIN CNPJ/SOURCE TABLES - Production Data Models
+# =============================================================================
+
 class Empresa(MainBase):
     __tablename__ = "empresa"
     cnpj_basico = Column(Text, nullable=False, primary_key=True)

@@ -7,7 +7,7 @@ import os
 # Import new services
 from ..setup.logging import logger
 from ..setup.config import ConfigurationService, AppConfig
-from ..database.models import TableIngestionManifest, MainBase, AuditBase
+from ..database.models import TableAuditManifest, MainBase, AuditBase
 from .interfaces import Pipeline
 
 
@@ -184,7 +184,7 @@ class ReceitaCNPJPipeline(Pipeline):
             logger.error(f"Failed to scrape data using discovery service: {e}")
             return []
 
-    def fetch_audit_data(self) -> List[TableIngestionManifest]:
+    def fetch_audit_data(self) -> List[TableAuditManifest]:
         files_info = self.scrap_data()
 
         audits = self.audit_service.create_audits_from_files(files_info)
@@ -226,7 +226,7 @@ class ReceitaCNPJPipeline(Pipeline):
             parallel=self.config.pipeline.is_parallel,
         )
 
-    def retrieve_data(self) -> List[TableIngestionManifest]:
+    def retrieve_data(self) -> List[TableAuditManifest]:
         audits = self.fetch_audit_data()
 
         if audits:
@@ -306,7 +306,7 @@ class ReceitaCNPJPipeline(Pipeline):
         """
         from ..core.constants import TABLES_INFO_DICT
         from ..core.schemas import AuditMetadata
-        from ..database.models import TableIngestionManifestSchema
+        from ..database.models import TableAuditManifestSchema
         from datetime import datetime
         from uuid import uuid4
 
@@ -341,7 +341,7 @@ class ReceitaCNPJPipeline(Pipeline):
         """Create audit metadata for Parquet files."""
         from ..core.constants import TABLES_INFO_DICT
         from ..core.schemas import AuditMetadata
-        from ..database.models import TableIngestionManifestSchema
+        from ..database.models import TableAuditManifestSchema
         from datetime import datetime
         from uuid import uuid4
 
@@ -373,7 +373,7 @@ class ReceitaCNPJPipeline(Pipeline):
         audit_list = []
         for table_name, zip_to_files in tablename_to_files.items():
             for zip_filename, file_list in zip_to_files.items():
-                audit_entry = TableIngestionManifestSchema(
+                audit_entry = TableAuditManifestSchema(
                     table_name=table_name,
                     source_files=file_list,  # Store actual processed files, not ZIP file
                     processed_at=datetime.now(),
@@ -388,7 +388,7 @@ class ReceitaCNPJPipeline(Pipeline):
         """Create audit metadata for CSV files (original implementation)."""
         from ..core.constants import TABLES_INFO_DICT
         from ..core.schemas import AuditMetadata  
-        from ..database.models import TableIngestionManifestSchema
+        from ..database.models import TableAuditManifestSchema
         from datetime import datetime
         from uuid import uuid4
 
@@ -432,7 +432,7 @@ class ReceitaCNPJPipeline(Pipeline):
         # Create a minimal audit list for compatibility
         audit_list = []
         for table_name in tablename_to_files.keys():
-            synthetic_audit = TableIngestionManifestSchema(
+            synthetic_audit = TableAuditManifestSchema(
                 table_manifest_id=str(uuid4()),  # Generate a proper UUID string
                 table_name=table_name,
                 source_files=["synthetic_conversion"],  # Fake filename for compatibility
@@ -484,7 +484,7 @@ class ReceitaCNPJPipeline(Pipeline):
         """
         from ..core.constants import TABLES_INFO_DICT
         from ..core.schemas import AuditMetadata
-        from ..database.models import TableIngestionManifestSchema
+        from ..database.models import TableAuditManifestSchema
         from datetime import datetime
         from uuid import uuid4
 
@@ -551,7 +551,7 @@ class ReceitaCNPJPipeline(Pipeline):
                 # Use current time for created_at and downloaded_at (since we're loading existing files)
                 current_time = datetime.now()
                 
-                audit_entry = TableIngestionManifestSchema(
+                audit_entry = TableAuditManifestSchema(
                     table_name=table_name,
                     source_files=file_list,  # Store actual CSV files
                     file_size_bytes=total_size_bytes,  # Total size of CSV files

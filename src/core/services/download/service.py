@@ -5,7 +5,7 @@ from datetime import datetime
 from tenacity import retry, stop_after_attempt, wait_exponential
 from tqdm import tqdm
 
-from ....database.models import TableIngestionManifest
+from ....database.models import TableAuditManifest
 from ....setup.logging import logger
 from ....setup.config import ConfigurationService, AppConfig
 from ....utils.misc import get_file_size, get_max_workers
@@ -32,12 +32,12 @@ class FileDownloadService:
 
     def download_and_extract(
         self,
-        audits: List[TableIngestionManifest],
+        audits: List[TableAuditManifest],
         url: str,
         download_path: str,
         extract_path: str,
         parallel: bool = True,
-    ) -> List[TableIngestionManifest]:
+    ) -> List[TableAuditManifest]:
         """
         Download and extract all files for the given audits.
         Preserves retry, progress bar, and parallelization features.
@@ -127,7 +127,7 @@ class FileDownloadService:
     )
     def _download_zipfile(
         self,
-        audit: TableIngestionManifest,
+        audit: TableAuditManifest,
         url: str,
         zip_filename: str,
         download_path: str,

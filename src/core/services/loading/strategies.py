@@ -761,8 +761,8 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                             
                             # First, get current audit_metadata for this specific table
                             current_result = conn.execute(text('''
-                                SELECT audit_metadata FROM table_audit 
-                                WHERE table_name = :table_name 
+                                SELECT audit_metadata FROM table_audit_manifest 
+                                WHERE entity_name = :table_name 
                                 AND ingestion_year = :year 
                                 AND ingestion_month = :month
                             '''), {
@@ -785,14 +785,14 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                             
                             # Update with individual timestamp and merged metadata
                             conn.execute(text('''
-                                UPDATE table_audit 
-                                SET inserted_at = :inserted_at,
+                                UPDATE table_audit_manifest 
+                                SET completed_at = :completed_at,
                                     audit_metadata = :metadata_json
-                                WHERE table_name = :table_name 
+                                WHERE entity_name = :table_name 
                                 AND ingestion_year = :year 
                                 AND ingestion_month = :month
                             '''), {
-                                'inserted_at': datetime.now(),  # Individual timestamp per table
+                                'completed_at': datetime.now(),  # Individual timestamp per table
                                 'metadata_json': json.dumps(merged_metadata),
                                 'table_name': table_name,
                                 'year': year,
@@ -874,8 +874,8 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             
             # First try to find a real audit entry (non-placeholder) for this table
             query_real = '''
-            SELECT table_manifest_id FROM table_audit 
-            WHERE table_name = :table_name 
+            SELECT table_audit_id FROM table_audit_manifest 
+            WHERE entity_name = :table_name 
             AND (audit_metadata IS NULL OR audit_metadata::jsonb ->> 'placeholder' IS NULL OR audit_metadata::jsonb ->> 'placeholder' != 'true')
             ORDER BY created_at DESC 
             LIMIT 1
@@ -889,8 +889,8 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             
             # Fallback: look for any audit entry for this table (including placeholders)
             query_any = '''
-            SELECT table_manifest_id FROM table_audit 
-            WHERE table_name = :table_name 
+            SELECT table_audit_id FROM table_audit_manifest 
+            WHERE entity_name = :table_name 
             ORDER BY created_at DESC 
             LIMIT 1
             '''
@@ -910,8 +910,8 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             from sqlalchemy import text
             
             query = '''
-            SELECT table_manifest_id FROM table_audit 
-            WHERE table_name = :table_name 
+            SELECT table_audit_id FROM table_audit_manifest 
+            WHERE entity_name = :table_name 
             ORDER BY created_at DESC 
             LIMIT 1
             '''
@@ -932,35 +932,38 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
     def _create_placeholder_table_audit_entry(self, table_name: str, filename: str) -> str:
         """Create a placeholder table audit entry for files without existing audit records."""
         try:
-            from ....database.models import TableIngestionManifest
+            # Use new uniform audit model
+            from ....database.models import TableAuditManifest, AuditStatus
             from datetime import datetime
             import uuid
             
             # Create minimal table audit entry
-            table_manifest_id = str(uuid.uuid4())
-            placeholder_audit = TableIngestionManifest(
-                table_manifest_id=table_manifest_id,
-                table_name=table_name,
+            table_audit_id = str(uuid.uuid4())
+            placeholder_audit = TableAuditManifest(
+                table_audit_id=table_audit_id,
+                entity_name=table_name,
+                status=AuditStatus.COMPLETED,
                 source_files=[filename],
                 file_size_bytes=0,
                 source_updated_at=datetime.now(),
                 created_at=datetime.now(),
-                downloaded_at=None,
-                processed_at=None,
-                inserted_at=datetime.now(),
+                started_at=datetime.now(),
+                completed_at=datetime.now(),
+                updated_at=datetime.now(),
                 ingestion_year=self.config.year,
                 ingestion_month=self.config.month,
                 audit_metadata={"placeholder": True, "created_for": "file_manifest_requirement"}
             )
             
             # Insert placeholder audit entry
+            
             with self.audit_service.database.session_maker() as session:
                 session.add(placeholder_audit)
                 session.commit()
                 
-            logger.info(f"Created placeholder table audit entry {table_manifest_id} for {table_name}/{filename}")
-            return table_manifest_id
+            logger.info(f"Created placeholder table audit entry {table_audit_id} for {table_name}/{filename}")
+            return table_audit_id
             
         except Exception as e:
             logger.error(f"Failed to create placeholder table audit entry for {table_name}/{filename}: {e}")
-            raise RuntimeError(f"Cannot create file manifest without table_manifest_id: {e}")
+            raise RuntimeError(f"Cannot create file manifest without table_audit_id: {e}")

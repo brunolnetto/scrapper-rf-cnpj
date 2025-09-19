@@ -11,14 +11,14 @@ from ...utils.misc import invert_dict_list
 from ...utils.zip import list_zip_contents
 from ...core.utils.etl import get_zip_to_tablename
 from ..engine import Database
-from ..models import TableIngestionManifest
-from ...core.schemas import FileGroupInfo, AuditMetadata, TableIngestionManifestSchema
+from ..models import TableAuditManifest
+from ...core.schemas import FileGroupInfo, AuditMetadata, TableAuditManifestSchema
 
 
 def create_new_audit(
     table_name: str, filenames: List[str], size_bytes: int, update_at: datetime,
     year: int = None, month: int = None
-) -> TableIngestionManifest:
+) -> TableAuditManifest:
     """
     Creates a new audit entry with temporal tracking fields.
 
@@ -31,13 +31,13 @@ def create_new_audit(
         month (int, optional): Month for temporal tracking. Defaults to current month.
 
     Returns:
-        TableIngestionManifest: An audit entry object with temporal fields populated.
+        TableAuditManifest: An audit entry object with temporal fields populated.
     """
     # Set default temporal values if not provided
     current_year = year if year is not None else datetime.now().year
     current_month = month if month is not None else datetime.now().month
 
-    return TableIngestionManifest(
+    return TableAuditManifest(
         table_manifest_id=str(uuid4()),
         created_at=datetime.now(),
         table_name=table_name,
@@ -56,7 +56,7 @@ def create_new_audit(
 def create_audit(
     database: Database, file_group_info: FileGroupInfo,
     etl_year: int = None, etl_month: int = None
-) -> Union[TableIngestionManifest, None]:
+) -> Union[TableAuditManifest, None]:
     """
     Inserts a new audit entry if the provided processed_at is later than the latest existing entry for the filename.
 
@@ -67,7 +67,7 @@ def create_audit(
         etl_month (int, optional): ETL processing month. If provided, overrides source month.
 
     Returns:
-        Union[TableIngestionManifest, None]: The created audit entry or None if not created.
+        Union[TableAuditManifest, None]: The created audit entry or None if not created.
     """
     if database.engine:
         # Define temporal-aware SQL query
@@ -193,7 +193,7 @@ def create_audit(
 
 
 def create_audits(database: Database, files_info: List[FileGroupInfo], 
-                 etl_year: int = None, etl_month: int = None) -> List[TableIngestionManifest]:
+                 etl_year: int = None, etl_month: int = None) -> List[TableAuditManifest]:
     """
     Creates a list of audit entries based on the provided database and files information.
 
@@ -204,7 +204,7 @@ def create_audits(database: Database, files_info: List[FileGroupInfo],
         etl_month (int, optional): ETL processing month. Defaults to None (uses source month).
 
     Returns:
-        List[TableIngestionManifest]: A list of audit entries.
+        List[TableAuditManifest]: A list of audit entries.
     """
     return [
         create_audit(database, file_info, etl_year, etl_month)
@@ -213,16 +213,16 @@ def create_audits(database: Database, files_info: List[FileGroupInfo],
     ]
 
 
-def insert_audit(database: Database, new_audit: TableIngestionManifest) -> Union[TableIngestionManifest, None]:
+def insert_audit(database: Database, new_audit: TableAuditManifest) -> Union[TableAuditManifest, None]:
     """
     Inserts a new audit entry if the provided processed_at is later than the latest existing entry for the filename.
 
     Args:
         database (Database): The database object.
-        new_audit (TableIngestionManifest): The new audit entry.
+        new_audit (TableAuditManifest): The new audit entry.
 
     Returns:
-        Union[TableIngestionManifest, None]: The inserted audit entry or None if not inserted.
+        Union[TableAuditManifest, None]: The inserted audit entry or None if not inserted.
     """
     if database.engine:
         with database.session_maker() as session:
@@ -240,13 +240,13 @@ def insert_audit(database: Database, new_audit: TableIngestionManifest) -> Union
         return None
 
 
-def insert_audits(database: Database, new_audits: List[TableIngestionManifest]) -> None:
+def insert_audits(database: Database, new_audits: List[TableAuditManifest]) -> None:
     """
     Inserts a list of new audits into the database.
 
     Args:
         database (Database): The database object.
-        new_audits (List[TableIngestionManifest]): A list of new audit entries.
+        new_audits (List[TableAuditManifest]): A list of new audit entries.
 
     Returns:
         None
@@ -260,12 +260,12 @@ def insert_audits(database: Database, new_audits: List[TableIngestionManifest]) 
             )
 
 
-def create_new_audit_metadata(audits: List[TableIngestionManifest]) -> AuditMetadata:
+def create_new_audit_metadata(audits: List[TableAuditManifest]) -> AuditMetadata:
     """
     Creates audit metadata based on the provided database, files information, and destination path.
 
     Args:
-        audits (List[TableIngestionManifest]): A list of audit entries.
+        audits (List[TableAuditManifest]): A list of audit entries.
         to_path (str): The destination path for the files.
 
     Returns:
@@ -284,19 +284,19 @@ def create_new_audit_metadata(audits: List[TableIngestionManifest]) -> AuditMeta
     }
     return AuditMetadata(
         audit_list=[
-            TableIngestionManifestSchema.model_validate(audit, from_attributes=True)
+            TableAuditManifestSchema.model_validate(audit, from_attributes=True)
             for audit in audits
         ],
         tablename_to_zipfile_to_files=tablename_to_zipfile_to_files,
     )
 
 
-def create_audit_metadata(audits: List[TableIngestionManifest], to_path: str) -> AuditMetadata:
+def create_audit_metadata(audits: List[TableAuditManifest], to_path: str) -> AuditMetadata:
     """
     Creates audit metadata based on the provided database, files information, and destination path.
 
     Args:
-        audits (List[TableIngestionManifest]): A list of audit entries.
+        audits (List[TableAuditManifest]): A list of audit entries.
         to_path (str): The destination path for the files.
 
     Returns:
@@ -321,7 +321,7 @@ def create_audit_metadata(audits: List[TableIngestionManifest], to_path: str) ->
     }
     return AuditMetadata(
         audit_list=[
-            TableIngestionManifestSchema.model_validate(audit, from_attributes=True)
+            TableAuditManifestSchema.model_validate(audit, from_attributes=True)
             for audit in audits
         ],
         tablename_to_zipfile_to_files=tablename_to_zipfile_to_files,

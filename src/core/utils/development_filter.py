@@ -14,7 +14,7 @@ from ...setup.config.models import (
 )
             
 from ...setup.logging import logger
-from ...database.models import TableIngestionManifest
+from ...database.models import TableAuditManifest
 
 class DevelopmentFilter:
     """Development mode filtering with comprehensive controls."""
@@ -40,7 +40,7 @@ class DevelopmentFilter:
             self.development = dev_config
             self.is_enabled = dev_config.enabled
 
-    def filter_audits_by_size(self, audits: List[TableIngestionManifest]) -> List[TableIngestionManifest]:
+    def filter_audits_by_size(self, audits: List[TableAuditManifest]) -> List[TableAuditManifest]:
         """Filter audits by file size limit."""
         if not self.is_enabled:
             return audits
@@ -59,7 +59,7 @@ class DevelopmentFilter:
         
         return filtered_audits
 
-    def filter_audits_by_table_limit(self, audits: List[TableIngestionManifest]) -> List[TableIngestionManifest]:
+    def filter_audits_by_table_limit(self, audits: List[TableAuditManifest]) -> List[TableAuditManifest]:
         """Filter audits by max files per table with strategic selection."""
         if not self.is_enabled:
             return audits

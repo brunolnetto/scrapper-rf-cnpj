@@ -2,89 +2,66 @@ from typing import NamedTuple, List, Dict, Tuple, Callable, Optional
 from datetime import datetime
 from pydantic import BaseModel
 from uuid import UUID
+import enum
 
-# Use absolute import instead of relative import
-try:
-    from database.models import TableIngestionManifestSchema
-except ImportError:
-    # Fallback for when running from different contexts
-    from ..database.models import TableIngestionManifestSchema
+class AuditStatusSchema(str, enum.Enum):
+    """Pydantic schema enum for unified audit status."""
+    PENDING = "PENDING"
+    RUNNING = "RUNNING" 
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+    SKIPPED = "SKIPPED"
 
-
-class FileInfo(BaseModel):
-    """
-    Pydantic model representing a CNPJ file.
-    """
-
-    filename: str
-    updated_at: datetime
-    file_size: int = 0
-
-
-class FileGroupInfo(BaseModel):
-    """
-    Pydantic model representing a group of CNPJ files.
-    """
-
-    name: str
-    elements: List[str]
-    date_range: Tuple[datetime, datetime]
-    table_name: str
-    size_bytes: int = 0
-
-    def date_diff(self) -> float:
-        """
-        Returns the difference in days between the start and end dates of the group.
-        """
-        start, end = self.date_range
-        return (end - start).days
-
-
-class FileIngestionManifestSchema(BaseModel):
-    """
-    Pydantic schema for FileIngestionManifest model.
-    Represents file-level ingestion metadata.
-    """
-    manifest_id: Optional[UUID] = None
-    table_manifest_id: Optional[UUID] = None
-    table_name: Optional[str] = None
-    file_path: str
-    status: str
-    checksum: Optional[str] = None
-    filesize: Optional[int] = None
-    rows: Optional[int] = None
-    processed_at: Optional[datetime] = None    
-    notes: Optional[str] = None
+class TableAuditManifestSchema(BaseModel):
+    """Pydantic schema for TableAuditManifest model."""
+    table_audit_id: Optional[UUID] = None
+    entity_name: str
+    status: AuditStatusSchema
+    created_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    description: Optional[str] = None
+    error_message: Optional[str] = None
+    audit_metadata: Optional[Dict] = None
+    metrics: Optional[Dict] = None
+    source_files: Optional[List[str]] = None
+    file_size_bytes: Optional[int] = None
+    source_updated_at: Optional[datetime] = None
+    ingestion_year: int
+    ingestion_month: int
 
     class Config:
         from_attributes = True
 
+class FileInfo(BaseModel):
+    """Pydantic model representing a CNPJ file."""
+    filename: str
+    tablename: str
+    path: str
 
 class AuditMetadata(BaseModel):
-    """
-    Represents the metadata for auditing purposes.
-    """
-
-    audit_list: List[TableIngestionManifestSchema]
+    """Represents the metadata for auditing purposes."""
+    audit_list: List[TableAuditManifestSchema]
     tablename_to_zipfile_to_files: Dict[str, Dict[str, List[str]]]
 
-    def __repr__(self) -> str:
-        args = f"audit_list={self.audit_list}, tablename_to_zipfile_to_files={self.tablename_to_zipfile_to_files}"
-        return f"AuditMetadata({args})"
-
-
 class TableInfo(NamedTuple):
-    """
-    Represents information about a table.
-    """
-
-    label: str
-    zip_group: str
+    """NamedTuple representing table information."""
     table_name: str
-    columns: List[str]
-    encoding: str
-    transform_map: Callable
-    expression: str
-    table_model: object = None
+    is_simples: bool
 
+class FileGroupInfo(BaseModel):
+    """Pydantic model representing grouped file information."""
+    table_name: str
+    is_simples: bool
+    files: List[FileInfo]
+    year: int
+    month: int
 
+    @property
+    def total_size_bytes(self) -> int:
+        return sum(len(file.filename.encode('utf-8')) for file in self.files)
+
+    def __repr__(self) -> str:
+        return f"FileGroupInfo(table_name='{self.table_name}', files_count={len(self.files)}, year={self.year}, month={self.month})"
