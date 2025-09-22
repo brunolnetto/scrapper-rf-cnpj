@@ -320,10 +320,5 @@ ETL_DEV_ROW_LIMIT_PERCENT=0.05
 3. **Security**: Never commit `.env` files to version control
 4. **Validation**: Test configuration changes in development first
 
-### Configuration Validation
-```bash
-# Test configuration without full ETL
-python -m src.main --year 2024 --month 12 --validate-config
-```
 
 This documentation should be updated whenever new environment variables are added or existing ones are modified.

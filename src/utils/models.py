@@ -6,13 +6,13 @@ from uuid import uuid4
 from sqlalchemy import text
 import pytz
 
-from ...setup.logging import logger
-from ...utils.misc import invert_dict_list
-from ...utils.zip import list_zip_contents
-from ...core.utils.etl import get_zip_to_tablename
-from ..engine import Database
-from ..models import TableAuditManifest
-from ...core.schemas import FileGroupInfo, AuditMetadata, TableAuditManifestSchema
+from .misc import invert_dict_list
+from .zip import list_zip_contents
+from ..database.engine import Database
+from ..database.models.audit import TableAuditManifest, AuditStatus
+from ..setup.logging import logger
+from ..core.utils.etl import get_zip_to_tablename
+from ..core.schemas import FileGroupInfo, AuditMetadata, TableAuditManifestSchema
 
 
 def create_new_audit(
@@ -47,9 +47,9 @@ def create_new_audit(
         downloaded_at=None,
         processed_at=None,
         inserted_at=None,
-        audit_metadata=None,
-        ingestion_year=current_year,    # FIXED: Add temporal year
-        ingestion_month=current_month   # FIXED: Add temporal month
+        notes=None,
+        ingestion_year=current_year,
+        ingestion_month=current_month
     )
 
 
@@ -73,9 +73,9 @@ def create_audit(
         # Define temporal-aware SQL query
         if etl_year is not None and etl_month is not None:
             # Check for existing processing in the specific ETL year/month context
-            sql_query = text(f"""SELECT max(source_updated_at) 
-                FROM public.table_audit 
-                WHERE table_name = :table_name 
+            sql_query = text(f"""SELECT COUNT(*) 
+                FROM public.table_audit_manifest 
+                WHERE entity_name = :table_name 
                 AND ingestion_year = :etl_year 
                 AND ingestion_month = :etl_month;""")
             
@@ -86,27 +86,21 @@ def create_audit(
                     'etl_year': etl_year,
                     'etl_month': etl_month
                 })
-                latest_updated_at = result.fetchone()[0]
+                existing_count = result.fetchone()[0]
+                already_processed = existing_count > 0
         else:
             # Legacy behavior: check without temporal filtering
-            sql_query = text(f"""SELECT max(source_updated_at) 
-                FROM public.table_audit 
-                WHERE table_name = :table_name;""")
+            sql_query = text(f"""SELECT COUNT(*) 
+                FROM public.table_audit_manifest 
+                WHERE entity_name = :table_name;""")
             
             # Execute query with parameters
             with database.engine.connect() as connection:
                 result = connection.execute(sql_query, {
                     'table_name': file_group_info.table_name
                 })
-                latest_updated_at = result.fetchone()[0]
-
-        if latest_updated_at is not None:
-            format = "%Y-%m-%d %H:%M"
-            latest_updated_at = datetime.strptime(
-                latest_updated_at.strftime(format), format
-            )
-            sao_paulo_timezone = pytz.timezone("America/Sao_Paulo")
-            latest_updated_at = sao_paulo_timezone.localize(latest_updated_at)
+                existing_count = result.fetchone()[0]
+                already_processed = existing_count > 0
 
         # Extract temporal info - use ETL config if provided, otherwise use source date
         if etl_year is not None and etl_month is not None:
@@ -115,43 +109,36 @@ def create_audit(
             data_month = etl_month
         else:
             # Use source date for temporal tracking (legacy behavior)
-            source_date = file_group_info.date_range[1]
-            data_year = source_date.year
-            data_month = source_date.month
+            # For new FileGroupInfo, get the latest update time from files
+            latest_update = max((f.updated_at for f in file_group_info.files if f.updated_at), default=None)
+            if latest_update:
+                data_year = latest_update.year
+                data_month = latest_update.month
+            else:
+                data_year = datetime.now().year
+                data_month = datetime.now().month
 
-        # First entry: no existing audit entry
-        if latest_updated_at is None:
-            # Create and insert the new entry
-            return create_new_audit(
-                file_group_info.table_name,
-                file_group_info.elements,
-                file_group_info.size_bytes,
-                file_group_info.date_range[1],
-                data_year,  # Use ETL year or source year
-                data_month  # Use ETL month or source month
-            )
-
-        # New entry: source updated_at is greater
-        elif file_group_info.date_range[1] > latest_updated_at:
-            # Create and insert the new entry
-            return create_new_audit(
-                file_group_info.table_name,
-                file_group_info.elements,
-                file_group_info.size_bytes,
-                file_group_info.date_range[1],
-                data_year,  # Use ETL year or source year
-                data_month  # Use ETL month or source month
-            )
-
-        else:
+        if already_processed:
             summary = (
-                f"Skipping create entry for file group {file_group_info.name}."
+                f"Skipping create entry for file group {file_group_info.table_name}."
             )
-            explanation = "Existing processed_at is later or equal."
+            explanation = "Table already processed for this year/month."
             error_message = f"{summary} {explanation}"
             logger.warning(error_message)
-
             return None
+        else:
+            # Create and insert the new entry
+            from ..database.models.audit import TableAuditManifest
+            
+            audit = TableAuditManifest(
+                entity_name=file_group_info.table_name,
+                status=AuditStatus.PENDING,
+                source_files=[f.filename for f in file_group_info.files],
+                file_size_bytes=sum(f.file_size or 0 for f in file_group_info.files),
+                ingestion_year=data_year,
+                ingestion_month=data_month,
+            )
+            return audit
 
     # Extract temporal info - use ETL config if provided, otherwise use source date
     if etl_year is not None and etl_month is not None:
@@ -160,36 +147,33 @@ def create_audit(
         data_month = etl_month
     else:
         # Use source date for temporal tracking (legacy behavior)
-        source_date = file_group_info.date_range[1]
-        data_year = source_date.year
-        data_month = source_date.month
+        # For new FileGroupInfo, get the latest update time from files
+        latest_update = max((f.updated_at for f in file_group_info.files if f.updated_at), default=None)
+        if latest_update:
+            data_year = latest_update.year
+            data_month = latest_update.month
+        else:
+            data_year = datetime.now().year
+            data_month = datetime.now().month
 
-    if latest_updated_at is None:
-        # First entry: no existing audit entry
-        return create_new_audit(
-            file_group_info.table_name,
-            file_group_info.elements,
-            file_group_info.size_bytes,
-            file_group_info.date_range[1],
-            data_year,   # Use ETL year or source year
-            data_month   # Use ETL month or source month
+    if already_processed:
+        summary = (
+            f"Skipping create entry for file group {file_group_info.table_name}."
         )
-    elif file_group_info.date_range[1] > latest_updated_at:
-        # New entry: source updated_at is greater
-        return create_new_audit(
-            file_group_info.table_name,
-            file_group_info.elements,
-            file_group_info.size_bytes,
-            file_group_info.date_range[1],
-            data_year,   # Use ETL year or source year
-            data_month   # Use ETL month or source month
-        )
-    else:
-        logger.warning(
-            f"Skipping create entry for file group {file_group_info.name}. "
-            "Existing processed_at is later or equal."
-        )
+        explanation = "Table already processed for this year/month."
+        error_message = f"{summary} {explanation}"
+        logger.warning(error_message)
         return None
+    else:
+        # Create and insert the new entry
+        return create_new_audit(
+            file_group_info.table_name,
+            file_group_info.files,  # Use files instead of elements
+            sum(f.file_size or 0 for f in file_group_info.files),  # Calculate total size
+            max((f.updated_at for f in file_group_info.files if f.updated_at), default=datetime.now()),  # Use latest file update time
+            data_year,  # Use ETL year or source year
+            data_month  # Use ETL month or source month
+        )
 
 
 def create_audits(database: Database, files_info: List[FileGroupInfo], 
@@ -232,7 +216,7 @@ def insert_audit(database: Database, new_audit: TableAuditManifest) -> Union[Tab
                 return new_audit
             else:
                 logger.warning(
-                    f"Skipping insert audit for table name {new_audit.table_name}."
+                    f"Skipping insert audit for table name {new_audit.entity_name}."
                 )
                 return None
     else:
@@ -256,7 +240,7 @@ def insert_audits(database: Database, new_audits: List[TableAuditManifest]) -> N
             insert_audit(database, new_audit)
         except Exception as e:
             logger.error(
-                f"Error inserting audit for table {new_audit.table_name}: {e}"
+                f"Error inserting audit for table {new_audit.entity_name}: {e}"
             )
 
 

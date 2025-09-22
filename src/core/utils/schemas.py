@@ -29,37 +29,30 @@ def file_group_name_to_table_name(file_group_name: str) -> str:
     return matching_table
 
 
-def create_file_groups(files_info: List[FileInfo]) -> List[FileGroupInfo]:
+def create_file_groups(files_info: List[FileInfo], year: int, month: int) -> List[FileGroupInfo]:
     """
     Creates a list of file groups based on the provided file information.
 
     Args:
         files_info (List[FileInfo]): A list of FileInfo objects.
+        year (int): The year for the file groups.
+        month (int): The month for the file groups.
 
     Returns:
         List[FileGroupInfo]: A list of FileGroupInfo objects.
     """
-    # Build dictionaries from files_info for size and update_at lookup
-    filename_to_update_at = {
-        file_info.filename: file_info.updated_at for file_info in files_info
-    }
-    filename_to_size = {
-        file_info.filename: file_info.file_size for file_info in files_info
-    }
-
     # Normalize filenames and group them
     filenames = [file_info.filename for file_info in files_info]
     normalized_filenames = normalize_filenames(filenames)  # Returns a dict
 
-    # Create file groups with accumulated size and date range
+    # Create file groups
     file_groups = []
     for normalized_name, original_filenames in normalized_filenames.items():
-        group_size_bytes = sum(
-            filename_to_size[filename] for filename in original_filenames
-        )
-        group_date_range = get_date_range(
-            [filename_to_update_at[filename] for filename in original_filenames]
-        )
+        # Get the FileInfo objects for this group
+        group_files = [
+            file_info for file_info in files_info 
+            if file_info.filename in original_filenames
+        ]
 
         try:
             table_name = file_group_name_to_table_name(normalized_name)
@@ -69,11 +62,10 @@ def create_file_groups(files_info: List[FileInfo]) -> List[FileGroupInfo]:
 
         file_groups.append(
             FileGroupInfo(
-                name=normalized_name,
-                elements=original_filenames,
-                date_range=group_date_range,
                 table_name=table_name,
-                size_bytes=group_size_bytes,
+                files=group_files,
+                year=year,
+                month=month,
             )
         )
 

@@ -20,6 +20,7 @@ from pathlib import Path
 from ....database.engine import Database
 from ....setup.logging import logger
 from ....database.dml import table_name_to_table_info
+from ....database.models.audit import AuditStatus
 
 class BaseDataLoadingStrategy(ABC):
     """Abstract base class for data loading strategies."""
@@ -144,9 +145,10 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             
         except Exception as e:
             logger.error(f"[LoadingStrategy] Failed to load {file_path}: {e}")
-            # Create failed manifest entry
+            
+            # Create failed manifest entry (use AuditStatus enum)
             self._create_manifest_entry(
-                str(file_path), table_name, "FAILED", 0, str(e),
+                str(file_path), table_name, AuditStatus.FAILED, 0, str(e),
                 batch_id=batch_id, subbatch_id=subbatch_id
             )
             raise
@@ -200,9 +202,9 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             # Create a file manifest entry for this processing session
             file_manifest_id = None
             if table_manifest_id:
-                # Create initial manifest entry with PROCESSING status
+                # Create initial manifest entry with PROCESSING status (use AuditStatus enum)
                 file_manifest_id = self._create_manifest_entry(
-                    str(file_path), table_name, "PROCESSING", 
+                    str(file_path), table_name, AuditStatus.RUNNING, 
                     table_manifest_id=table_manifest_id
                 )
                 logger.debug(f"[LoadingStrategy] Created file manifest {file_manifest_id} with PROCESSING status")
@@ -243,10 +245,10 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                             
                             # Collect file processing event for subbatch metrics
                             if self.audit_service and subbatch_id:
-                                status = "COMPLETED" if success else "FAILED"
+                                status_enum = AuditStatus.COMPLETED if success else AuditStatus.FAILED
                                 self.audit_service.collect_file_processing_event(
                                     subbatch_id=subbatch_id,
-                                    status=status, 
+                                    status=status_enum,
                                     rows=rows or 0,
                                     bytes_=0  # We don't have byte count for in-memory chunks
                                 )
@@ -258,7 +260,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                                 if file_manifest_id and self.audit_service:
                                     self._update_manifest_entry(
                                         manifest_id=file_manifest_id,
-                                        status="FAILED", 
+                                        status=AuditStatus.FAILED, 
                                         rows_processed=total_processed_rows,
                                         error_msg=error
                                     )
@@ -276,7 +278,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                 logger.info(f"[LoadingStrategy] Updating file manifest {file_manifest_id} to COMPLETED with {total_processed_rows} rows")
                 self._update_manifest_entry(
                     manifest_id=file_manifest_id,
-                    status="COMPLETED",
+                    status=AuditStatus.COMPLETED,
                     rows_processed=total_processed_rows,
                     error_msg=None
                 )
@@ -293,7 +295,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             if file_manifest_id and self.audit_service:
                 self._update_manifest_entry(
                     manifest_id=file_manifest_id,
-                    status="FAILED",
+                    status=AuditStatus.FAILED,
                     rows_processed=total_processed_rows,
                     error_msg=str(e)
                 )
@@ -309,7 +311,11 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             subbatch_chunks.append(subbatch_chunk)
         return subbatch_chunks
 
-    def _load_batch_chunk(self, loader, table_info, batch_chunk, table_name, batch_id, subbatch_id):
+    def _load_batch_chunk(
+        self, 
+        loader, table_info, batch_chunk, table_name, 
+        batch_id, subbatch_id
+    ):
         """
         Load a specific batch chunk (list of tuples) using existing loader infrastructure.
         """
@@ -332,7 +338,8 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             
             # Update manifest only if one was created (not for chunks)
             if manifest_id:
-                status = "COMPLETED" if success else "FAILED"
+                from ....database.models.audit import AuditStatus
+                status = AuditStatus.COMPLETED if success else AuditStatus.FAILED
                 error_msg = str(error) if error else None
                 self._update_manifest_entry(manifest_id, status, rows, error_msg)
             
@@ -436,7 +443,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
         file_manifest_id = None
         if table_manifest_id:
             file_manifest_id = self._create_manifest_entry(
-                str(file_path), table_name, "PROCESSING", 
+                str(file_path), table_name, AuditStatus.RUNNING, 
                 table_manifest_id=table_manifest_id
             )
         
@@ -515,7 +522,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
         """Load entire file in a single operation with manifest tracking."""
         # Create manifest entry
         manifest_id = self._create_manifest_entry(
-            str(file_path), table_name, "PROCESSING", 
+            str(file_path), table_name, AuditStatus.RUNNING, 
             batch_id=batch_id, subbatch_id=subbatch_id
         )
         
@@ -523,7 +530,8 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
         success, error, rows = loader.load_file(table_info, file_path)
         
         # Update manifest entry
-        status = "COMPLETED" if success else "FAILED" 
+        from ....database.models.audit import AuditStatus
+        status = AuditStatus.COMPLETED if success else AuditStatus.FAILED
         error_msg = str(error) if error else None
         self._update_manifest_entry(manifest_id, status, rows, error_msg)
         
@@ -568,7 +576,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             return None
         
         # Log error messages if provided
-        if error_msg and status in ["FAILED", "ERROR"]:
+        if error_msg and status in [AuditStatus.FAILED, AuditStatus.ERROR]:
             logger.error(f"[LoadingStrategy] Error processing {file_path}: {error_msg}")
         
         if self.audit_service and hasattr(self.audit_service, 'create_file_manifest'):
@@ -761,7 +769,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                             
                             # First, get current audit_metadata for this specific table
                             current_result = conn.execute(text('''
-                                SELECT audit_metadata FROM table_audit_manifest 
+                                SELECT notes FROM table_audit_manifest 
                                 WHERE entity_name = :table_name 
                                 AND ingestion_year = :year 
                                 AND ingestion_month = :month
@@ -787,7 +795,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                             conn.execute(text('''
                                 UPDATE table_audit_manifest 
                                 SET completed_at = :completed_at,
-                                    audit_metadata = :metadata_json
+                                    notes = :metadata_json
                                 WHERE entity_name = :table_name 
                                 AND ingestion_year = :year 
                                 AND ingestion_month = :month
@@ -911,13 +919,13 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             
             query = '''
             SELECT table_audit_id FROM table_audit_manifest 
-            WHERE entity_name = :table_name 
+            WHERE entity_name = :entity_name 
             ORDER BY created_at DESC 
             LIMIT 1
             '''
             
             with self.audit_service.database.engine.connect() as conn:
-                result = conn.execute(text(query), {'table_name': table_name})
+                result = conn.execute(text(query), {'entity_name': table_name})
                 row = result.fetchone()
                 manifest_id = str(row[0]) if row else None
                 logger.debug(f"Table audit lookup for {table_name}: found={manifest_id is not None}, id={manifest_id}")
@@ -933,7 +941,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
         """Create a placeholder table audit entry for files without existing audit records."""
         try:
             # Use new uniform audit model
-            from ....database.models import TableAuditManifest, AuditStatus
+            from ....database.models.audit import TableAuditManifest, AuditStatus
             from datetime import datetime
             import uuid
             
@@ -952,7 +960,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                 updated_at=datetime.now(),
                 ingestion_year=self.config.year,
                 ingestion_month=self.config.month,
-                audit_metadata={"placeholder": True, "created_for": "file_manifest_requirement"}
+                notes={"placeholder": True, "created_for": "file_manifest_requirement"}
             )
             
             # Insert placeholder audit entry

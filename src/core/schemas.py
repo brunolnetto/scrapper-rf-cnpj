@@ -1,60 +1,42 @@
 from typing import NamedTuple, List, Dict, Tuple, Callable, Optional
 from datetime import datetime
 from pydantic import BaseModel
-from uuid import UUID
-import enum
 
-class AuditStatusSchema(str, enum.Enum):
-    """Pydantic schema enum for unified audit status."""
-    PENDING = "PENDING"
-    RUNNING = "RUNNING" 
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
-    CANCELLED = "CANCELLED"
-    SKIPPED = "SKIPPED"
-
-class TableAuditManifestSchema(BaseModel):
-    """Pydantic schema for TableAuditManifest model."""
-    table_audit_id: Optional[UUID] = None
-    entity_name: str
-    status: AuditStatusSchema
-    created_at: Optional[datetime] = None
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-    description: Optional[str] = None
-    error_message: Optional[str] = None
-    audit_metadata: Optional[Dict] = None
-    metrics: Optional[Dict] = None
-    source_files: Optional[List[str]] = None
-    file_size_bytes: Optional[int] = None
-    source_updated_at: Optional[datetime] = None
-    ingestion_year: int
-    ingestion_month: int
-
-    class Config:
-        from_attributes = True
+from ..database.models.audit import TableAuditManifestSchema
 
 class FileInfo(BaseModel):
     """Pydantic model representing a CNPJ file."""
     filename: str
     tablename: str
     path: str
+    updated_at: Optional[datetime] = None
+    file_size: Optional[int] = None
 
 class AuditMetadata(BaseModel):
     """Represents the metadata for auditing purposes."""
     audit_list: List[TableAuditManifestSchema]
     tablename_to_zipfile_to_files: Dict[str, Dict[str, List[str]]]
+    
+    def __repr__(self) -> str:
+        args = f"audit_list={self.audit_list}, tablename_to_zipfile_to_files={self.tablename_to_zipfile_to_files}"
+        return f"AuditMetadata({args})"
 
 class TableInfo(NamedTuple):
-    """NamedTuple representing table information."""
+    """
+    Represents information about a table.
+    """
+    label: str
+    zip_group: str
     table_name: str
-    is_simples: bool
+    columns: List[str]
+    encoding: str
+    transform_map: Callable
+    expression: str
+    table_model: object = None
 
 class FileGroupInfo(BaseModel):
     """Pydantic model representing grouped file information."""
     table_name: str
-    is_simples: bool
     files: List[FileInfo]
     year: int
     month: int

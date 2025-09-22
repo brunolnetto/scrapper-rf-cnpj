@@ -8,21 +8,21 @@ from sqlalchemy import (
     Integer,
     Index, 
     ForeignKey,
-    Enum
-)
+    Enum,
+) 
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import UUID
-from typing import Optional, Generic, TypeVar, List, Any
-from pydantic import BaseModel, Field
+from typing import Optional, TypeVar, List, Dict, Any
+from pydantic import BaseModel
 from datetime import datetime
 from uuid import uuid4
 from functools import reduce
 from sqlalchemy.ext.declarative import declarative_base
 import enum
+import uuid
 
 # Separate bases for audit and main tables
 AuditBase = declarative_base()
-MainBase = declarative_base()
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -32,82 +32,50 @@ class AuditStatus(enum.Enum):
     RUNNING = "RUNNING" 
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
-    CANCELLED = "CANCELLED"
-    SKIPPED = "SKIPPED"
 
-# Legacy enums - to be removed after migration
-class BatchStatus(enum.Enum):
-    PENDING = "PENDING"
-    RUNNING = "RUNNING" 
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
-    CANCELLED = "CANCELLED"
+class TableAuditManifestSchema(BaseModel):
+    """Pydantic schema for TableAuditManifest model."""
+    table_audit_id: Optional[uuid.UUID] = None
+    entity_name: str
+    status: AuditStatus
+    created_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    description: Optional[str] = None
+    error_message: Optional[str] = None
+    notes: Optional[Dict] = None
+    metrics: Optional[Dict] = None
+    source_files: Optional[List[str]] = None
+    file_size_bytes: Optional[int] = None
+    source_updated_at: Optional[datetime] = None
+    ingestion_year: int
+    ingestion_month: int
 
-class SubbatchStatus(enum.Enum):
-    PENDING = "PENDING"
-    RUNNING = "RUNNING"
-    COMPLETED = "COMPLETED" 
-    FAILED = "FAILED"
-    CANCELLED = "CANCELLED"
-    SKIPPED = "SKIPPED"
-
-
-class TableIngestionManifestSchema(BaseModel, Generic[T]):
-    table_manifest_id: str = Field(
-        default_factory=uuid4, description="Unique identifier for the audit entry."
-    )
-    table_name: str = Field(
-        ..., description="Table name associated with the audit entry."
-    )
-    source_files: Optional[List[str]] = Field(
-        None, description="List of files associated to given table."
-    )
-    file_size_bytes: Optional[float] = Field(
-        None, description="Total size of files respective to given table."
-    )
-    source_updated_at: Optional[datetime] = Field(
-        None, description="Timestamp of the last source update."
-    )
-    created_at: Optional[datetime] = Field(
-        None, description="Timestamp of the audit entry creation."
-    )
-    downloaded_at: Optional[datetime] = Field(
-        None, description="Timestamp of the audit entry download."
-    )
-    processed_at: Optional[datetime] = Field(
-        None, description="Timestamp of the audit entry processing."
-    )
-    inserted_at: Optional[datetime] = Field(
-        ..., description="Timestamp of the audit entry insertion."
-    )
-    audit_metadata: Optional[dict[str, Any]] = Field(
-        None, description="Metadata associated with the audit entry."
-    )
-    ingestion_year: int = Field(
-        default_factory=lambda: datetime.now().year, description="Year of ingestion (e.g., 2024)"
-    )
-    ingestion_month: int = Field(
-        default_factory=lambda: datetime.now().month, description="Month of ingestion (1-12)"
-    )
-
-    def to_audit_db(self) -> Any:
-        """Convert TableIngestionManifestSchema to TableAuditManifest model."""
+    class Config:
+        from_attributes = True
+        arbitrary_types_allowed = True
+    
+    def to_db_model(self) -> Any:
+        """Convert TableAuditManifestSchema to TableAuditManifest model."""
         return TableAuditManifest(
-            table_audit_id=self.table_manifest_id,
-            entity_name=self.table_name,
+            table_audit_id=self.table_audit_id,
+            entity_name=self.entity_name,
+            status=self.status,
+            created_at=self.created_at,
+            started_at=self.started_at,
+            completed_at=self.completed_at,
+            updated_at=self.updated_at,
+            description=self.description,
+            error_message=self.error_message,
+            notes=self.notes,
+            metrics=self.metrics,
             source_files=self.source_files,
             file_size_bytes=self.file_size_bytes,
             source_updated_at=self.source_updated_at,
-            created_at=self.created_at,
-            downloaded_at=self.downloaded_at,
-            processed_at=self.processed_at,
-            inserted_at=self.inserted_at,
-            audit_metadata=self.audit_metadata,
             ingestion_year=self.ingestion_year,
             ingestion_month=self.ingestion_month,
         )
-
-
 
 # =============================================================================
 # UNIFORM AUDIT MODELS - New Schema Implementation
@@ -140,12 +108,13 @@ class TableAuditManifest(AuditBase):
     error_message = Column(Text, nullable=True)
     
     # Standard metadata storage
-    audit_metadata = Column(JSON, nullable=True)  # Renamed to avoid SQLAlchemy conflict
-    metrics = Column(JSON, nullable=True)  # Performance metrics (rows, bytes, duration)
+    notes = Column(JSON, nullable=True)
+    metrics = Column(JSON, nullable=True)
     
     # Table-specific fields
     source_files = Column(JSON, nullable=True)
     file_size_bytes = Column(BigInteger, nullable=True)
+    source_updated_at = Column(TIMESTAMP, nullable=False, default=datetime.now)
     ingestion_year = Column(Integer, nullable=False, default=datetime.now().year)
     ingestion_month = Column(Integer, nullable=False, default=datetime.now().month)
     
@@ -160,6 +129,30 @@ class TableAuditManifest(AuditBase):
     # Relationships using new naming convention
     file_audits = relationship("FileAuditManifest", back_populates="table_audit", cascade="all, delete-orphan")
 
+    @property
+    def is_precedence_met(self) -> bool:
+        previous_timestamps = [
+            self.created_at,
+            self.started_at,
+            self.completed_at
+        ]
+        is_met = True
+        and_map = lambda a, b: a and b
+        for index, current_timestamp in enumerate(previous_timestamps):
+            # Skip validation if current timestamp is None
+            if current_timestamp is None:
+                continue
+                
+            previous_t = previous_timestamps[0:index]
+            if index > 0:
+                # Only compare with non-None previous timestamps
+                non_none_previous = [t for t in previous_t if t is not None]
+                if non_none_previous:
+                    greater_than_map = lambda a: a <= current_timestamp
+                    this_is_met = reduce(and_map, map(greater_than_map, non_none_previous))
+                    is_met = is_met and this_is_met
+        return is_met
+    
     def __repr__(self):
         return (
             f"TableAuditManifest(table_audit_id={self.table_audit_id}, entity_name={self.entity_name}, "
@@ -198,8 +191,8 @@ class FileAuditManifest(AuditBase):
     error_message = Column(Text, nullable=True)
     
     # Standard metadata storage
-    audit_metadata = Column(JSON, nullable=True)  # Renamed to avoid SQLAlchemy conflict
-    metrics = Column(JSON, nullable=True)  # Performance metrics (rows, bytes, duration)
+    notes = Column(JSON, nullable=True)
+    metrics = Column(JSON, nullable=True)
     
     # File-specific fields
     file_path = Column(Text, nullable=False)
@@ -259,8 +252,8 @@ class BatchAuditManifest(AuditBase):
     error_message = Column(Text, nullable=True)
     
     # Standard metadata storage
-    audit_metadata = Column(JSON, nullable=True)  # Renamed to avoid SQLAlchemy conflict
-    metrics = Column(JSON, nullable=True)  # Performance metrics (rows, bytes, duration)
+    notes = Column(JSON, nullable=True)
+    metrics = Column(JSON, nullable=True)
     
     # Batch-specific fields
     target_table = Column(String(100), nullable=False)  # Single table name
@@ -322,8 +315,8 @@ class SubbatchAuditManifest(AuditBase):
     error_message = Column(Text, nullable=True)
     
     # Standard metadata storage
-    audit_metadata = Column(JSON, nullable=True)  # Renamed to avoid SQLAlchemy conflict
-    metrics = Column(JSON, nullable=True)  # Performance metrics (rows, bytes, duration)
+    notes = Column(JSON, nullable=True)
+    metrics = Column(JSON, nullable=True)
     
     # Subbatch-specific fields
     table_name = Column(String(100), nullable=False)  # Processing table
@@ -348,146 +341,3 @@ class SubbatchAuditManifest(AuditBase):
             f"status={self.status.value}, table_name={self.table_name}, "
             f"rows_processed={self.rows_processed}, started_at={self.started_at})"
         )
-
-
-# =============================================================================
-# MAIN CNPJ/SOURCE TABLES - Production Data Models
-# =============================================================================
-
-class Empresa(MainBase):
-    __tablename__ = "empresa"
-    cnpj_basico = Column(Text, nullable=False, primary_key=True)
-    razao_social = Column(Text, nullable=True)
-    natureza_juridica = Column(Text, nullable=True)
-    qualificacao_responsavel = Column(Text, nullable=True)
-    capital_social = Column(Text, nullable=True)
-    porte_empresa = Column(Text, nullable=True)
-    ente_federativo_responsavel = Column(Text, nullable=True)
-    __table_args__ = (
-        Index("empresa_cnpj_basico", "cnpj_basico"),
-    )
-
-    # Relationships
-    estabelecimentos = relationship("Estabelecimento", back_populates="empresa")
-    socios = relationship("Socios", back_populates="empresa")
-    simples = relationship("SimplesNacional", back_populates="empresa")
-
-
-class SimplesNacional(MainBase):
-    __tablename__ = "simples"
-    cnpj_basico = Column(Text, nullable=True, primary_key=True)
-    opcao_pelo_simples = Column(Text, nullable=True)
-    data_opcao_simples = Column(Text, nullable=True)
-    data_exclusao_simples = Column(Text, nullable=True)
-    opcao_mei = Column(Text, nullable=True)
-    data_opcao_mei = Column(Text, nullable=True)
-    data_exclusao_mei = Column(Text, nullable=True)
-    __table_args__ = (
-        Index("simples_cnpj_basico", "cnpj_basico"),
-    )
-
-    # Relationship to Empresa
-    empresa = relationship("Empresa", back_populates="simples", primaryjoin="Empresa.cnpj_basico==SimplesNacional.cnpj_basico")
-
-
-class Socios(MainBase):
-    __tablename__ = "socios"
-    cnpj_basico = Column(Text, nullable=False, primary_key=True)
-    identificador_socio = Column(Text, nullable=True)
-    nome_socio_razao_social = Column(Text, nullable=True)
-    cpf_cnpj_socio = Column(Text, nullable=False, primary_key=True)
-    qualificacao_socio = Column(Text, nullable=True)
-    data_entrada_sociedade = Column(Text, nullable=True)
-    pais = Column(Text, nullable=True)
-    representante_legal = Column(Text, nullable=True)
-    nome_do_representante = Column(Text, nullable=True)
-    qualificacao_representante_legal = Column(Text, nullable=True)
-    faixa_etaria = Column(Text, nullable=True)
-    __table_args__ = (
-        Index("socios_cnpj_basico", "cnpj_basico"),
-    )
-
-    # Relationship to Empresa
-    empresa = relationship("Empresa", back_populates="socios", primaryjoin="Empresa.cnpj_basico==Socios.cnpj_basico")
-
-
-class Estabelecimento(MainBase):
-    __tablename__ = "estabelecimento"
-    cnpj_basico = Column(Text, nullable=False, primary_key=True)
-    cnpj_ordem = Column(Text, nullable=True, primary_key=True)
-    cnpj_dv = Column(Text, nullable=True, primary_key=True)
-    identificador_matriz_filial = Column(Text, nullable=True)
-    nome_fantasia = Column(Text, nullable=True)
-    situacao_cadastral = Column(Text, nullable=True)
-    data_situacao_cadastral = Column(Text, nullable=True)
-    motivo_situacao_cadastral = Column(Text, nullable=True)
-    nome_cidade_exterior = Column(Text, nullable=True)
-    pais = Column(Text, nullable=True)
-    data_inicio_atividade = Column(Text, nullable=True)
-    cnae_fiscal_principal = Column(Text, nullable=True)
-    cnae_fiscal_secundaria = Column(Text, nullable=True)
-    tipo_logradouro = Column(Text, nullable=True)
-    logradouro = Column(Text, nullable=True)
-    numero = Column(Text, nullable=True)
-    complemento = Column(Text, nullable=True)
-    bairro = Column(Text, nullable=True)
-    cep = Column(Text, nullable=True)
-    uf = Column(Text, nullable=True)
-    municipio = Column(Text, nullable=True)
-    ddd_1 = Column(Text, nullable=True)
-    telefone_1 = Column(Text, nullable=True)
-    ddd_2 = Column(Text, nullable=True)
-    telefone_2 = Column(Text, nullable=True)
-    ddd_fax = Column(Text, nullable=True)
-    fax = Column(Text, nullable=True)
-    correio_eletronico = Column(Text, nullable=True)
-    situacao_especial = Column(Text, nullable=True)
-    data_situacao_especial = Column(Text, nullable=True)
-    __table_args__ = (
-        Index("estabelecimento_cnpj_basico", "cnpj_basico"),
-        Index("estabelecimento_cnpj_ordem", "cnpj_ordem"),
-        Index("estabelecimento_cnpj_dv", "cnpj_dv"),
-        Index("estabelecimento_cnae_principal", "cnae_fiscal_principal"),
-        Index("estabelecimento_cnae_secundaria", "cnae_fiscal_secundaria"),
-        Index("estabelecimento_cep", "cep"),
-        Index("estabelecimento_uf", "uf"),
-    )
-
-    # Relationship to Empresa
-    empresa = relationship("Empresa", back_populates="estabelecimentos", primaryjoin="Empresa.cnpj_basico==Estabelecimento.cnpj_basico")
-
-
-class Qualificacoes(MainBase):
-    __tablename__ = "quals"
-    codigo = Column(Text, nullable=True, primary_key=True)
-    descricao = Column(Text, nullable=True)
-
-
-class MotivoCadastral(MainBase):
-    __tablename__ = "moti"
-    codigo = Column(Text, nullable=True, primary_key=True)
-    descricao = Column(Text, nullable=True)
-
-
-class NaturezaJuridica(MainBase):
-    __tablename__ = "natju"
-    codigo = Column(Text, nullable=True, primary_key=True)
-    descricao = Column(Text, nullable=True)
-
-
-class Municipio(MainBase):
-    __tablename__ = "munic"
-    codigo = Column(Text, nullable=True, primary_key=True)
-    descricao = Column(Text, nullable=True)
-
-
-class Cnae(MainBase):
-    __tablename__ = "cnae"
-    codigo = Column(Text, nullable=True, primary_key=True)
-    descricao = Column(Text, nullable=True)
-
-
-class Pais(MainBase):
-    __tablename__ = "pais"
-    codigo = Column(Text, nullable=True, primary_key=True)
-    descricao = Column(Text, nullable=True)

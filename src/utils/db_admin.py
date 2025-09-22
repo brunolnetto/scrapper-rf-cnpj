@@ -1,7 +1,7 @@
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
-from ...setup.logging import logger
+from ..setup.logging import logger
 
 
 def database_exists(user, password, host, port, dbname, target_db):

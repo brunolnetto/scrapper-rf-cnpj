@@ -8,13 +8,10 @@ import random
 import math
 
 import polars as pl
-from ...setup.config.models import (
-    DevelopmentConfig, 
-    DownloadConfig, ConversionConfig, LoadingConfig
-)
+from ...setup.config.models import DevelopmentConfig
             
 from ...setup.logging import logger
-from ...database.models import TableAuditManifest
+from ...database.models.audit import TableAuditManifest
 
 class DevelopmentFilter:
     """Development mode filtering with comprehensive controls."""
@@ -69,7 +66,7 @@ class DevelopmentFilter:
         
         # Group audits by table
         for audit in audits:
-            table_name = audit.table_name
+            table_name = audit.entity_name
             if table_name not in table_groups:
                 table_groups[table_name] = []
             table_groups[table_name].append(audit)

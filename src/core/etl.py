@@ -6,10 +6,10 @@ import os
 
 # Import new services
 from ..setup.logging import logger
-from ..setup.config import ConfigurationService, AppConfig
-from ..database.models import TableAuditManifest, MainBase, AuditBase
+from ..setup.config import ConfigurationService
+from ..database.models.audit import TableAuditManifest, AuditBase
+from ..database.models.business import MainBase
 from .interfaces import Pipeline
-
 
 from .schemas import FileInfo, AuditMetadata
 from .services.audit.service import AuditService
@@ -137,8 +137,8 @@ class ReceitaCNPJPipeline(Pipeline):
         logger.info(f"Completing batch tracking: {self._batch_name} (success={success})")
         
         # Complete the batch manually using the correct method name
-        from ..database.models import BatchStatus
-        status = BatchStatus.COMPLETED if success else BatchStatus.FAILED
+        from ..database.models.audit import AuditStatus
+        status = AuditStatus.COMPLETED if success else AuditStatus.FAILED
         self.audit_service._complete_batch_with_accumulated_metrics(self._current_batch_id, status)
         self._current_batch_id = None
 
@@ -167,8 +167,13 @@ class ReceitaCNPJPipeline(Pipeline):
             # Convert PeriodFileInfo to FileInfo for compatibility
             files_info = []
             for period_file in period_files:
+                # Derive tablename from filename using the mapping
+                tablename = self._derive_tablename_from_filename(period_file.filename)
+                
                 file_info = FileInfo(
                     filename=period_file.filename,
+                    tablename=tablename,
+                    path=period_file.download_url,
                     updated_at=period_file.updated_at,
                     file_size=period_file.file_size
                 )
@@ -183,6 +188,34 @@ class ReceitaCNPJPipeline(Pipeline):
         except Exception as e:
             logger.error(f"Failed to scrape data using discovery service: {e}")
             return []
+
+    def _derive_tablename_from_filename(self, filename: str) -> str:
+        """
+        Derive the table name from a ZIP filename based on the TABLES_INFO_DICT mapping.
+        
+        Args:
+            filename: The ZIP filename (e.g., "Cnaes.zip", "Empresas1.zip")
+            
+        Returns:
+            The corresponding table name (e.g., "cnae", "empresa")
+        """
+        from .constants import TABLES_INFO_DICT
+        
+        # Remove .zip extension and convert to lowercase for matching
+        base_name = filename.replace('.zip', '').lower()
+        
+        # Find the best match based on the label patterns
+        for table_name, table_info in TABLES_INFO_DICT.items():
+            label = table_info["label"].lower()
+            expression = table_info["expression"].lower()
+            
+            # Check if the filename contains the label or expression
+            if label in base_name or expression in base_name:
+                return table_name
+
+        # If no match found, return a default or log warning
+        logger.warning(f"Could not derive tablename from filename: {filename}")
+        return "unknown"
 
     def fetch_audit_data(self) -> List[TableAuditManifest]:
         files_info = self.scrap_data()
@@ -220,7 +253,7 @@ class ReceitaCNPJPipeline(Pipeline):
         # Use the period URL as the base URL for downloading
         self.file_downloader.download_and_extract(
             audits,
-            period.url,  # Pass the period URL, not FileInfo objects
+            period.url,
             str(self.config.pipeline.get_temporal_download_path(self.config.year, self.config.month)),
             str(self.config.pipeline.get_temporal_extraction_path(self.config.year, self.config.month)),
             parallel=self.config.pipeline.is_parallel,
@@ -304,12 +337,6 @@ class ReceitaCNPJPipeline(Pipeline):
         Returns:
             AuditMetadata: Compatible audit metadata for existing files, or None if no files found
         """
-        from ..core.constants import TABLES_INFO_DICT
-        from ..core.schemas import AuditMetadata
-        from ..database.models import TableAuditManifestSchema
-        from datetime import datetime
-        from uuid import uuid4
-
         # Check conversion directory first (Parquet files) - higher priority
         conversion_path = self.config.pipeline.get_temporal_conversion_path(self.config.year, self.config.month)
         parquet_files = []
@@ -341,9 +368,8 @@ class ReceitaCNPJPipeline(Pipeline):
         """Create audit metadata for Parquet files."""
         from ..core.constants import TABLES_INFO_DICT
         from ..core.schemas import AuditMetadata
-        from ..database.models import TableAuditManifestSchema
+        from ..database.models.audit import TableAuditManifestSchema
         from datetime import datetime
-        from uuid import uuid4
 
         # Development mode filtering
         if self.config.is_development_mode():
@@ -372,9 +398,9 @@ class ReceitaCNPJPipeline(Pipeline):
         # Create audit metadata entries
         audit_list = []
         for table_name, zip_to_files in tablename_to_files.items():
-            for zip_filename, file_list in zip_to_files.items():
+            for file_list in zip_to_files.values():
                 audit_entry = TableAuditManifestSchema(
-                    table_name=table_name,
+                    entity_name=table_name,
                     source_files=file_list,  # Store actual processed files, not ZIP file
                     processed_at=datetime.now(),
                     inserted_at=None  # Will be set during loading
@@ -388,7 +414,7 @@ class ReceitaCNPJPipeline(Pipeline):
         """Create audit metadata for CSV files (original implementation)."""
         from ..core.constants import TABLES_INFO_DICT
         from ..core.schemas import AuditMetadata  
-        from ..database.models import TableAuditManifestSchema
+        from ..database.models.audit import TableAuditManifestSchema
         from datetime import datetime
         from uuid import uuid4
 
@@ -433,14 +459,14 @@ class ReceitaCNPJPipeline(Pipeline):
         audit_list = []
         for table_name in tablename_to_files.keys():
             synthetic_audit = TableAuditManifestSchema(
-                table_manifest_id=str(uuid4()),  # Generate a proper UUID string
-                table_name=table_name,
+                table_audit_id=str(uuid4()),  # Generate a proper UUID string
+                entity_name=table_name,
                 source_files=["synthetic_conversion"],  # Fake filename for compatibility
                 file_size_bytes=0.0,  # Not relevant for convert-only
                 source_updated_at=datetime.now(),
                 processed_at=None,
                 inserted_at=datetime.now(),  # Required field
-                audit_metadata={"convert_only": True}
+                notes={"convert_only": True}
             )
             audit_list.append(synthetic_audit)
         
@@ -484,7 +510,7 @@ class ReceitaCNPJPipeline(Pipeline):
         """
         from ..core.constants import TABLES_INFO_DICT
         from ..core.schemas import AuditMetadata
-        from ..database.models import TableAuditManifestSchema
+        from ..database.models.audit import TableAuditManifestSchema
         from datetime import datetime
         from uuid import uuid4
 
@@ -552,7 +578,7 @@ class ReceitaCNPJPipeline(Pipeline):
                 current_time = datetime.now()
                 
                 audit_entry = TableAuditManifestSchema(
-                    table_name=table_name,
+                    entity_name=table_name,
                     source_files=file_list,  # Store actual CSV files
                     file_size_bytes=total_size_bytes,  # Total size of CSV files
                     source_updated_at=oldest_file_time,  # Oldest file modification time

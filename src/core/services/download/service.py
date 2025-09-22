@@ -5,9 +5,9 @@ from datetime import datetime
 from tenacity import retry, stop_after_attempt, wait_exponential
 from tqdm import tqdm
 
-from ....database.models import TableAuditManifest
+from ....database.models.audit import TableAuditManifest
 from ....setup.logging import logger
-from ....setup.config import ConfigurationService, AppConfig
+from ....setup.config import ConfigurationService
 from ....utils.misc import get_file_size, get_max_workers
 from ....utils.zip import extract_zip_file
 
@@ -87,10 +87,10 @@ class FileDownloadService:
                 )
             except OSError as e:
                 logger.error(
-                    f"Error downloading or extracting file for table {audit.table_name}: {e}"
+                    f"Error downloading or extracting file for table {audit.entity_name}: {e}"
                 )
                 error_count += 1
-                error_basefiles.append(audit.table_name)
+                error_basefiles.append(audit.entity_name)
             finally:
                 logger.info(
                     f"({index}/{total_count}) files processed. {error_count} errors: {error_basefiles}"

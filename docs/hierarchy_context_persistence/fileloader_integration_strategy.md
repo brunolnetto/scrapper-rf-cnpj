@@ -111,7 +111,7 @@ def _load_batch_chunk(self, loader, table_info, batch_chunk, batch_id, subbatch_
         )
         
         # Update manifest
-        status = "COMPLETED" if success else "FAILED"
+        status = AuditStatus.COMPLETED if success else AuditStatus.FAILED
         self._update_manifest_entry(manifest_id, status, rows, str(error) if error else None)
         
         return success, error, rows

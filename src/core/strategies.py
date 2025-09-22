@@ -3,7 +3,7 @@ from datetime import datetime
 
 from ..setup.logging import logger
 from ..setup.config import ConfigurationService, AppConfig
-from ..database.utils.db_admin import (
+from ..utils.db_admin import (
     create_database_if_not_exists,
     truncate_tables,
     get_table_row_counts,
@@ -242,6 +242,7 @@ class FullETLStrategy:
         # Get current row counts for validation
         logger.info("[FULL-ETL] Getting current table row counts...")
         initial_row_counts = get_table_row_counts(user, password, host, port, prod_db)
+
         logger.info(f"[FULL-ETL] Current row counts: {initial_row_counts}")
         
         # Run the ETL job  
@@ -262,10 +263,10 @@ class FullETLStrategy:
             
             # Step 2: Insert table audits BEFORE loading (critical for file manifest linking)
             logger.info("[FULL-ETL] Step 2: Inserting table audits before loading...")
-            if hasattr(pipeline, 'audit_service'):
-                pipeline.audit_service.insert_audits(audit_metadata)
-                logger.info("[FULL-ETL] Table audits inserted successfully - file manifests can now link properly")
             
+            pipeline.audit_service.insert_audits(audit_metadata)
+            logger.info("[FULL-ETL] Table audits inserted successfully - file manifests can now link properly")
+        
             # Step 3: Convert to Parquet
             logger.info("[FULL-ETL] Step 3: Converting to Parquet...")
             pipeline.convert_to_parquet(audit_metadata)
@@ -343,11 +344,11 @@ class FullETLStrategy:
             # Find corresponding audit entry
             table_audit = [
                 audit for audit in audit_metadata.audit_list
-                if audit.table_name == table_name
+                if audit.entity_name == table_name
             ]
             
             if len(table_audit) == 1:
-                table_audit[0].audit_metadata = {"row_count": row_count_metadata}
+                table_audit[0].notes = {"row_count": row_count_metadata}
                 logger.info(f"[METRICS] Table '{table_name}': {initial_count} -> {final_count} (diff: {change:+d})")
             else:
                 logger.warning(f"[METRICS] Expected 1 audit entry for table '{table_name}', found {len(table_audit)}")

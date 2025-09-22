@@ -109,15 +109,15 @@ class DataLoadingService:
 
         # Update audit_metadata with insertion timestamps and persist to database
         for audit in audit_metadata.audit_list:
-            result = results.get(audit.table_name)
+            result = results.get(audit.entity_name)
             if result and result[0]:  # success
-                audit.inserted_at = datetime.now()  # Individual timestamp per table
-                logger.debug(f"Set inserted_at for {audit.table_name}: success with {result[2]} rows")
+                audit.completed_at = datetime.now()  # Individual timestamp per table
+                logger.debug(f"Set inserted_at for {audit.entity_name}: success with {result[2]} rows")
             else:
                 # Even if loading failed or had no changes, we processed it - set timestamp
-                audit.inserted_at = datetime.now()  # Individual timestamp per table
+                audit.completed_at = datetime.now()  # Individual timestamp per table
                 logger.warning(
-                    f"Setting inserted_at despite issue with table {audit.table_name}: {result[1] if result else 'No result'}"
+                    f"Setting inserted_at despite issue with table {audit.entity_name}: {result[1] if result else 'No result'}"
                 )
                 
             # Persist inserted_at to database
@@ -134,7 +134,7 @@ class DataLoadingService:
             # Prepare completion metadata
             completion_metadata = {
                 "loading_completed": True,
-                "completion_timestamp": audit.inserted_at.isoformat() if audit.inserted_at else None,
+                "completion_timestamp": audit.completed_at.isoformat() if audit.completed_at else None,
                 "loading_success": result[0] if result else False,
                 "rows_loaded": result[2] if result and len(result) > 2 else 0,
                 "error_message": result[1] if result and not result[0] else None
@@ -146,18 +146,18 @@ class DataLoadingService:
             
             # Update table audit in database - Use audit service's database connection
             if self.audit_service is None:
-                logger.warning(f"No audit service available, cannot persist table audit completion for {audit.table_name}")
+                logger.warning(f"No audit service available, cannot persist table audit completion for {audit.entity_name}")
                 return
                 
             with self.audit_service.database.engine.begin() as conn:
                 # First, get current audit_metadata
                 current_result = conn.execute(text('''
-                    SELECT audit_metadata FROM table_audit 
-                    WHERE table_name = :table_name 
+                    SELECT notes FROM table_audit_manifest 
+                    WHERE entity_name = :entity_name 
                     AND ingestion_year = :year 
                     AND ingestion_month = :month
                 '''), {
-                    'table_name': audit.table_name,
+                    'entity_name': audit.entity_name,
                     'year': year,
                     'month': month
                 })
@@ -177,21 +177,21 @@ class DataLoadingService:
                 
                 # Update with merged metadata
                 conn.execute(text('''
-                    UPDATE table_audit 
-                    SET inserted_at = :inserted_at,
-                        audit_metadata = :metadata_json
-                    WHERE table_name = :table_name 
+                    UPDATE table_audit_manifest 
+                    SET completed_at = :completed_at,
+                        notes = :metadata_json
+                    WHERE entity_name = :entity_name 
                     AND ingestion_year = :year 
                     AND ingestion_month = :month
                 '''), {
-                    'inserted_at': audit.inserted_at,
+                    'completed_at': audit.completed_at,
                     'metadata_json': json.dumps(merged_metadata),
-                    'table_name': audit.table_name,
+                    'entity_name': audit.entity_name,
                     'year': year,
                     'month': month
                 })
                 
-                logger.debug(f"Persisted completion data for table audit: {audit.table_name}")
+                logger.debug(f"Persisted completion data for table audit: {audit.entity_name}")
                 
         except Exception as e:
-            logger.error(f"Failed to persist table audit completion for {audit.table_name}: {e}")
+            logger.error(f"Failed to persist table audit completion for {audit.entity_name}: {e}")

@@ -10,8 +10,10 @@ import os
 import uuid
 import time
 from datetime import datetime
+import json
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Generator
+from typing import Union
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from threading import Lock
@@ -21,15 +23,11 @@ from sqlalchemy import text
 from ....setup.logging import logger
 from ....setup.config import get_config, ConfigurationService
 from ....database.engine import Database
-from ....database.models import (
-    # New uniform audit models
+from ....database.models.audit import (
     TableAuditManifest, 
-    FileAuditManifest, 
-    BatchAuditManifest, 
-    SubbatchAuditManifest, 
     AuditStatus
 )
-from ....database.utils.models import create_audits, create_audit_metadata, insert_audit
+from ....utils.models import create_audits, create_audit_metadata, insert_audit
 from ...schemas import AuditMetadata, FileInfo, FileGroupInfo
 from ...utils.schemas import create_file_groups
 
@@ -44,14 +42,37 @@ class BatchAccumulator:
     start_time: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
 
-    def add_file_event(self, status: str, rows: int = 0, bytes_: int = 0):
-        """Add a file processing event to the accumulator."""
-        if status in ['COMPLETED', 'SUCCESS']:
+    def add_file_event(self, status: AuditStatus, rows: int = 0, bytes_: int = 0):
+        """Add a file processing event to the accumulator.
+
+        Accepts legacy status strings and normalizes them to the
+        AuditStatus values before updating metrics.
+        """
+        # Accept either AuditStatus instances or legacy status strings and normalize
+        norm_status = None
+        try:
+            if isinstance(status, AuditStatus):
+                norm_status = status
+            elif isinstance(status, str):
+                # try mapping by name (case-insensitive) then by value
+                try:
+                    norm_status = AuditStatus[status.strip().upper()]
+                except Exception:
+                    try:
+                        norm_status = AuditStatus(status)
+                    except Exception:
+                        norm_status = AuditStatus.PENDING
+            else:
+                norm_status = AuditStatus.PENDING
+        except Exception:
+            norm_status = AuditStatus.PENDING
+
+        if norm_status == AuditStatus.COMPLETED:
             self.files_completed += 1
-            self.total_rows += rows
-            self.total_bytes += bytes_
-        elif status in ['FAILED', 'ERROR']:
+            self.total_rows += int(rows or 0)
+        elif norm_status == AuditStatus.FAILED:
             self.files_failed += 1
+        # update last activity timestamp
         self.last_activity = time.time()
 
 
@@ -67,6 +88,28 @@ class AuditService:
         self._active_subbatches: Dict[str, BatchAccumulator] = {}
         self._subbatch_to_batch: Dict[str, str] = {}
         self._metrics_lock = Lock()
+
+    def _coerce_status(self, status: Union[AuditStatus, str]) -> AuditStatus:
+        """Coerce a status value (enum or string) into an AuditStatus enum.
+
+        - If already an AuditStatus, return as-is.
+        - If string, try mapping by name (case-insensitive) then by value.
+        - On failure, return AuditStatus.PENDING as safe default.
+        """
+        try:
+            if isinstance(status, AuditStatus):
+                return status
+            if isinstance(status, str):
+                try:
+                    return AuditStatus[status.strip().upper()]
+                except Exception:
+                    try:
+                        return AuditStatus(status)
+                    except Exception:
+                        return AuditStatus.PENDING
+        except Exception:
+            return AuditStatus.PENDING
+        return AuditStatus.PENDING
 
     @contextmanager
     def batch_context(self, target_table: str, batch_name: str, 
@@ -157,7 +200,7 @@ class AuditService:
         Filters for relevant files and groups them appropriately.
         """
         filtered_files = self._filter_relevant_files(files_info)
-        file_groups = create_file_groups(filtered_files)
+        file_groups = create_file_groups(filtered_files, self.config.year, self.config.month)
         return self._create_audits_from_groups(file_groups)
 
     def create_audit_metadata(
@@ -181,13 +224,13 @@ class AuditService:
         for audit in audit_metadata.audit_list:
             try:
                 # Convert schema to SQLAlchemy model and insert
-                from ....database.models import TableAuditManifest
-                audit_model = TableAuditManifest(**audit.model_dump())
+                audit_model = audit.to_db_model()
                 insert_audit(self.database, audit_model)
 
                 # ✅ SUCCESS: Create manifest entry for successful insertion (if enabled)
                 if create_file_manifests:
-                    self._create_audit_manifest_entry(audit, "success")
+                    # Pass the enum itself; manifest entry expects AuditStatus
+                    self._create_audit_manifest_entry(audit, AuditStatus.COMPLETED)
                 else:
                     logger.debug(f"Skipping file manifest creation for {audit.entity_name} (will be created during processing)")
 
@@ -195,11 +238,11 @@ class AuditService:
 
             except Exception as e:
                 # ❌ FAILURE: Create manifest entry for failed insertion (always create for failures)
-                self._create_audit_manifest_entry(audit, "failed", error_message=str(e))
+                self._create_audit_manifest_entry(audit, AuditStatus.FAILED, error_message=str(e))
 
                 logger.error(f"Failed to insert audit for {audit.entity_name}: {e}")
 
-    def _create_audit_manifest_entry(self, audit, status: str, error_message: str = None) -> None:
+    def _create_audit_manifest_entry(self, audit, status: AuditStatus, error_message: str = None) -> None:
         """Create a manifest entry for an audit insertion attempt.
         
         Note: This should NOT create file_ingestion_manifest entries for ZIP files.
@@ -227,8 +270,8 @@ class AuditService:
                 filesize = 0
 
             # Extract audit ID (table manifest ID)
-            table_manifest_id = getattr(audit, 'table_manifest_id', None)
-            if not table_manifest_id:
+            table_audit_id = getattr(audit, 'table_audit_id', None)
+            if not table_audit_id:
                 logger.error(f"Audit entry missing table_manifest_id: {audit}")
                 return
 
@@ -238,14 +281,13 @@ class AuditService:
             # Create manifest entry with table name and audit reference
             self._insert_manifest_entry(
                 manifest_id=manifest_id,
-                table_name=table_name,
+                table_name=Path(file_path).name if file_path != "unknown" else table_name,  # entity_name should be filename
                 file_path=file_path,
                 status=status,
                 checksum=None,  # Audits don't have checksums
                 filesize=int(filesize),
                 rows_processed=0,  # Audit insertions don't have row counts
-                processed_at=datetime.now(),
-                table_manifest_id=str(table_manifest_id)  # Table audit reference
+                table_manifest_id=str(table_audit_id)
             )
 
             logger.debug(f"Created {status} manifest entry for audit: {table_name}")
@@ -261,7 +303,8 @@ class AuditService:
             info
             for info in files_info
             if info.filename.endswith(".zip")
-            or (info.filename.endswith(".pdf") and "layout" in info.filename.lower())
+                or (info.filename.endswith(".pdf") 
+                and "layout" in info.filename.lower())
         ]
 
     def _create_audits_from_groups(
@@ -270,9 +313,11 @@ class AuditService:
         """
         Create audit records from file groups using the database with ETL temporal context.
         """
-        return create_audits(self.database, file_groups, 
-                            etl_year=self.config.year, 
-                            etl_month=self.config.month)
+        return create_audits(
+            self.database, file_groups, 
+            etl_year=self.config.year, 
+            etl_month=self.config.month
+        )
 
     # Manifest tracking capabilities
     def _find_table_audit(self, table_name: str) -> Optional[str]:
@@ -296,10 +341,11 @@ class AuditService:
             logger.error(f"Failed to find table audit for {table_name}: {e}")
             return None
 
-    def create_file_manifest(self, file_path: str, status: str, table_manifest_id: str, 
-                           checksum: Optional[str] = None, filesize: Optional[int] = None, 
-                           rows: Optional[int] = None, table_name: str = 'unknown', 
-                           notes: Optional[str] = None) -> str:
+    def create_file_manifest(
+        self, file_path: str, status: AuditStatus, table_manifest_id: str, 
+            checksum: Optional[str] = None, filesize: Optional[int] = None, 
+            rows: Optional[int] = None, table_name: str = 'unknown', 
+            notes: Optional[str] = None) -> str:
         """
         Create manifest entry for processed file with required table audit reference.
         
@@ -340,16 +386,25 @@ class AuditService:
                     notes_parts.append(f"Processed {rows:,} rows")
                 if filesize is not None:
                     notes_parts.append(f"File size: {filesize:,} bytes")
-                if status == "COMPLETED":
+
+                # Prefer AuditStatus enum comparisons. Accept AuditStatus or string.
+                if isinstance(status, AuditStatus):
+                    status_name = status.value
+                elif isinstance(status, str):
+                    status_name = status.strip().upper()
+                else:
+                    status_name = AuditStatus.PENDING.value
+
+                if status_name == AuditStatus.COMPLETED.value:
                     notes_parts.append("Successfully processed")
-                elif status == "FAILED":
+                elif status_name == AuditStatus.FAILED.value:
                     notes_parts.append("Processing failed")
-                elif status == "PARTIAL":
+                elif status_name == "PARTIAL":
                     notes_parts.append("Partially processed")
-                elif status == "PENDING":
+                elif status_name == AuditStatus.PENDING.value:
                     notes_parts.append("Processing pending")
-                
-                notes = "; ".join(notes_parts) if notes_parts else f"Status: {status}"
+
+                notes = "; ".join(notes_parts) if notes_parts else f"Status: {status_name}"
 
             # Generate manifest ID
             manifest_id = str(uuid.uuid4())
@@ -357,15 +412,13 @@ class AuditService:
             # Insert manifest entry
             self._insert_manifest_entry(
                 manifest_id=manifest_id,
-                table_name=table_name,
+                table_name=file_path_obj.name,  # entity_name should be filename
                 file_path=str(file_path_obj),
                 status=status,
                 checksum=checksum,
                 filesize=filesize,
                 rows_processed=rows,
-                processed_at=datetime.now(),
-                table_manifest_id=table_manifest_id,  # Primary table audit reference
-                notes=notes
+                table_manifest_id=table_manifest_id
             )
 
             logger.info(f"Manifest entry created for {file_path_obj.name} (status: {status})")
@@ -397,30 +450,70 @@ class AuditService:
             logger.error(f"Failed to calculate checksum for {file_path}: {e}")
             return None
 
-    def _insert_manifest_entry(self, manifest_id: str, table_name: str, file_path: str, status: str,
-                              checksum: Optional[str], filesize: Optional[int],
-                              rows_processed: Optional[int], processed_at: datetime, 
-                              table_manifest_id: str, notes: Optional[str] = None) -> None:
+    def _insert_manifest_entry(
+        self, manifest_id: str, table_name: str, file_path: str, status: AuditStatus,
+        checksum: Optional[str], filesize: Optional[int],
+        rows_processed: Optional[int], 
+        table_manifest_id: str, 
+        notes: Optional[str] = None
+    ) -> None:
         """Insert manifest entry into database with required table_manifest_id."""
         try:
             insert_query = '''
             INSERT INTO file_audit_manifest
-            (file_manifest_id, table_manifest_id, table_name, file_path, status, checksum, filesize, rows_processed, processed_at, notes)
-            VALUES (:file_manifest_id, :table_manifest_id, :table_name, :file_path, :status, :checksum, :filesize, :rows_processed, :processed_at, :notes)
+            (
+                file_audit_id, 
+                parent_table_audit_id, 
+                entity_name, 
+                status, 
+                created_at,
+                file_path,
+                checksum,
+                filesize, 
+                rows_processed,
+                notes
+            )
+            VALUES (
+                :file_audit_id, 
+                :table_audit_id, 
+                :entity_name, 
+                :status,  
+                :created_at,
+                :file_path,
+                :checksum,
+                :filesize, 
+                :rows_processed,
+                :notes
+            )
             '''
+
+            # Coerce status to AuditStatus enum for consistent DB values
+            norm_status = self._coerce_status(status)
+
+            # Ensure notes are serialized consistently
+            try:
+                if notes is None:
+                    safe_notes = '{}'  # store empty object
+                elif isinstance(notes, dict):
+                    safe_notes = json.dumps(notes)
+                else:
+                    # wrap string notes into a dict for consistency
+                    safe_notes = json.dumps({'notes': str(notes)})
+            except Exception:
+                safe_notes = json.dumps({'notes': str(notes)})
 
             with self.database.engine.begin() as conn:
                 conn.execute(text(insert_query), {
-                    'file_manifest_id': manifest_id,
-                    'table_manifest_id': table_manifest_id,
-                    'table_name': table_name,
+                    'file_audit_id': manifest_id,
+                    'table_audit_id': table_manifest_id,
+                    'entity_name': table_name,
+                    'status': norm_status.value,
+                    'created_at': datetime.now(),
                     'file_path': file_path,
-                    'status': status,
                     'checksum': checksum,
                     'filesize': filesize,
                     'rows_processed': rows_processed,
-                    'processed_at': processed_at,
-                    'notes': notes
+                    'notes': safe_notes
                 })
 
         except Exception as e:
@@ -432,10 +525,17 @@ class AuditService:
             from sqlalchemy import text
 
             query = '''
-            SELECT file_path, filename, status, checksum, filesize, rows_processed, processed_at
+            SELECT 
+                file_path, 
+                entity_name as filename, 
+                status, 
+                checksum, 
+                filesize, 
+                rows_processed, 
+                completed_at
             FROM file_audit_manifest
-            WHERE filename = :filename
-            ORDER BY processed_at DESC
+            WHERE entity_name = :filename
+            ORDER BY completed_at DESC
             '''
 
             with self.database.engine.connect() as conn:
@@ -454,11 +554,16 @@ class AuditService:
 
             # Get stored checksum
             with self.database.engine.connect() as conn:
-                result = conn.execute(text('''
-                    SELECT checksum FROM file_audit_manifest
+                query=text('''
+                    SELECT checksum 
+                    FROM file_audit_manifest
                     WHERE file_path = :file_path
-                    ORDER BY processed_at DESC LIMIT 1
-                '''), {'file_path': str(file_path_obj)})
+                    ORDER BY completed_at DESC LIMIT 1
+                ''')
+                result = conn.execute(
+                    query, 
+                    {'file_path': str(file_path_obj)}
+                )
 
                 row = result.fetchone()
                 if not row or not row[0]:
@@ -487,41 +592,55 @@ class AuditService:
             from sqlalchemy import text
             from pathlib import Path
             file_path_obj = Path(file_path)
-
-            # Get current notes if appending
-            current_notes = None
+            # Get current audit_metadata if appending
+            current_meta = None
             if append:
                 with self.database.engine.connect() as conn:
-                    result = conn.execute(text('''
-                        SELECT notes FROM file_audit_manifest
+                    query=text('''
+                        SELECT notes 
+                        FROM file_audit_manifest
                         WHERE file_path = :file_path
-                        ORDER BY processed_at DESC LIMIT 1
-                    '''), {'file_path': str(file_path_obj)})
+                        ORDER BY updated_at DESC LIMIT 1
+                    ''')
+                    result = conn.execute(
+                        query, 
+                        {'file_path': str(file_path_obj)}
+                    )
 
                     row = result.fetchone()
                     if row and row[0]:
-                        current_notes = row[0]
+                        try:
+                            current_meta = row[0] if isinstance(row[0], dict) else json.loads(row[0])
+                        except Exception:
+                            current_meta = {'notes': row[0]}
 
-            # Prepare new notes
-            if append and current_notes:
-                updated_notes = f"{current_notes}; {notes}"
+            # Prepare new audit_metadata
+            if append and current_meta and isinstance(current_meta, dict):
+                # merge notes into 'processing_update' or 'notes'
+                existing_notes = current_meta.get('notes')
+                if existing_notes:
+                    merged = f"{existing_notes}; {notes}"
+                else:
+                    merged = notes
+                current_meta['notes'] = merged
+                updated_meta = current_meta
             else:
-                updated_notes = notes
+                updated_meta = notes
 
-            # Update the notes
+            # Update the audit_metadata
             with self.database.engine.begin() as conn:
                 conn.execute(text('''
                     UPDATE file_audit_manifest
-                    SET notes = :notes, processed_at = :processed_at
+                    SET notes = :notes, updated_at = :updated_at
                     WHERE file_path = :file_path
-                    AND processed_at = (
-                        SELECT MAX(processed_at) FROM file_audit_manifest
+                    AND updated_at = (
+                        SELECT MAX(updated_at) FROM file_audit_manifest
                         WHERE file_path = :file_path
                     )
                 '''), {
                     'file_path': str(file_path_obj),
-                    'notes': updated_notes,
-                    'processed_at': datetime.now()
+                    'notes': json.dumps(updated_meta),
+                    'updated_at': datetime.now()
                 })
 
             logger.info(f"Updated notes for {file_path_obj.name}")
@@ -529,8 +648,10 @@ class AuditService:
         except Exception as e:
             logger.error(f"Failed to update manifest notes for {file_path}: {e}")
 
-    def update_table_audit_after_conversion(self, table_name: str, processed_file_path: str, 
-                                          processing_metadata: dict = None) -> None:
+    def update_table_audit_after_conversion(
+        self, table_name: str, processed_file_path: str, 
+        processing_metadata: dict = None
+    ) -> None:
         """
         Update table audit after file conversion to reference processed files instead of source files.
         
@@ -549,7 +670,8 @@ class AuditService:
             with self.database.engine.begin() as conn:
                 # First, get the table audit for this table
                 result = conn.execute(text('''
-                    SELECT table_audit_id FROM table_audit_manifest 
+                    SELECT table_audit_id 
+                    FROM table_audit_manifest 
                     WHERE entity_name = :table_name
                     ORDER BY created_at DESC 
                     LIMIT 1
@@ -577,13 +699,15 @@ class AuditService:
                 conn.execute(text('''
                     UPDATE table_audit_manifest 
                     SET source_files = :source_files,
-                        audit_metadata = :metadata,
-                        processed_at = :processed_at
+                        notes = :notes,
+                        completed_at = :completed_at,
+                        status = :status
                     WHERE table_audit_id = :table_audit_id
                 '''), {
                     'source_files': source_files_json,
-                    'metadata': metadata_json,
-                    'processed_at': datetime.now(),
+                    'notes': metadata_json,
+                    'completed_at': datetime.now(),
+                    'status': 'COMPLETED',
                     'table_audit_id': str(table_manifest_id)
                 })
                 
@@ -592,21 +716,25 @@ class AuditService:
         except Exception as e:
             logger.error(f"Failed to update table audit after conversion for {table_name}: {e}")
 
-    def update_file_manifest(self, manifest_id: str, status: str, 
-                            rows_processed: Optional[int] = None, 
-                            error_msg: Optional[str] = None,
-                            notes: Optional[dict] = None) -> None:
+    def update_file_manifest(
+        self, manifest_id: str, status: AuditStatus, 
+        rows_processed: Optional[int] = None, 
+        error_msg: Optional[str] = None,
+        notes: Optional[dict] = None
+    ) -> None:
         """Update an existing file manifest entry with completion details."""
         try:
             from sqlalchemy import text
             import json
             
-            # Build update fields dynamically
-            update_fields = ['status = :status', 'processed_at = :processed_at']
+            # Coerce status to enum and build update fields dynamically
+            norm_status = self._coerce_status(status)
+
+            update_fields = ['status = :status', 'completed_at = :completed_at']
             params = {
                 'manifest_id': manifest_id,
-                'status': status,
-                'processed_at': datetime.now()
+                'status': norm_status.value,
+                'completed_at': datetime.now()
             }
             
             if rows_processed is not None:
@@ -618,21 +746,24 @@ class AuditService:
                 params['error_msg'] = error_msg
                 
             if notes is not None:
+                # Write notes into audit_metadata JSON field
                 update_fields.append('notes = :notes')
-                params['notes'] = json.dumps(notes) if isinstance(notes, dict) else str(notes)
+                try:
+                    params['notes'] = json.dumps(notes) if isinstance(notes, dict) else json.dumps({'notes': str(notes)})
+                except Exception:
+                    params['notes'] = json.dumps({'notes': str(notes)})
             
             # Execute update
             with self.database.engine.begin() as conn:
                 conn.execute(text(f'''
                     UPDATE file_audit_manifest 
                     SET {', '.join(update_fields)}
-                    WHERE file_manifest_id = :manifest_id
+                    WHERE file_audit_id = :manifest_id
                 '''), params)
                 
                 # Collect metrics for batch accumulation if this is a completion
-                if status in ['COMPLETED', 'FAILED'] and rows_processed is not None:
-                    # Get subbatch_id for metrics collection through batch relationship
-                    try:
+                try:
+                    if norm_status in (AuditStatus.COMPLETED, AuditStatus.FAILED) and rows_processed is not None:
                         with self.database.engine.connect() as conn:
                             # Query chain: file_audit → batch_audit → subbatch_audit (latest subbatch)
                             result = conn.execute(text('''
@@ -647,18 +778,18 @@ class AuditService:
                             row = result.fetchone()
                             if row and row[0]:
                                 subbatch_id = str(row[0])
-                                self.collect_file_processing_event(subbatch_id, status, rows_processed or 0, 0)
-                                logger.debug(f"Collected file metrics: {status}, {rows_processed} rows")
-                    except Exception as metrics_error:
-                        logger.debug(f"Could not collect metrics for manifest {manifest_id}: {metrics_error}")
-                        # This is not critical, so we just log it as debug
+                                # Use coerced enum when collecting
+                                self.collect_file_processing_event(subbatch_id, norm_status, int(rows_processed or 0), 0)
+                                logger.debug(f"Collected file metrics: {norm_status}, {rows_processed} rows")
+                except Exception as metrics_error:
+                    logger.debug(f"Could not collect metrics for manifest {manifest_id}: {metrics_error}")
                         
             logger.debug(f"Updated manifest {manifest_id} with status {status}")
             
         except Exception as e:
             logger.error(f"Failed to update file manifest {manifest_id}: {e}")
 
-    def collect_file_processing_event(self, subbatch_id: str, status: str, rows: int = 0, bytes_: int = 0) -> None:
+    def collect_file_processing_event(self, subbatch_id: str, status: AuditStatus, rows: int = 0, bytes_: int = 0) -> None:
         """
         Collect file processing events for batch metrics (in-memory accumulation).
         No database operations - just accumulates metrics for later batch updates.
@@ -697,7 +828,7 @@ class AuditService:
             batch_id = uuid.uuid4()
             batch_data = {
                 'batch_id': str(batch_id),
-                'file_manifest_id': file_manifest_id,
+                'parent_file_audit_id': file_manifest_id if file_manifest_id else None,
                 'batch_name': batch_name,
                 'target_table': target_table,
                 'status': AuditStatus.RUNNING.value,
@@ -710,7 +841,7 @@ class AuditService:
                 conn.execute(text('''
                     INSERT INTO batch_audit_manifest
                     (batch_audit_id, parent_file_audit_id, entity_name, target_table, status, created_at, started_at, description)
-                    VALUES (:batch_id, :file_manifest_id, :batch_name, :target_table, :status, :created_at, :started_at, :description)
+                    VALUES (:batch_id, :parent_file_audit_id, :batch_name, :target_table, :status, :created_at, :started_at, :description)
                 '''), batch_data)
 
             # Start in-memory tracking
@@ -729,8 +860,8 @@ class AuditService:
         try:
             subbatch_id = uuid.uuid4()
             subbatch_data = {
-                'subbatch_manifest_id': str(subbatch_id),
-                'batch_manifest_id': str(batch_id),
+                'subbatch_audit_id': str(subbatch_id),
+                'batch_audit_id': str(batch_id),
                 'table_name': table_name,
                 'status': AuditStatus.RUNNING.value,
                 'created_at': datetime.now(),
@@ -741,8 +872,26 @@ class AuditService:
             with self.database.engine.begin() as conn:
                 conn.execute(text('''
                     INSERT INTO subbatch_audit_manifest
-                    (subbatch_audit_id, parent_batch_audit_id, entity_name, table_name, status, created_at, started_at, description)
-                    VALUES (:subbatch_manifest_id, :batch_manifest_id, :table_name, :table_name, :status, :created_at, :started_at, :description)
+                    (
+                        subbatch_audit_id, 
+                        parent_batch_audit_id, 
+                        entity_name, 
+                        table_name, 
+                        status, 
+                        created_at, 
+                        started_at, 
+                        description
+                    )
+                    VALUES (
+                        :subbatch_audit_id, 
+                        :batch_audit_id, 
+                        :table_name, 
+                        :table_name, 
+                        :status, 
+                        :created_at, 
+                        :started_at, 
+                        :description
+                    )
                 '''), subbatch_data)
 
             # Start in-memory tracking
@@ -783,7 +932,10 @@ class AuditService:
             with self.database.engine.begin() as conn:
                 conn.execute(text('''
                     UPDATE batch_audit_manifest
-                    SET status = :status, completed_at = :completed_at, error_message = :error_message,
+                    SET 
+                        status = :status, 
+                        completed_at = :completed_at, 
+                        error_message = :error_message,
                         description = description || ' | ' || :metrics_summary
                     WHERE batch_audit_id = :batch_id
                 '''), update_data)
@@ -820,7 +972,9 @@ class AuditService:
             with self.database.engine.begin() as conn:
                 conn.execute(text('''
                     UPDATE subbatch_audit_manifest
-                    SET status = :status, completed_at = :completed_at, error_message = :error_message,
+                    SET status = :status, 
+                        completed_at = :completed_at, 
+                        error_message = :error_message,
                         rows_processed = :rows_processed
                     WHERE subbatch_audit_id = :subbatch_id
                 '''), update_data)
@@ -874,8 +1028,15 @@ class AuditService:
         try:
             with self.database.engine.connect() as conn:
                 result = conn.execute(text('''
-                    SELECT batch_audit_id, entity_name, target_table, status, started_at, completed_at, 
-                           error_message, description
+                    SELECT 
+                        batch_audit_id, 
+                        entity_name, 
+                        target_table, 
+                        status, 
+                        started_at, 
+                        completed_at, 
+                        error_message, 
+                        description
                     FROM batch_audit_manifest
                     WHERE batch_audit_id = :batch_id
                 '''), {'batch_id': str(batch_id)})

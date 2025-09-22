@@ -5,26 +5,40 @@ import os
 import uuid
 import hashlib
 import random
-import logging
-from typing import Callable, List, Optional, Iterable, Tuple
+from typing import Callable, List, Optional, Iterable, Tuple, Union
 
 from . import base
-
-# Use the centralized logger instead of basicConfig
-logger = logging.getLogger(__name__)
+from .....database.models.audit import AuditStatus
+from .....setup.logging import logger
 
 async def record_manifest(
-    conn: asyncpg.Connection, 
-    filename: str, status: str, checksum: Optional[bytes], 
-    filesize: Optional[int], 
-    notes: Optional[str] = None, rows_processed: Optional[int] = None
+    conn: asyncpg.Connection,
+    filename: str,
+    status: Union[AuditStatus, str],
+    checksum: Optional[bytes],
+    filesize: Optional[int],
+    notes: Optional[str] = None,
+    rows_processed: Optional[int] = None,
 ):
+    # Coerce status to string value for DB storage
+    status_value = None
+    try:
+        if isinstance(status, AuditStatus):
+            status_value = status.value
+        elif isinstance(status, str):
+            # normalize string casing
+            status_value = status.strip().upper()
+        else:
+            status_value = AuditStatus.PENDING.value
+    except Exception:
+        status_value = AuditStatus.PENDING.value
+
     await conn.execute(
         """
-        INSERT INTO file_audit (file_manifest_id, file_path, status, checksum, filesize, rows_processed, processed_at, notes)
+        INSERT INTO file_audit_manifest (file_audit_id, file_path, status, checksum, filesize, rows_processed, created_at, notes)
         VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7)
         """,
-        str(uuid.uuid4()), filename, status, checksum, filesize, rows_processed, notes
+        str(uuid.uuid4()), filename, status_value, checksum, filesize, rows_processed, notes
     )
 
 def emit_log(event: str, **kwargs):
