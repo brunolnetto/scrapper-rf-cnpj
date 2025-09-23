@@ -72,11 +72,30 @@ summary = dev_filter.get_development_summary("table_name", files_processed, rows
 dev_filter.log_filtering_summary([summary])
 ```
 
+### Memory Monitoring & Cleanup
+```python
+from src.core.services.conversion.service import MemoryMonitor
+monitor = MemoryMonitor(config)
+# Check memory pressure before large operations
+if monitor.should_prevent_processing():
+    monitor.perform_aggressive_cleanup()
+# Get memory usage above baseline
+usage_mb = monitor.get_memory_usage_above_baseline()
+```
+
+### Quality Monitoring
+```python
+# Run quality analysis (requires radon in environment)
+python scripts/quality_report.py
+# Generates reports/quality_report.md with complexity rankings and suggestions
+```
+
 ## Essential Commands
 - **Full ETL**: `just run-etl 2024 12` or `python -m src.main --year 2024 --month 12`
 - **Partial Strategies**: `python -m src.main --download --convert` (skip loading)
 - **Setup**: `just install && just env` 
 - **Development**: `just lint` (ruff auto-fix), `just clean` (logs/cache)
+- **Quality**: `python scripts/quality_report.py` (cyclomatic complexity analysis)
 
 ## Environment Configuration
 Copy `.env.template` to `.env` and configure:
@@ -98,6 +117,11 @@ Copy `.env.template` to `.env` and configure:
 ### Performance Analysis  
 - `lab/memory_monitor.py` - Memory usage tracking
 - Environment limits: `ETL_DEV_FILE_SIZE_LIMIT_MB`, `ETL_DEV_MAX_FILES_PER_TABLE`
+
+### Code Quality
+- `scripts/quality_report.py` - Automated complexity analysis with radon
+- Focus on reducing F-rank (>50 complexity) and D-rank (>20 complexity) functions
+- Use helper extraction pattern: complex functions → focused helpers + simplified main logic
 
 ## Database Patterns
 
@@ -134,11 +158,41 @@ loader = FileLoader(file_path)  # Auto-detects format despite missing .csv
 # Fallback order: extension → magic bytes → content parsing → CSV assumption
 ```
 
+### Memory-Optimized Conversion
+```python
+# Use helper functions for complex operations
+pa_schema, used_fallback = _derive_schema_from_sample(csv_path, expected_columns, delimiter)
+if _try_native_streaming(csv_path, tmp_output, delimiter, expected_columns, config):
+    # Fast path succeeded
+else:
+    # Fall back to manual chunking
+    rows = _process_with_manual_chunking(csv_path, tmp_output, pa_schema, delimiter, expected_columns, config, memory_monitor)
+```
+
 ## Integration Points
 - **External API**: Receita Federal download URLs (configurable base)
 - **PostgreSQL**: Dual connection pools (main + audit databases)  
 - **File System**: Three-stage processing (download → extract → convert directories)
 - **Polars**: CSV→Parquet conversion for memory efficiency
+
+## Code Quality Standards
+
+### Complexity Targets
+- **A/B Rank**: <10 complexity (ideal)
+- **C Rank**: <15 complexity (acceptable)  
+- **D Rank**: <25 complexity (needs refactoring)
+- **F Rank**: <50 complexity (critical - immediate refactoring)
+
+### Refactoring Patterns
+1. **Extract Helpers**: Break complex functions into focused helpers
+2. **Early Returns**: Use guard clauses to reduce nesting
+3. **Memory Management**: Check `memory_monitor.should_prevent_processing()` before large operations
+4. **Error Handling**: Use specific exception types, provide actionable error messages
+
+### Testing Approach
+- **Unit Tests**: Focus on helper functions with mocked dependencies
+- **Integration Tests**: Use lab/ notebooks for complex workflows
+- **Memory Tests**: Validate cleanup and resource management
 
 ---
 *For questions about audit tracking, file detection edge cases, or performance tuning, refer to the lab/ notebooks for working examples.*
