@@ -18,6 +18,7 @@ dependencies = [
     "python-dotenv>=1.1.1",
     "python_json_logger>=3.3.0",
     "pytz==2024.1",
+    "randon>=0.0.6",
     "requests>=2.32.5",
     "rich>=14.1.0",
     "SQLAlchemy>=2.0.43",

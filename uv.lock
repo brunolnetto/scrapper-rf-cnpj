@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.12'",
@@ -725,6 +725,15 @@ wheels = [
 ]
 
 [[package]]
+name = "randon"
+version = "0.0.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b2/00/e9f76c678012ccd559181ee08bd444da933eda2069819d36912f70fb4137/randon-0.0.6.tar.gz", hash = "sha256:a37247d3e4106dabcbaacb3239bde156d50614c1ea7bb0e30d7a9b9bfd50ef0e", size = 3628, upload-time = "2022-02-21T19:10:12.642Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2e/ce/515ae8f47d76755ed23d4433db43ddd801e62f33909ba3110791f0ed6959/randon-0.0.6-py3-none-any.whl", hash = "sha256:615b9a81dfc4ead2a748c0d03bb2ec2e389be079c2b4781d78a1ef863c31c6f4", size = 3687, upload-time = "2022-02-21T19:10:35.568Z" },
+]
+
+[[package]]
 name = "requests"
 version = "2.32.5"
 source = { registry = "https://pypi.org/simple" }
@@ -770,6 +779,7 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "python-json-logger" },
     { name = "pytz" },
+    { name = "randon" },
     { name = "requests" },
     { name = "rich" },
     { name = "sqlalchemy" },
@@ -800,6 +810,7 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.1.1" },
     { name = "python-json-logger", specifier = ">=3.3.0" },
     { name = "pytz", specifier = "==2024.1" },
+    { name = "randon", specifier = ">=0.0.6" },
     { name = "requests", specifier = ">=2.32.5" },
     { name = "rich", specifier = ">=14.1.0" },
     { name = "sqlalchemy", specifier = ">=2.0.43" },

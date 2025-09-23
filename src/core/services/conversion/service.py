@@ -17,6 +17,250 @@ from ....setup.config import ConversionConfig
 from ....setup.logging import logger
 
 import psutil
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+
+def _derive_schema_from_sample(csv_path: Path, expected_columns: List[str], delimiter: str) -> tuple:
+    """
+    Derive PyArrow schema from a sample of the CSV file.
+
+    Returns:
+        tuple: (pa_schema, used_fallback) where used_fallback indicates if fallback was used
+    """
+    try:
+        # Try to read a small sample to infer schema
+        sample_size = min(1000, csv_path.stat().st_size // 100)  # Sample based on file size
+        if sample_size < 10:
+            sample_size = 10
+
+        # Use Polars to scan and infer schema
+        lazy_frame = pl.scan_csv(
+            str(csv_path),
+            separator=delimiter,
+            quote_char='"',
+            encoding="utf8-lossy",
+            ignore_errors=True,
+            has_header=False,
+            try_parse_dates=False,
+            n_rows=sample_size
+        )
+
+        # Get schema from the sample
+        schema = lazy_frame.collect_schema()
+        current_columns = schema.names()
+
+        # Create PyArrow schema
+        if expected_columns and len(current_columns) == len(expected_columns):
+            # Map to expected column names
+            pa_fields = []
+            for i, expected_name in enumerate(expected_columns):
+                col_name = current_columns[i] if i < len(current_columns) else f"column_{i+1}"
+                # Use string type for all columns initially
+                pa_fields.append((expected_name, pa.string()))
+            pa_schema = pa.schema(pa_fields)
+            return pa_schema, False
+        else:
+            # Fallback: use detected column names
+            pa_fields = [(name, pa.string()) for name in current_columns]
+            pa_schema = pa.schema(pa_fields)
+            return pa_schema, True
+
+    except Exception as e:
+        logger.warning(f"Schema derivation failed: {e}. Using fallback schema.")
+        # Fallback schema
+        if expected_columns:
+            pa_fields = [(name, pa.string()) for name in expected_columns]
+        else:
+            pa_fields = [("column_1", pa.string())]
+        pa_schema = pa.schema(pa_fields)
+        return pa_schema, True
+
+
+def _try_native_streaming(csv_path: Path, tmp_output: Path, delimiter: str,
+                         expected_columns: List[str], config) -> bool:
+    """
+    Try to use Polars native streaming (sink_parquet) for maximum performance.
+
+    Returns:
+        bool: True if successful, False if fallback needed
+    """
+    try:
+        logger.info(f"Attempting native Polars streaming for {csv_path.name}")
+
+        # Use native streaming if available
+        if expected_columns:
+            schema_overrides = {f"column_{i+1}": pl.Utf8 for i in range(len(expected_columns))}
+        else:
+            schema_overrides = None
+
+        lazy_frame = pl.scan_csv(
+            str(csv_path),
+            separator=delimiter,
+            quote_char='"',
+            encoding="utf8-lossy",
+            ignore_errors=True,
+            has_header=False,
+            try_parse_dates=False,
+            schema_overrides=schema_overrides
+        )
+
+        # Apply column renaming efficiently
+        if expected_columns:
+            try:
+                current_columns = lazy_frame.collect_schema().names()
+                if len(current_columns) == len(expected_columns):
+                    column_mapping = {f"column_{i+1}": expected_columns[i] for i in range(len(expected_columns))}
+                    lazy_frame = lazy_frame.rename(column_mapping)
+                    lazy_frame = lazy_frame.select(expected_columns)
+            except Exception as col_error:
+                logger.debug(f"Column processing failed: {col_error}")
+
+        # Try native sink_parquet first - this is the fastest approach
+        try:
+            logger.info("Using native sink_parquet for maximum performance...")
+            lazy_frame.sink_parquet(
+                str(tmp_output),
+                compression=getattr(config, "compression", "snappy"),
+                maintain_order=False,
+                statistics=False  # Disable for speed
+            )
+            return True
+
+        except Exception as sink_error:
+            logger.warning(f"Native sink_parquet failed: {sink_error}. Falling back to manual chunking...")
+            return False
+
+    except Exception as e:
+        logger.warning(f"Native streaming setup failed: {e}. Falling back to manual chunking...")
+        return False
+
+
+def _process_with_manual_chunking(csv_path: Path, tmp_output: Path, pa_schema,
+                                 delimiter: str, expected_columns: List[str],
+                                 config, memory_monitor) -> int:
+    """
+    Process CSV file using manual chunking with PyArrow writer.
+
+    Returns:
+        int: Number of rows processed
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    total_rows_written = 0
+    writer = None
+
+    try:
+        fsize_mb = csv_path.stat().st_size / (1024 * 1024)
+        local_chunksize = min(50000, max(1000, int(50_000_000 / (fsize_mb + 1))))  # Adaptive chunking
+
+        logger.info(f"Processing {csv_path.name} ({fsize_mb:.1f}MB) with chunk size: {local_chunksize:,}")
+
+        # Initialize writer
+        writer = pq.ParquetWriter(str(tmp_output), pa_schema, compression=getattr(config, "compression", "snappy"))
+
+        # Use polars streaming approach
+        if expected_columns:
+            schema_overrides = {f"column_{i+1}": pl.Utf8 for i in range(len(expected_columns))}
+        else:
+            schema_overrides = None
+
+        lazy_frame = pl.scan_csv(
+            str(csv_path),
+            separator=delimiter,
+            quote_char='"',
+            encoding="utf8-lossy",
+            ignore_errors=True,
+            has_header=False,
+            try_parse_dates=False,
+            schema_overrides=schema_overrides
+        )
+
+        # Apply column renaming if needed
+        if expected_columns:
+            try:
+                current_columns = lazy_frame.collect_schema().names()
+                if len(current_columns) == len(expected_columns):
+                    column_mapping = {f"column_{i+1}": expected_columns[i] for i in range(len(expected_columns))}
+                    for old_pattern, new_name in zip(current_columns, expected_columns):
+                        column_mapping[old_pattern] = new_name
+                    lazy_frame = lazy_frame.rename(column_mapping)
+
+                # Ensure all expected columns exist
+                existing_cols = set(lazy_frame.collect_schema().names())
+                for col in expected_columns:
+                    if col not in existing_cols:
+                        lazy_frame = lazy_frame.with_columns(pl.lit(None).alias(col))
+
+                lazy_frame = lazy_frame.select(expected_columns)
+            except Exception as col_error:
+                logger.warning(f"Column processing failed, using original schema: {col_error}")
+
+        # Process in chunks
+        offset = 0
+        chunk_count = 0
+        last_memory_check = time.time()
+
+        while True:
+            chunk_lf = lazy_frame.slice(offset, local_chunksize)
+            try:
+                batch_df = chunk_lf.collect()
+
+                if batch_df.height == 0:
+                    break
+
+            except Exception as collect_error:
+                logger.debug(f"Failed to collect chunk at offset {offset}: {collect_error}")
+                break
+
+            # Convert to arrow and write
+            try:
+                table = batch_df.to_arrow()
+                if table.schema != pa_schema:
+                    table = table.select(pa_schema.names)
+                    table = table.cast(pa_schema)
+                writer.write_table(table)
+                total_rows_written += table.num_rows
+
+            except Exception as conversion_error:
+                logger.debug(f"Batch conversion failed: {conversion_error}. Falling back to string casting")
+                string_batch = batch_df.with_columns([
+                    pl.col(col).cast(pl.Utf8, strict=False).alias(col)
+                    for col in batch_df.columns
+                ])
+                table = string_batch.to_arrow()
+                if table.schema != pa_schema:
+                    table = table.select(pa_schema.names)
+                writer.write_table(table)
+                total_rows_written += table.num_rows
+
+            # Memory management
+            chunk_count += 1
+            current_time = time.time()
+            if chunk_count % 10 == 0 or (current_time - last_memory_check) > 30:
+                if memory_monitor and memory_monitor.should_prevent_processing():
+                    logger.warning(f"Memory pressure detected at chunk {chunk_count}, performing cleanup...")
+                    try:
+                        gc.collect()
+                        time.sleep(0.1)
+                    except Exception:
+                        pass
+                last_memory_check = current_time
+
+                if chunk_count % 50 == 0:
+                    logger.info(f"Processed {chunk_count} chunks, {total_rows_written:,} rows so far...")
+
+            offset += local_chunksize
+            if batch_df.height < local_chunksize:
+                break
+
+    finally:
+        if writer is not None:
+            writer.close()
+
+    return total_rows_written
+
 
 @dataclass
 class MemorySnapshot:
@@ -423,27 +667,117 @@ def convert_table_csvs(
     memory_monitor = MemoryMonitor(config)
     
     try:
-        if not expected_columns:
-            return f"[ERROR] No column mapping for '{table_name}'"
+        # --- helper method: validate and prepare files ---
+        def _validate_and_prepare_files(
+            table_name: str, csv_paths: List[Path], output_dir: Path, expected_columns: List[str]
+        ) -> tuple[List[Path], Path]:
+            """Validate inputs and prepare output directory. Returns (valid_files, final_output)."""
+            if not expected_columns:
+                raise ValueError(f"No column mapping for '{table_name}'")
 
-        valid_files = [p for p in csv_paths if p.exists()]
-        if not valid_files:
-            return f"[ERROR] No valid CSV files for '{table_name}'"
+            valid_files = [p for p in csv_paths if p.exists()]
+            if not valid_files:
+                raise ValueError(f"No valid CSV files for '{table_name}'")
 
-        output_dir.mkdir(parents=True, exist_ok=True)
-        final_output = output_dir / f"{table_name}.parquet"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            final_output = output_dir / f"{table_name}.parquet"
 
-        if final_output.exists():
-            final_output.unlink()
+            if final_output.exists():
+                final_output.unlink()
 
-        total_input_bytes = sum(p.stat().st_size for p in valid_files)
-        logger.info(f"🚀 Converting '{table_name}': {len(valid_files)} files, "
-                   f"{total_input_bytes:,} bytes")
-        
-        # Log initial memory status
-        status = memory_monitor.get_status_report()
-        logger.info(f"Memory status - Baseline: {status['baseline_mb']:.1f}MB, "
-                   f"Budget: {status['budget_remaining_mb']:.1f}MB")
+            return valid_files, final_output
+
+        # --- helper method: process single file with memory check ---
+        def _process_single_file_with_memory_check(
+            self, csv_path: Path, temp_output: Path, expected_columns: List[str],
+            delimiter: str, config: ConversionConfig, memory_monitor: MemoryMonitor,
+            file_index: int, total_files: int
+        ) -> dict:
+            """Process a single CSV file with memory monitoring. Returns processing result."""
+            logger.info(f"Processing file {file_index}/{total_files}: {csv_path.name}")
+
+            # Check memory before processing
+            if memory_monitor.should_prevent_processing():
+                status = memory_monitor.get_status_report()
+                logger.error(f"Memory limit reached before file {file_index}. "
+                            f"Usage: {status['usage_above_baseline_mb']:.1f}MB above baseline")
+                raise MemoryError("Insufficient memory to process file")
+
+            result = process_csv_with_memory(
+                csv_path, temp_output, expected_columns, delimiter,
+                config, memory_monitor
+            )
+
+            logger.info(f"✅ File {file_index}/{total_files} completed: "
+                       f"{result['rows_processed']:,} rows, "
+                       f"Memory: {result['memory_stats']['usage_above_baseline_mb']:.1f}MB above baseline")
+
+            return result
+
+        # --- helper method: combine parquet files ---
+        def _combine_parquet_files(
+            processed_files: List[Path], final_output: Path, config: ConversionConfig,
+            memory_monitor: MemoryMonitor
+        ) -> bool:
+            """Combine multiple parquet files into one. Returns True if successful."""
+            if len(processed_files) == 1:
+                # Just rename the single file
+                processed_files[0].rename(final_output)
+                logger.info(f"✅ Single file renamed to {final_output.name}")
+                return True
+
+            logger.info(f"🔄 Combining {len(processed_files)} parquet files...")
+
+            # Validate all parts exist
+            missing = [f for f in processed_files if not f.exists()]
+            if missing:
+                logger.error("Cannot combine: missing part files:\n  " + "\n  ".join(str(m) for m in missing))
+                return False
+
+            # Pre-combine memory check
+            memory_monitor.perform_aggressive_cleanup()
+            time.sleep(1.0)
+            if memory_monitor.should_prevent_processing():
+                logger.error("Insufficient memory to combine files")
+                return False
+
+            tmp_output = final_output.with_suffix(".combining.tmp")
+            try:
+                lazy_frames = [pl.scan_parquet(str(f)) for f in processed_files]
+                combined = pl.concat(lazy_frames, how="vertical")
+                combined.sink_parquet(
+                    str(tmp_output),
+                    compression=config.compression,
+                    row_group_size=config.row_group_size,
+                    maintain_order=False,
+                    statistics=False
+                )
+
+                # Atomic move to final location
+                import shutil
+                shutil.move(str(tmp_output), str(final_output))
+
+                # Cleanup parts
+                for part_file in processed_files:
+                    try:
+                        if part_file.exists() and part_file != final_output:
+                            part_file.unlink()
+                    except Exception as e:
+                        logger.warning(f"Could not remove part {part_file}: {e}")
+
+                # Cleanup memory
+                del lazy_frames, combined
+                memory_monitor.perform_aggressive_cleanup()
+                return True
+
+            except Exception as e:
+                logger.exception(f"Failed to combine files: {e}")
+                if tmp_output.exists():
+                    tmp_output.unlink()
+                return False
+
+        # --- main processing ---
+        valid_files, final_output = _validate_and_prepare_files(table_name, csv_paths, output_dir, expected_columns)
 
         processed_files = []
         stats = {"files_processed": 0, "files_failed": 0, "total_rows": 0}
@@ -452,8 +786,6 @@ def convert_table_csvs(
         # IMPROVEMENT 6: Process files individually with aggressive cleanup between files
         for i, csv_path in enumerate(valid_files, 1):
             try:
-                logger.info(f"Processing file {i}/{len(valid_files)}: {csv_path.name}")
-                
                 # Aggressive cleanup before each file (especially after the first)
                 if i > 1:
                     logger.info("Performing inter-file memory cleanup...")
@@ -482,18 +814,14 @@ def convert_table_csvs(
                 else:
                     temp_output = output_dir / f"{table_name}_part_{i:03d}.parquet"
 
-                result = process_csv_with_memory(
+                result = _process_single_file_with_memory_check(
                     csv_path, temp_output, expected_columns, delimiter,
-                    config, memory_monitor
+                    config, memory_monitor, i, len(valid_files)
                 )
 
                 processed_files.append(temp_output)
                 stats["files_processed"] += 1
                 stats["total_rows"] += result["rows_processed"]
-
-                logger.info(f"✅ File {i}/{len(valid_files)} completed: "
-                           f"{result['rows_processed']:,} rows, "
-                           f"Memory: {result['memory_stats']['usage_above_baseline_mb']:.1f}MB above baseline")
 
                 # IMPROVEMENT 8: Aggressive cleanup after each large file
                 cleanup_stats = memory_monitor.perform_aggressive_cleanup()
@@ -508,6 +836,7 @@ def convert_table_csvs(
                 memory_monitor.perform_aggressive_cleanup()
                 continue
 
+        # --- combine results ---
         if not processed_files:
             return f"[ERROR] No files successfully processed for '{table_name}'"
 
@@ -517,69 +846,7 @@ def convert_table_csvs(
             processed_files[0].rename(final_output)
             logger.info(f"✅ Single file renamed to {final_output.name}")
         elif len(processed_files) > 1:
-            # --- defensive combine start ---
-            logger.info(f"🔄 Combining {len(processed_files)} parquet files...")
-
-            # Ensure all parts exist and log sizes
-            missing = [f for f in processed_files if not f.exists()]
-            if missing:
-                logger.error("Cannot combine: missing part files:\n  " + "\n  ".join(str(m) for m in missing))
-                return f"[PARTIAL] '{table_name}': {stats['total_rows']:,} rows in {len(processed_files)} separate files"
-
-            for f in processed_files:
-                try:
-                    logger.info(f"Part: {f.name} size={f.stat().st_size:,} bytes")
-                except Exception as ex:
-                    logger.warning(f"Could not stat {f}: {ex}")
-
-            # Pre-combine cleanup
-            memory_monitor.perform_aggressive_cleanup()
-            time.sleep(1.0)
-            if memory_monitor.should_prevent_processing():
-                logger.error("Insufficient memory to combine files - keeping separate parts")
-                return f"[PARTIAL] '{table_name}': {stats['total_rows']:,} rows in {len(processed_files)} separate files"
-
-            tmp_output = final_output.with_suffix(".combining.tmp")
-            try:
-                lazy_frames = [pl.scan_parquet(str(f)) for f in processed_files]
-                combined = pl.concat(lazy_frames, how="vertical")
-                combined.sink_parquet(
-                    str(tmp_output),
-                    compression=config.compression,
-                    row_group_size=config.row_group_size,
-                    maintain_order=False,
-                    statistics=False
-                )
-                # FIX: Use shutil.move for cross-filesystem compatibility
-                import shutil
-                try:
-                    shutil.move(str(tmp_output), str(final_output))
-                except Exception as ex_replace:
-                    logger.warning(f"shutil.move failed (trying fallback os.replace): {ex_replace}")
-                    try:
-                        os.replace(str(tmp_output), str(final_output))
-                    except Exception as ex_replace2:
-                        logger.warning(f"os.replace failed (trying fallback rename): {ex_replace2}")
-                        tmp_output.rename(final_output)
-                # cleanup parts
-                for part_file in processed_files:
-                    try:
-                        if part_file.exists() and part_file != final_output:
-                            part_file.unlink()
-                    except Exception as e:
-                        logger.warning(f"Could not remove part {part_file}: {e}")
-
-                # final cleanup objects
-                del lazy_frames, combined
-                memory_monitor.perform_aggressive_cleanup()
-            except FileNotFoundError as fnf:
-                logger.error(f"FileNotFoundError during combine: {fnf}")
-                return f"[PARTIAL] '{table_name}': {stats['total_rows']:,} rows in {len(processed_files)} separate files"
-            except Exception as e:
-                logger.exception(f"Failed to combine files for '{table_name}': {e}")
-                return f"[PARTIAL] '{table_name}': {stats['total_rows']:,} rows in {len(processed_files)} separate files"
-            # --- defensive combine end ---
-
+            _combine_parquet_files(processed_files, final_output, config, memory_monitor)
 
         # Final metrics
         final_bytes = final_output.stat().st_size if final_output.exists() else 0
@@ -962,272 +1229,32 @@ def process_extremely_large_table(
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    # derive schema using polars-only approach
-    try:
-        sample_rows = 10000
-        sample_df = pl.read_csv(
-            str(inputs[0]), 
-            separator=delimiter, 
-            quote_char='"', 
-            n_rows=sample_rows, 
-            encoding="utf8-lossy", 
-            ignore_errors=True, 
-            has_header=False,
-            try_parse_dates=False,  # Performance optimization
-            infer_schema_length=min(1000, sample_rows)  # Limit inference for speed
-        )
-        if len(sample_df) > 0:
-            pa_schema = sample_df.to_arrow().schema
-            logger.debug(f"Schema derived using polars for {inputs[0]}")
-        else:
-            raise RuntimeError("Polars sample empty - no valid rows found")
-        del sample_df
-        gc.collect()
-    except Exception as e:
-        # Fail-fast: provide clear guidance for fixing polars issues
-        error_msg = (
-            f"Polars schema generation failed for {inputs[0]}. "
-            f"Error: {e}. "
-            f"Suggestions: "
-            f"1) Check file encoding (try utf8-lossy or latin1), "
-            f"2) Verify delimiter (current: '{delimiter}'), "
-            f"3) Inspect file for malformed rows, "
-            f"4) Consider preprocessing the file."
-        )
-        logger.error(error_msg)
-        
-        # Only fallback to expected_columns if available, otherwise fail completely
-        if expected_columns:
-            logger.warning(f"Using expected columns as fallback schema for {inputs[0]}")
-            fields = [pa.field(c, pa.string()) for c in expected_columns]
-            pa_schema = pa.schema(fields)
-        else:
-            raise ValueError(error_msg) from e
+    # Derive schema from sample data
+    pa_schema, used_fallback = _derive_schema_from_sample(inputs, delimiter, expected_columns)
 
-    if expected_columns:
-        existing_names = set(pa_schema.names)
-        ordered_fields = []
-        for col in expected_columns:
-            if col in existing_names:
-                ordered_fields.append(pa_schema.field(col))
-            else:
-                ordered_fields.append(pa.field(col, pa.string()))
-        pa_schema = pa.schema(ordered_fields)
-
-    writer = None
     total_rows_written = 0
-    default_chunksize = getattr(
-        config, 
-        "default_chunksize", None) or \
-        getattr(config, "chunk_rows", None) or \
-        1_000_000  # Increased from 500k to 1M for better performance
-    chunksize = int(default_chunksize)
 
     try:
 
         for csv_path in inputs:
-            fsize_mb = csv_path.stat().st_size / (1024 * 1024)
-            # Use larger chunks for better performance - don't reduce chunk size for large files
-            # The streaming approach can handle large chunks efficiently
-            local_chunksize = min(chunksize, 2_000_000)  # Cap at 2M rows for memory safety
-            
-            logger.info(f"Processing {csv_path.name} ({fsize_mb:.1f}MB) with chunk size: {local_chunksize:,}")
-
-            # ------------------- Optimized Polars streaming processing -------------------
-            try:
-                # Try Polars native streaming first - much faster than manual chunking
-                logger.info(f"Attempting native Polars streaming for {csv_path.name}")
-                
-                # Use native streaming if available
-                if expected_columns:
-                    schema_overrides = {f"column_{i+1}": pl.Utf8 for i in range(len(expected_columns))}
-                else:
-                    schema_overrides = None
-                
-                lazy_frame = pl.scan_csv(
-                    str(csv_path),
-                    separator=delimiter,
-                    quote_char='"',
-                    encoding="utf8-lossy",
-                    ignore_errors=True,
-                    has_header=False,
-                    try_parse_dates=False,
-                    schema_overrides=schema_overrides
-                )
-                
-                # Apply column renaming efficiently
-                if expected_columns:
-                    try:
-                        current_columns = lazy_frame.collect_schema().names()
-                        if len(current_columns) == len(expected_columns):
-                            column_mapping = {f"column_{i+1}": expected_columns[i] for i in range(len(expected_columns))}
-                            lazy_frame = lazy_frame.rename(column_mapping)
-                            lazy_frame = lazy_frame.select(expected_columns)
-                    except Exception as col_error:
-                        logger.debug(f"Column processing failed: {col_error}")
-                
-                # Try native sink_parquet first - this is the fastest approach
+            # Try native streaming first
+            if _try_native_streaming(csv_path, tmp_output, delimiter, expected_columns, config):
+                # Get row count from native streaming
                 try:
-                    logger.info(f"Using native sink_parquet for maximum performance...")
-                    lazy_frame.sink_parquet(
-                        str(tmp_output),
-                        compression=getattr(config, "compression", "snappy"),
-                        maintain_order=False,
-                        statistics=False  # Disable for speed
-                    )
-                    
-                    # Get row count
-                    try:
-                        meta = pq.ParquetFile(str(tmp_output)).metadata
-                        total_rows_written = sum(meta.row_group(i).num_rows for i in range(meta.num_row_groups))
-                        logger.info(f"✅ Native streaming completed: {total_rows_written:,} rows")
-                    except Exception:
-                        total_rows_written = 0
-                    
-                    # Skip manual chunking since native approach worked
-                    break
-                    
-                except Exception as sink_error:
-                    logger.warning(f"Native sink_parquet failed: {sink_error}. Falling back to manual chunking...")
-                    # Continue to manual chunking approach below
-                
-                # Manual chunking fallback if native approach fails
-                # Initialize writer only when we need it for manual chunking
-                if writer is None:
-                    writer = pq.ParquetWriter(str(tmp_output), pa_schema, compression=getattr(config, "compression", "snappy"))
-                
-                # Use polars streaming approach instead of pandas chunking
-                # For headerless CSV, we need to use generated column names (column_1, column_2, etc.)
-                if expected_columns:
-                    # Create schema overrides using generated column names
-                    schema_overrides = {f"column_{i+1}": pl.Utf8 for i in range(len(expected_columns))}
-                else:
-                    schema_overrides = None
-                
-                lazy_frame = pl.scan_csv(
-                    str(csv_path),
-                    separator=delimiter,
-                    quote_char='"',
-                    encoding="utf8-lossy",  # Handle encoding issues gracefully
-                    ignore_errors=True,     # Skip malformed rows instead of failing
-                    has_header=False,
-                    try_parse_dates=False,  # Performance optimization
-                    schema_overrides=schema_overrides
+                    meta = pq.ParquetFile(str(tmp_output)).metadata
+                    total_rows_written = sum(meta.row_group(i).num_rows for i in range(meta.num_row_groups))
+                    logger.info(f"✅ Native streaming completed: {total_rows_written:,} rows")
+                except Exception:
+                    total_rows_written = 0
+                break  # Native streaming succeeded, skip other files
+            else:
+                # Fall back to manual chunking
+                rows = _process_with_manual_chunking(
+                    csv_path, tmp_output, pa_schema, delimiter, expected_columns, config, memory_monitor
                 )
-                
-                # Apply column renaming if needed
-                if expected_columns:
-                    # For headerless CSV files, rename numbered columns to expected names
-                    try:
-                        current_columns = lazy_frame.collect_schema().names()
-                        if len(current_columns) == len(expected_columns):
-                            column_mapping = {f"column_{i+1}": expected_columns[i] for i in range(len(expected_columns))}
-                            # Handle both potential column naming patterns
-                            for old_pattern, new_name in zip(current_columns, expected_columns):
-                                column_mapping[old_pattern] = new_name
-                            lazy_frame = lazy_frame.rename(column_mapping)
-                        
-                        # Ensure all expected columns exist
-                        existing_cols = set(lazy_frame.collect_schema().names())
-                        for col in expected_columns:
-                            if col not in existing_cols:
-                                lazy_frame = lazy_frame.with_columns(pl.lit(None).alias(col))
-                        
-                        # Select and reorder columns
-                        lazy_frame = lazy_frame.select(expected_columns)
-                    except Exception as col_error:
-                        logger.warning(f"Column processing failed, using original schema: {col_error}")
-                        # If column processing fails, continue with original columns
-                
-                logger.debug(f"Processing {csv_path.name} with optimized streaming (chunk size: {local_chunksize:,})")
-                
-                # Optimized chunking with reduced overhead
-                offset = 0
-                chunk_count = 0
-                last_memory_check = time.time()
-                
-                while True:
-                    # Get chunk using slice
-                    chunk_lf = lazy_frame.slice(offset, local_chunksize)
-                    try:
-                        batch_df = chunk_lf.collect()
-                        
-                        # Check if we've reached the end
-                        if batch_df.height == 0:
-                            break
-                            
-                    except Exception as collect_error:
-                        logger.debug(f"Failed to collect chunk at offset {offset}: {collect_error}")
-                        break
-                    
-                    # Convert to arrow and write
-                    try:
-                        table = batch_df.to_arrow()
-                        if table.schema != pa_schema:
-                            # Cast to expected schema
-                            table = table.select(pa_schema.names)
-                            table = table.cast(pa_schema)
-                        writer.write_table(table)
-                        total_rows_written += table.num_rows
-                        
-                    except Exception as conversion_error:
-                        logger.debug(f"Batch conversion failed: {conversion_error}. Falling back to string casting")
-                        # Convert all columns to string and retry
-                        string_batch = batch_df.with_columns([
-                            pl.col(col).cast(pl.Utf8, strict=False).alias(col) 
-                            for col in batch_df.columns
-                        ])
-                        table = string_batch.to_arrow()
-                        if table.schema != pa_schema:
-                            table = table.select(pa_schema.names)
-                        writer.write_table(table)
-                        total_rows_written += table.num_rows
+                total_rows_written += rows
 
-                    # Reduced frequency memory management (every 10 chunks or 30 seconds)
-                    chunk_count += 1
-                    current_time = time.time()
-                    if chunk_count % 10 == 0 or (current_time - last_memory_check) > 30:
-                        if memory_monitor and memory_monitor.should_prevent_processing():
-                            logger.warning(f"Memory pressure detected at chunk {chunk_count}, performing cleanup...")
-                            try:
-                                gc.collect()
-                                time.sleep(0.1)
-                            except Exception:
-                                pass
-                        last_memory_check = current_time
-                        
-                        # Progress logging every 50 chunks
-                        if chunk_count % 50 == 0:
-                            logger.info(f"Processed {chunk_count} chunks, {total_rows_written:,} rows so far...")
-                    
-                    # Move to next chunk
-                    offset += local_chunksize
-                    
-                    # If we got fewer rows than requested, we're done
-                    if batch_df.height < local_chunksize:
-                        break
-
-            except Exception as polars_error:
-                # Fail-fast: provide clear error message for polars issues
-                error_msg = (
-                    f"Polars processing failed for {csv_path.name}. "
-                    f"Error: {polars_error}. "
-                    f"File size: {fsize_mb:.1f}MB. "
-                    f"Suggestions: "
-                    f"1) Check file encoding and format, "
-                    f"2) Verify delimiter ('{delimiter}') is correct, "
-                    f"3) Inspect file for malformed rows, "
-                    f"4) Consider preprocessing the file to fix format issues."
-                )
-                logger.error(error_msg)
-                raise ValueError(error_msg) from polars_error
-
-        # close writer and move temp file to final location
-        if writer is not None:
-            writer.close()
-            writer = None
-        
-        # FIX: Use shutil.move for cross-filesystem compatibility (temp dir -> WSL mount)
+        # Move temp file to final location
         import shutil
         try:
             shutil.move(str(tmp_output), str(final_output))
@@ -1253,11 +1280,6 @@ def process_extremely_large_table(
 
     except Exception as e:
         logger.exception(f"Failed streaming extremely large table '{table_name}': {e}")
-        try:
-            if writer is not None:
-                writer.close()
-        except Exception:
-            pass
         try:
             if tmp_output.exists():
                 tmp_output.unlink()

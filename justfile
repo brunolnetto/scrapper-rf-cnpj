@@ -98,3 +98,7 @@ run-current:
 # Validate environment configuration
 validate-env:
     python3 scripts/validate_env.py 
+
+# Generate code quality report (requires radon installed in venv)
+quality-report:
+    python3 scripts/quality_report.py --src src --out reports/quality_report.md
