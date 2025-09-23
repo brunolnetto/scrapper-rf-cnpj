@@ -782,6 +782,7 @@ def convert_table_csvs(
         processed_files = []
         stats = {"files_processed": 0, "files_failed": 0, "total_rows": 0}
         start_time = time.time()
+        total_input_bytes = sum(f.stat().st_size for f in valid_files)
 
         # IMPROVEMENT 6: Process files individually with aggressive cleanup between files
         for i, csv_path in enumerate(valid_files, 1):
