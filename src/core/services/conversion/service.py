@@ -571,7 +571,8 @@ def process_csv_with_memory(
 
         # Rename columns to expected names if we have them
         if expected_columns and len(expected_columns) == len(lazy_frame.collect_schema()):
-            column_mapping = {f"column_{i+1}": expected_columns[i] for i in range(len(expected_columns))}
+            current_columns = lazy_frame.collect_schema().names()
+            column_mapping = {current_columns[i]: expected_columns[i] for i in range(len(expected_columns))}
             lazy_frame = lazy_frame.rename(column_mapping)
             logger.info(f"Renamed columns to expected names: {expected_columns}")
         elif expected_columns:
@@ -1238,9 +1239,53 @@ def process_extremely_large_table(
     try:
 
         for csv_path in inputs:
+<<<<<<< HEAD
             # Try native streaming first
             if _try_native_streaming(csv_path, tmp_output, delimiter, expected_columns, config):
                 # Get row count from native streaming
+=======
+            fsize_mb = csv_path.stat().st_size / (1024 * 1024)
+            # Use larger chunks for better performance - don't reduce chunk size for large files
+            # The streaming approach can handle large chunks efficiently
+            local_chunksize = min(chunksize, 2_000_000)  # Cap at 2M rows for memory safety
+            
+            logger.info(f"Processing {csv_path.name} ({fsize_mb:.1f}MB) with chunk size: {local_chunksize:,}")
+
+            # ------------------- Optimized Polars streaming processing -------------------
+            try:
+                # Try Polars native streaming first - much faster than manual chunking
+                logger.info(f"Attempting native Polars streaming for {csv_path.name}")
+                
+                # Use native streaming if available
+                if expected_columns:
+                    schema_overrides = {f"column_{i+1}": pl.Utf8 for i in range(len(expected_columns))}
+                else:
+                    schema_overrides = None
+                
+                lazy_frame = pl.scan_csv(
+                    str(csv_path),
+                    separator=delimiter,
+                    quote_char='"',
+                    encoding="utf8-lossy",
+                    ignore_errors=True,
+                    has_header=False,
+                    try_parse_dates=False,
+                    schema_overrides=schema_overrides
+                )
+                
+                # Apply column renaming efficiently
+                if expected_columns:
+                    try:
+                        current_columns = lazy_frame.collect_schema().names()
+                        if len(current_columns) == len(expected_columns):
+                            column_mapping = {current_columns[i]: expected_columns[i] for i in range(len(expected_columns))}
+                            lazy_frame = lazy_frame.rename(column_mapping)
+                            lazy_frame = lazy_frame.select(expected_columns)
+                    except Exception as col_error:
+                        logger.debug(f"Column processing failed: {col_error}")
+                
+                # Try native sink_parquet first - this is the fastest approach
+>>>>>>> 4b27651 (refactor() Fix loader and transform maps)
                 try:
                     meta = pq.ParquetFile(str(tmp_output)).metadata
                     total_rows_written = sum(meta.row_group(i).num_rows for i in range(meta.num_row_groups))
@@ -1253,7 +1298,75 @@ def process_extremely_large_table(
                 rows = _process_with_manual_chunking(
                     csv_path, tmp_output, pa_schema, delimiter, expected_columns, config, memory_monitor
                 )
+<<<<<<< HEAD
                 total_rows_written += rows
+=======
+                
+                # Apply column renaming if needed
+                if expected_columns:
+                    # For headerless CSV files, rename numbered columns to expected names
+                    try:
+                        current_columns = lazy_frame.collect_schema().names()
+                        if len(current_columns) == len(expected_columns):
+                            column_mapping = {current_columns[i]: expected_columns[i] for i in range(len(expected_columns))}
+                            lazy_frame = lazy_frame.rename(column_mapping)
+                        
+                        # Ensure all expected columns exist
+                        existing_cols = set(lazy_frame.collect_schema().names())
+                        for col in expected_columns:
+                            if col not in existing_cols:
+                                lazy_frame = lazy_frame.with_columns(pl.lit(None).alias(col))
+                        
+                        # Select and reorder columns
+                        lazy_frame = lazy_frame.select(expected_columns)
+                    except Exception as col_error:
+                        logger.warning(f"Column processing failed, using original schema: {col_error}")
+                        # If column processing fails, continue with original columns
+                
+                logger.debug(f"Processing {csv_path.name} with optimized streaming (chunk size: {local_chunksize:,})")
+                
+                # Optimized chunking with reduced overhead
+                offset = 0
+                chunk_count = 0
+                last_memory_check = time.time()
+                
+                while True:
+                    # Get chunk using slice
+                    chunk_lf = lazy_frame.slice(offset, local_chunksize)
+                    try:
+                        batch_df = chunk_lf.collect()
+                        
+                        # Check if we've reached the end
+                        if batch_df.height == 0:
+                            break
+                            
+                    except Exception as collect_error:
+                        logger.debug(f"Failed to collect chunk at offset {offset}: {collect_error}")
+                        break
+                    
+                    # Convert to arrow and write
+                    try:
+                        table = batch_df.to_arrow()
+                        if table.schema != pa_schema:
+                            # Cast to expected schema
+                            table = table.select(pa_schema.names)
+                            table = table.cast(pa_schema)
+                        writer.write_table(table)
+                        total_rows_written += table.num_rows
+                        
+                    except Exception as conversion_error:
+                        logger.debug(f"Batch conversion failed: {conversion_error}. Falling back to string casting")
+                        # Convert all columns to string and retry
+                        string_batch = batch_df.with_columns([
+                            pl.col(col).cast(pl.Utf8, strict=False).alias(col) 
+                            for col in batch_df.columns
+                        ])
+                        table = string_batch.to_arrow()
+                        if table.schema != pa_schema:
+                            table = table.select(pa_schema.names)
+                        writer.write_table(table)
+                        total_rows_written += table.num_rows
+>>>>>>> 4b27651 (refactor() Fix loader and transform maps)
 
         # Move temp file to final location
         import shutil

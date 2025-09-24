@@ -14,7 +14,7 @@ def normalize_null_values(row_dict: Dict[str, str]) -> Dict[str, str]:
     Normalize NULL values across all fields in a row.
     
     Converts None, "NULL", "null", "None", empty strings to empty string "".
-    Also strips whitespace from all string values.
+    Also strips whitespace from all string values and converts other types to strings.
     
     Args:
         row_dict: Dictionary representing a single row
@@ -28,6 +28,13 @@ def normalize_null_values(row_dict: Dict[str, str]) -> Dict[str, str]:
                 row_dict[key] = ""
             elif isinstance(value, str):
                 row_dict[key] = value.strip()
+            elif isinstance(value, (int, float)):
+                # Convert numbers to strings for consistent processing
+                row_dict[key] = str(value)
+            else:
+                # Convert other types to strings
+                row_dict[key] = str(value) if value is not None else ""
+                
     except (AttributeError, KeyError, TypeError) as e:
         logger.warning(f"Error normalizing NULL values: {e}")
     
@@ -47,14 +54,25 @@ def clean_leading_zeros_from_fields(row_dict: Dict[str, str], field_names: List[
     """
     try:
         for field in field_names:
-            if field in row_dict and row_dict[field]:
-                value = row_dict[field].strip()
+            if field in row_dict:
+                # Convert to string first, handling None, integers, and strings
+                raw_value = row_dict[field]
+                if raw_value is None:
+                    value = ""
+                elif isinstance(raw_value, (int, float)):
+                    value = str(raw_value)
+                else:
+                    value = str(raw_value).strip()
+                
                 if value and value.isdigit():
                     # Remove leading zeros but keep at least one digit
                     cleaned_value = value.lstrip('0') or '0'
                     row_dict[field] = cleaned_value
-                elif field == "codigo" and not value:  # Special case for codigo
+                elif field == "codigo" and not value:  # Special case for empty codigo
                     row_dict[field] = '0'
+                else:
+                    # Keep the converted string value
+                    row_dict[field] = value
     except (AttributeError, KeyError, TypeError) as e:
         logger.warning(f"Error cleaning leading zeros from fields {field_names}: {e}")
     

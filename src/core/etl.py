@@ -2,12 +2,11 @@ from typing import List, Optional
 from datetime import datetime
 from pathlib import Path
 from uuid import UUID
-import os
 
 # Import new services
 from ..setup.logging import logger
 from ..setup.config import ConfigurationService
-from ..database.models.audit import TableAuditManifest, AuditBase
+from ..database.models.audit import TableAuditManifest, AuditBase, AuditStatus
 from ..database.models.business import MainBase
 from .interfaces import Pipeline
 
@@ -220,20 +219,105 @@ class ReceitaCNPJPipeline(Pipeline):
     def fetch_audit_data(self) -> List[TableAuditManifest]:
         files_info = self.scrap_data()
 
-        audits = self.audit_service.create_audits_from_files(files_info)
-
-        # Apply development mode filtering using centralized filter
+        # Apply development mode filtering to files before creating audits
+        logger.info(f"Development mode enabled: {self.config.is_development_mode()}")
         if self.config.is_development_mode():
             from ..core.utils.development_filter import DevelopmentFilter
             dev_filter = DevelopmentFilter(self.config)
-            original_count = len(audits)
+            original_count = len(files_info)
+            
+            # Filter files by size
+            size_filtered_files = [f for f in files_info if dev_filter._check_file_size_limit(f)]
+            logger.info(f"[DEV-MODE] Size filtering: {len(files_info)} → {len(size_filtered_files)} files (limit: {dev_filter.development.file_size_limit_mb}MB)")
+            files_info = size_filtered_files
+            
+            # Log sample filenames for debugging
+            if files_info:
+                sample_names = [f.filename for f in files_info[:5]]
+                logger.debug(f"[DEV-MODE] Sample filenames after size filtering: {sample_names}")
+            else:
+                logger.warning("[DEV-MODE] No files passed size filtering!")
+            
+            # Apply whole-blob filtering - limit total files across all tables
+            max_files_total = dev_filter.development.max_files_per_blob  # This is the total blob limit
+            
+            if len(files_info) <= max_files_total:
+                # No need to filter - we're under the total limit
+                logger.info(f"[DEV-MODE] Blob under limit: {len(files_info)} files ≤ {max_files_total} limit")
+                filtered_files = files_info
+            else:
+                # Need to strategically select files from the entire blob
+                logger.info(f"[DEV-MODE] Blob filtering: {len(files_info)} files → {max_files_total} files (whole-blob limit)")
+                
+                # Group files by table for diversity, but don't limit per table
+                from collections import defaultdict
+                from ..core.constants import TABLES_INFO_DICT
+                
+                table_groups = defaultdict(list)
+                unmatched_files = []
+                
+                for file_info in files_info:
+                    # Find which table this file belongs to
+                    table_name = None
+                    filename_upper = file_info.filename.upper()  # Make case-insensitive
+                    
+                    for tname, table_info in TABLES_INFO_DICT.items():
+                        expression = table_info.get("expression")
+                        if expression and expression.upper() in filename_upper:
+                            table_name = tname
+                            break
+                    
+                    if table_name:
+                        table_groups[table_name].append(file_info)
+                    else:
+                        unmatched_files.append(file_info)
+                
+                # Strategic selection for table diversity within total blob limit
+                filtered_files = []
+                remaining_slots = max_files_total
+                
+                # First pass: Take 1-2 files from each table to ensure diversity
+                tables_with_files = [(name, files) for name, files in table_groups.items() if files]
+                files_per_table_round1 = max(1, remaining_slots // max(1, len(tables_with_files))) if tables_with_files else 0
+                
+                for table_name, table_files in tables_with_files:
+                    # Take first few files from this table (strategic: first, middle if available)
+                    take_count = min(files_per_table_round1, len(table_files), remaining_slots)
+                    if take_count > 0:
+                        if take_count == 1:
+                            selected = [table_files[0]]
+                        elif take_count == 2 and len(table_files) >= 2:
+                            selected = [table_files[0], table_files[len(table_files)//2]]
+                        else:
+                            selected = dev_filter._select_representative_files(table_files, take_count)
+                        
+                        filtered_files.extend(selected)
+                        remaining_slots -= len(selected)
+                        logger.debug(f"[DEV-MODE] {table_name}: selected {len(selected)} files (round 1)")
+                
+                # Second pass: Fill remaining slots with any remaining files
+                if remaining_slots > 0:
+                    all_remaining_files = []
+                    for table_files in table_groups.values():
+                        for f in table_files:
+                            if f not in filtered_files:
+                                all_remaining_files.append(f)
+                    
+                    # Add unmatched files to remaining pool
+                    all_remaining_files.extend(unmatched_files)
+                    
+                    if all_remaining_files and remaining_slots > 0:
+                        additional = all_remaining_files[:remaining_slots]
+                        filtered_files.extend(additional)
+                        logger.debug(f"[DEV-MODE] Added {len(additional)} additional files (round 2)")
+                
+                logger.info(f"[DEV-MODE] Final selection: {len(filtered_files)} files from {len(table_groups)} tables")
+            
+            files_info = filtered_files
+            dev_filter.log_simple_filtering(original_count, len(files_info), "discovered files")
 
-            # Filter by file size and table limits
-            audits = dev_filter.filter_audits_by_size(audits)
-            audits = dev_filter.filter_audits_by_table_limit(audits)
-
-            # Log filtering summary
-            dev_filter.log_simple_filtering(original_count, len(audits), "audit files")
+        audits = self.audit_service.create_audits_from_files(files_info)
+        logger.info(f"Created {len(audits)} audit entries from {len(files_info)} discovered files")
 
         return audits
 
@@ -314,7 +398,7 @@ class ReceitaCNPJPipeline(Pipeline):
                     processing_metadata = {
                         "conversion_method": "convert_csvs_to_parquet_smart",
                         "output_format": "parquet",
-                        "file_size_bytes": parquet_file_path.stat().st_size
+                        "output_file_size_bytes": parquet_file_path.stat().st_size  # Moved from table to file level
                     }
                     self.audit_service.update_table_audit_after_conversion(
                         table_name, str(parquet_file_path), processing_metadata
@@ -402,7 +486,6 @@ class ReceitaCNPJPipeline(Pipeline):
                 audit_entry = TableAuditManifestSchema(
                     entity_name=table_name,
                     source_files=file_list,  # Store actual processed files, not ZIP file
-                    processed_at=datetime.now(),
                     inserted_at=None  # Will be set during loading
                 )
                 audit_list.append(audit_entry)
@@ -455,6 +538,10 @@ class ReceitaCNPJPipeline(Pipeline):
             for table_name, files in tablename_to_files.items()
         }
         
+        # Use configured temporal values or current time
+        data_year = self.config.year if hasattr(self.config, 'year') and self.config.year else datetime.now().year
+        data_month = self.config.month if hasattr(self.config, 'month') and self.config.month else datetime.now().month
+        
         # Create a minimal audit list for compatibility
         audit_list = []
         for table_name in tablename_to_files.keys():
@@ -462,10 +549,9 @@ class ReceitaCNPJPipeline(Pipeline):
                 table_audit_id=str(uuid4()),  # Generate a proper UUID string
                 entity_name=table_name,
                 source_files=["synthetic_conversion"],  # Fake filename for compatibility
-                file_size_bytes=0.0,  # Not relevant for convert-only
-                source_updated_at=datetime.now(),
-                processed_at=None,
-                inserted_at=datetime.now(),  # Required field
+                status=AuditStatus.PENDING,
+                ingestion_year=data_year,
+                ingestion_month=data_month,
                 notes={"convert_only": True}
             )
             audit_list.append(synthetic_audit)
@@ -514,6 +600,10 @@ class ReceitaCNPJPipeline(Pipeline):
         from datetime import datetime
         from uuid import uuid4
 
+        # Use configured temporal values or current time
+        data_year = self.config.year if hasattr(self.config, 'year') and self.config.year else datetime.now().year
+        data_month = self.config.month if hasattr(self.config, 'month') and self.config.month else datetime.now().month
+        
         # Only check extraction directory for CSV files - ignore conversion directory
         extract_path = self.config.pipeline.get_temporal_extraction_path(self.config.year, self.config.month)
         
@@ -580,14 +670,11 @@ class ReceitaCNPJPipeline(Pipeline):
                 audit_entry = TableAuditManifestSchema(
                     entity_name=table_name,
                     source_files=file_list,  # Store actual CSV files
-                    file_size_bytes=total_size_bytes,  # Total size of CSV files
-                    source_updated_at=oldest_file_time,  # Oldest file modification time
+                    status=AuditStatus.PENDING,
+                    ingestion_year=self.config.year if self.config.year else data_year,  # Use configured year or default
+                    ingestion_month=self.config.month if self.config.month else data_month,  # Use configured month or default
                     created_at=current_time,  # When audit entry was created
-                    downloaded_at=current_time,  # Treat as "downloaded" since files exist
-                    processed_at=current_time,  # When processing started
-                    inserted_at=None,  # Will be set during loading
-                    ingestion_year=self.config.year,  # Use configured year
-                    ingestion_month=self.config.month  # Use configured month
+                    inserted_at=None  # Will be set during loading
                 )
                 audit_list.append(audit_entry)
 

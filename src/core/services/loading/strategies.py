@@ -18,9 +18,9 @@ from typing import List, Tuple, Optional
 from pathlib import Path
 
 from ....database.engine import Database
+from ....database.models.audit import AuditStatus
 from ....setup.logging import logger
 from ....database.dml import table_name_to_table_info
-from ....database.models.audit import AuditStatus
 
 class BaseDataLoadingStrategy(ABC):
     """Abstract base class for data loading strategies."""
@@ -614,7 +614,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                         "format": file_path_obj.suffix.lstrip('.') if file_path_obj.suffix else "unknown"
                     },
                     "processing": {
-                        "status": status,
+                        "status": status.value,
                         "table_name": table_name
                     }
                 }
@@ -656,7 +656,7 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                 # Create updated notes
                 notes_data = {
                     "processing_update": {
-                        "final_status": status,
+                        "final_status": status.value,
                         "completion_timestamp": str(datetime.now())
                     }
                 }
@@ -952,12 +952,9 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                 entity_name=table_name,
                 status=AuditStatus.COMPLETED,
                 source_files=[filename],
-                file_size_bytes=0,
-                source_updated_at=datetime.now(),
                 created_at=datetime.now(),
                 started_at=datetime.now(),
                 completed_at=datetime.now(),
-                updated_at=datetime.now(),
                 ingestion_year=self.config.year,
                 ingestion_month=self.config.month,
                 notes={"placeholder": True, "created_for": "file_manifest_requirement"}

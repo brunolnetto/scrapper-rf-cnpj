@@ -3,9 +3,8 @@ Development mode filtering utilities with blob limits and row sampling.
 Provides comprehensive development mode controls for safer testing and faster iteration.
 """
 from pathlib import Path
-from typing import List, Dict, Any, Union
+from typing import List, Dict, Any
 import random
-import math
 
 import polars as pl
 from ...setup.config.models import DevelopmentConfig
@@ -31,6 +30,7 @@ class DevelopmentFilter:
             dev_config = DevelopmentConfig(
                 enabled=getattr(config, 'is_development_mode', lambda: False)(),
                 max_files_per_table=getattr(config, 'get_max_files_per_table', lambda: 5)(),
+                max_files_per_blob=getattr(config, 'get_max_files_per_blob', lambda: 3)(),
                 file_size_limit_mb=50,  # Default - fixed property name
                 row_limit_percent=0.1
             )
@@ -42,11 +42,9 @@ class DevelopmentFilter:
         if not self.is_enabled:
             return audits
 
-        file_size_limit_bytes = self.development.file_size_limit_mb * 1024 * 1024
-        filtered_audits = [
-            audit for audit in audits
-            if audit.file_size_bytes < file_size_limit_bytes
-        ]
+        # File size filtering moved to file manifest level - table audits no longer have file_size_bytes
+        # Keep all table audits, file size filtering happens at individual file processing level
+        filtered_audits = audits
 
         if len(filtered_audits) != len(audits):
             logger.info(
@@ -270,6 +268,25 @@ class DevelopmentFilter:
             )
         else:
             logger.debug(f"[DEV-MODE] No {item_type} filtering applied: {original_count} items")
+
+    def _check_file_size_limit(self, file_info) -> bool:
+        """Check if file info meets the size requirements for development mode."""
+        if not self.is_enabled:
+            return True
+        
+        # If file_info has file_size attribute, check it
+        if hasattr(file_info, 'file_size') and file_info.file_size:
+            file_size_mb = file_info.file_size / (1024 * 1024)
+            max_size_mb = self.development.file_size_limit_mb
+            
+            if file_size_mb > max_size_mb:
+                logger.debug(
+                    f"[DEV-MODE] Skipping {file_info.filename} "
+                    f"({file_size_mb:.1f}MB > {max_size_mb}MB limit)"
+                )
+                return False
+        
+        return True
 
     def log_conversion_summary(self, audit_map: Dict[str, Dict[str, List[str]]]) -> None:
         """Log conversion summary for development mode."""

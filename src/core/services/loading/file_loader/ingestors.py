@@ -26,10 +26,15 @@ def batch_generator_parquet(path: str, headers: List[str], chunk_size: int = 20_
         rows = []
         for i in range(record_batch.num_rows):
             row = []
-            for h in headers:
+            for j, h in enumerate(headers):
                 if h in name_to_idx:
+                    # Standard case: column name matches
                     val = record_batch.column(name_to_idx[h])[i].as_py()
                     # normalize: str or None
+                    row.append(str(val) if val is not None else None)
+                elif str(j) in name_to_idx:
+                    # Fallback: try numeric column name (for files with '0', '1', etc.)
+                    val = record_batch.column(name_to_idx[str(j)])[i].as_py()
                     row.append(str(val) if val is not None else None)
                 else:
                     row.append(None)

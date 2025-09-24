@@ -67,13 +67,27 @@ def extract_primary_keys(table_info) -> list[str]:
     """
     try:
         # Try to get primary keys from SQLAlchemy model
-        from src.core.utils.models import get_model_by_table_name
+        from .....core.utils.models import get_model_by_table_name
         model = get_model_by_table_name(table_info.table_name)
         pk_columns = [col.name for col in model.__table__.primary_key.columns]
         if pk_columns:
+            logger.debug(f"[ConnectionFactory] Extracted primary keys for {table_info.table_name}: {pk_columns}")
             return pk_columns
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"[ConnectionFactory] Failed to extract primary keys for {table_info.table_name}: {e}")
+    
+    # Fallback: try to get from table_info directly
+    if hasattr(table_info, 'table_model') and table_info.table_model:
+        try:
+            pk_columns = [col.name for col in table_info.table_model.__table__.primary_key.columns]
+            if pk_columns:
+                logger.debug(f"[ConnectionFactory] Fallback primary keys for {table_info.table_name}: {pk_columns}")
+                return pk_columns
+        except Exception as e:
+            logger.warning(f"[ConnectionFactory] Fallback primary key extraction failed for {table_info.table_name}: {e}")
+    
+    logger.error(f"[ConnectionFactory] Could not determine primary keys for {table_info.table_name}")
+    return []
 
 
 def get_column_types_mapping(table_info) -> dict[str, str]:
@@ -87,7 +101,7 @@ def get_column_types_mapping(table_info) -> dict[str, str]:
         Dictionary mapping column names to PostgreSQL types
     """
     try:
-        from src.core.utils.models import get_model_by_table_name
+        from .....core.utils.models import get_model_by_table_name
         model = get_model_by_table_name(table_info.table_name)
         
         types = {}

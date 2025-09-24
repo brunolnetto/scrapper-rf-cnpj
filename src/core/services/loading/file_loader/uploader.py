@@ -171,6 +171,11 @@ async def _process_batch_sequential(
                     await conn.copy_records_to_table(tmp_table, records=sub_batch, columns=headers)
                     sql = base.upsert_from_temp_sql(table, tmp_table, headers, primary_keys)
                     await conn.execute(sql)
+                    
+                    # Debug: Check actual row count in target table after upsert
+                    count_result = await conn.fetchval(f'SELECT COUNT(*) FROM {base.quote_ident(table)}')
+                    print(f"[DEBUG] After upsert to {table}: {count_result} rows in target table")
+                    
                     await conn.execute(f'TRUNCATE {base.quote_ident(tmp_table)};')
                 rows_processed += len(sub_batch)
                 emit_log("batch_committed", run_id=run_id, batch_idx=batch_idx, rows=len(sub_batch))
@@ -239,6 +244,7 @@ async def _process_batch_parallel(
                                 async with conn.transaction():
                                     sql = base.upsert_from_temp_sql(table, tmp_table, headers, primary_keys)
                                     await conn.execute(sql)
+                                    
                                     await conn.execute(f'TRUNCATE {base.quote_ident(tmp_table)};')
                             
                             emit_log("sub_batch_committed", run_id=run_id, batch_idx=batch_idx, 

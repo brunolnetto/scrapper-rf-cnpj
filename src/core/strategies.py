@@ -311,8 +311,10 @@ class FullETLStrategy:
                 logger.info(f"[FULL-ETL] ETL job for {year}-{str(month).zfill(2)} completed successfully.")
                 logger.info(f"[FULL-ETL] Data successfully upserted to production database '{prod_db}'.")
                 
-                # Log row count changes and update audit metadata
-                self._update_audit_metadata(audit_metadata, initial_row_counts, final_row_counts)
+                # Log row count changes and update audit metadata with comprehensive metrics
+                self._update_audit_metadata_with_comprehensive_metrics(
+                    audit_metadata, initial_row_counts, final_row_counts, config_service, pipeline
+                )
                 
                 return audit_metadata
             else:
@@ -325,7 +327,13 @@ class FullETLStrategy:
             raise
 
     def _clear_production_tables(self, config_service: ConfigurationService, table_names=None):
-        """Clear (truncate) production tables before upsert."""
+        """Clear (truncate) production and audit tables before upsert."""
+        
+        # Handle table_names argument to correctly interpret empty string vs. None
+        tables_to_clear = None
+        if isinstance(table_names, str) and table_names.strip():
+            tables_to_clear = [name.strip() for name in table_names.split(',')]
+        
         main_db_config = config_service.pipeline.database
         prod_db = main_db_config.database_name
         
@@ -337,37 +345,130 @@ class FullETLStrategy:
             main_db_config.host,
             main_db_config.port,
             prod_db,
-            table_names,
+            tables_to_clear, # Use the corrected list
         )
         
         if success:
-            logger.info("[CLEAR] Tables cleared successfully.")
+            logger.info("[CLEAR] Production tables cleared successfully.")
         else:
-            logger.error("[CLEAR] Failed to clear tables.")
+            logger.error("[CLEAR] Failed to clear production tables.")
+
+        # Also clear audit tables to allow reprocessing
+        audit_db_config = config_service.audit.database
+        audit_db = audit_db_config.database_name
+        logger.info(f"[CLEAR] Clearing tables in audit database '{audit_db}'...")
         
-        return success
+        # Always clear all audit tables on a full refresh
+        audit_success = truncate_tables(
+            audit_db_config.user,
+            audit_db_config.password,
+            audit_db_config.host,
+            audit_db_config.port,
+            audit_db,
+            None,
+        )
+
+        if audit_success:
+            logger.info("[CLEAR] Audit tables cleared successfully.")
+        else:
+            logger.error("[CLEAR] Failed to clear audit tables.")
+
+        return success and audit_success
     
-    def _update_audit_metadata(self, audit_metadata, initial_row_counts, final_row_counts):
-        """Update audit metadata with row count changes."""
+    def _update_audit_metadata_with_comprehensive_metrics(
+        self, audit_metadata, initial_row_counts, final_row_counts, config_service, pipeline=None
+    ):
+        """Update audit metadata with comprehensive column metrics and row count changes."""
+        from pathlib import Path
+        
+        # Only process tables that have audit entries (were actually processed in this ETL run)
+        processed_tables = {audit.entity_name for audit in audit_metadata.audit_list}
+        
+        # Get conversion path to find Parquet files
+        conversion_path = config_service.pipeline.get_temporal_conversion_path(
+            config_service.year, config_service.month
+        )
+        
+        logger.info("[COMPREHENSIVE-METRICS] Collecting detailed column metrics for processed tables...")
+        
         for table_name in final_row_counts:
+            # Skip tables that weren't part of this ETL run
+            if table_name not in processed_tables:
+                logger.debug(f"[METRICS] Skipping table '{table_name}' - not processed in current ETL run")
+                continue
+                
             initial_count = initial_row_counts.get(table_name, 0)
             final_count = final_row_counts[table_name]
             change = final_count - initial_count
             
+            # Basic row count metadata
             row_count_metadata = {
                 "before": initial_count,
                 "after": final_count,
                 "diff": change,
             }
             
-            # Find corresponding audit entry
+            # Look for corresponding Parquet file for comprehensive analysis
+            parquet_file = conversion_path / f"{table_name}.parquet"
+            comprehensive_metrics = {}
+            
+            if parquet_file.exists():
+                logger.info(f"[COMPREHENSIVE-METRICS] Analyzing {table_name}.parquet for detailed metrics...")
+                
+                # Get audit service from the pipeline
+                audit_service = None
+                if pipeline and hasattr(pipeline, 'audit_service'):
+                    audit_service = pipeline.audit_service
+                
+                if audit_service and hasattr(audit_service, 'collect_comprehensive_column_metrics'):
+                    comprehensive_metrics = audit_service.collect_comprehensive_column_metrics(
+                        table_name, str(parquet_file)
+                    )
+                    
+                    # Update the database audit record with comprehensive metrics
+                    if comprehensive_metrics and not comprehensive_metrics.get('error'):
+                        audit_service.update_table_audit_with_comprehensive_metrics(
+                            table_name, comprehensive_metrics
+                        )
+                        
+                        # Log summary of comprehensive metrics
+                        data_quality = comprehensive_metrics.get('data_quality', {})
+                        column_count = comprehensive_metrics.get('total_columns', 0)
+                        completeness = data_quality.get('completeness_percentage', 0)
+                        
+                        logger.info(f"[COMPREHENSIVE-METRICS] {table_name}: {final_count:,} rows, "
+                                  f"{column_count} columns, {completeness:.1f}% data completeness")
+                    else:
+                        logger.warning(f"[COMPREHENSIVE-METRICS] Failed to collect metrics for {table_name}")
+                else:
+                    logger.debug(f"[COMPREHENSIVE-METRICS] Audit service not available for comprehensive analysis")
+            else:
+                logger.warning(f"[COMPREHENSIVE-METRICS] Parquet file not found: {parquet_file}")
+            
+            # Find corresponding audit entry and update with basic row count metadata
             table_audit = [
                 audit for audit in audit_metadata.audit_list
                 if audit.entity_name == table_name
             ]
             
             if len(table_audit) == 1:
-                table_audit[0].notes = {"row_count": row_count_metadata}
+                # Combine row count metadata with any existing notes
+                existing_notes = getattr(table_audit[0], 'notes', {}) or {}
+                if isinstance(existing_notes, str):
+                    try:
+                        import json
+                        existing_notes = json.loads(existing_notes)
+                    except:
+                        existing_notes = {"legacy_notes": existing_notes}
+                
+                updated_notes = existing_notes.copy()
+                updated_notes.update({
+                    "row_count": row_count_metadata,
+                    "comprehensive_metrics_collected": bool(comprehensive_metrics and not comprehensive_metrics.get('error')),
+                    "metrics_collection_timestamp": comprehensive_metrics.get('collection_timestamp') if comprehensive_metrics else None
+                })
+                
+                table_audit[0].notes = updated_notes
                 logger.info(f"[METRICS] Table '{table_name}': {initial_count} -> {final_count} (diff: {change:+d})")
             else:
                 logger.warning(f"[METRICS] Expected 1 audit entry for table '{table_name}', found {len(table_audit)}")

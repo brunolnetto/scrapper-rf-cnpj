@@ -350,7 +350,7 @@ class DevelopmentConfig(BaseModel):
         description="Maximum number of files to process per table"
     )
     max_files_per_blob: int = Field(
-        default=3,
+        default=10,
         ge=1,
         le=50,
         description="Maximum number of files to process per blob/batch"
