@@ -39,7 +39,6 @@ def create_new_audit(
         created_at=datetime.now(),
         entity_name=table_name,  # Updated column name
         source_files=filenames,
-        # Removed file_size_bytes and source_updated_at - now tracked at file level
         status=AuditStatus.PENDING,
         notes=None,
         ingestion_year=current_year,

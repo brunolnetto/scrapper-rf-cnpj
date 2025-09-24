@@ -100,7 +100,6 @@ class TableAuditManifestSchema(BaseModel):
     source_files: Optional[List[str]] = None
     ingestion_year: int
     ingestion_month: int
-    source_updated_at: Optional[datetime] = None  # Temporary field for compatibility
 
     class Config:
         from_attributes = True
@@ -142,10 +141,7 @@ class TableAuditManifest(BaseAuditModel):
     source_files = Column(JSON, nullable=True)  # List of source files processed
     ingestion_year = Column(Integer, nullable=False, default=datetime.now().year)
     ingestion_month = Column(Integer, nullable=False, default=datetime.now().month)
-    
-    # Temporary field for database compatibility - TODO: remove after schema migration
-    source_updated_at = Column(TIMESTAMP, nullable=False, default=datetime.now)
-    
+        
     # Standard index pattern
     __table_args__ = (
         Index("idx_table_audit_status", "status"),

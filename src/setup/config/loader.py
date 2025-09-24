@@ -195,6 +195,21 @@ class ConfigLoader:
             cleanup_threshold_ratio=0.8,  # Hardcoded - memory management
             baseline_buffer_mb=256  # Hardcoded - internal buffer
         )
+
+        # Helper: detect system memory (Linux /proc fallback). Returns MB or None.
+        def _get_system_memory_mb() -> Optional[int]:
+            try:
+                if os.path.exists('/proc/meminfo'):
+                    with open('/proc/meminfo', 'r') as f:
+                        first = f.readline()
+                    # Expect format: MemTotal: 16384256 kB
+                    parts = first.split()
+                    if len(parts) >= 2 and parts[1].isdigit():
+                        kb = int(parts[1])
+                        return kb // 1024
+            except Exception:
+                pass
+            return None
         
         # Load loading config (consolidated timeout/retry, removed micro-optimizations)
         timeout_seconds = int(os.getenv("ETL_TIMEOUT_SECONDS", "300"))  # Consolidated timeout
@@ -217,6 +232,33 @@ class ConfigLoader:
             async_pool_min_size=1,  # Hardcoded - always start with 1
             async_pool_max_size=pool_size
         )
+
+        # Auto-adjust for low-memory production hosts to avoid OOM and validation errors
+        try:
+            sys_mem_mb = _get_system_memory_mb()
+            if sys_mem_mb is not None and sys_mem_mb < 8192:
+                # Conservative caps for constrained systems
+                logger.warning(f"Low system memory detected: {sys_mem_mb}MB - auto-adjusting ETL settings for safety")
+                # Cap conversion settings
+                conversion.chunk_size = min(conversion.chunk_size, 10000)
+                conversion.memory_limit_mb = min(conversion.memory_limit_mb, max(512, int(sys_mem_mb * 0.5)))
+                conversion.workers = min(conversion.workers, 1)
+
+                # Ensure loading batch sizes do not exceed conversion chunk size
+                if loading.batch_size > conversion.chunk_size:
+                    logger.warning(f"Adjusting loading.batch_size from {loading.batch_size} to conversion.chunk_size {conversion.chunk_size}")
+                    loading.batch_size = conversion.chunk_size
+
+                # Ensure sub-batch size is not larger than batch
+                if loading.sub_batch_size > loading.batch_size:
+                    logger.warning(f"Adjusting loading.sub_batch_size from {loading.sub_batch_size} to loading.batch_size {loading.batch_size}")
+                    loading.sub_batch_size = loading.batch_size
+
+                # Reduce async pool to avoid too many connections
+                loading.async_pool_max_size = min(loading.async_pool_max_size, max(2, int(sys_mem_mb / 1024)))
+        except Exception:
+            # Don't crash loading due to auto-adjust logic
+            logger.debug("Memory auto-adjustment skipped due to detection error")
         
         # Load download config (using consolidated settings)
         download = DownloadConfig(
@@ -229,10 +271,7 @@ class ConfigLoader:
         )
         
         # Load development config
-        dev_enabled_str = os.getenv("ETL_DEV_ENABLED")
-        if dev_enabled_str is None:
-            # Default based on environment
-            dev_enabled_str = "true" if os.getenv("ENVIRONMENT", "development") == "development" else "false"
+        dev_enabled_str = "true" if os.getenv("ENVIRONMENT", "development") == "development" else "false"
         
         development = DevelopmentConfig(
             enabled=dev_enabled_str.lower() == "true",

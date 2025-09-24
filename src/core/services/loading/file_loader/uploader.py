@@ -35,8 +35,16 @@ async def record_manifest(
 
     await conn.execute(
         """
-        INSERT INTO file_audit_manifest (file_audit_id, file_path, status, checksum, filesize, rows_processed, created_at, notes)
-        VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7)
+        INSERT INTO file_audit_manifest (
+            file_audit_id, 
+            file_path, 
+            status, 
+            checksum, 
+            filesize, 
+            created_at, 
+            notes
+        )
+        VALUES ($1, $2, $3, $4, $5, $5, NOW(), $6s)
         """,
         str(uuid.uuid4()), filename, status_value, checksum, filesize, rows_processed, notes
     )
@@ -174,7 +182,6 @@ async def _process_batch_sequential(
                     
                     # Debug: Check actual row count in target table after upsert
                     count_result = await conn.fetchval(f'SELECT COUNT(*) FROM {base.quote_ident(table)}')
-                    print(f"[DEBUG] After upsert to {table}: {count_result} rows in target table")
                     
                     await conn.execute(f'TRUNCATE {base.quote_ident(tmp_table)};')
                 rows_processed += len(sub_batch)

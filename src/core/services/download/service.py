@@ -8,7 +8,7 @@ from tqdm import tqdm
 from ....database.models.audit import TableAuditManifest
 from ....setup.logging import logger
 from ....setup.config import ConfigurationService
-from ....utils.misc import get_file_size, get_max_workers
+from ....utils.misc import get_max_workers
 from ....utils.zip import extract_zip_file
 
 
@@ -79,8 +79,8 @@ class FileDownloadService:
         error_count = 0
         error_basefiles = []
         total_count = len(audits)
-        audits_ = sorted(audits, key=lambda x: x.file_size_bytes)
-        for index, audit in enumerate(audits_):
+        # Process audits in order (sorting by file size removed since field no longer exists)
+        for index, audit in enumerate(audits):
             try:
                 audit = self._download_and_extract_files(
                     audit, url, download_path, extract_path, True
@@ -95,7 +95,7 @@ class FileDownloadService:
                 logger.info(
                     f"({index}/{total_count}) files processed. {error_count} errors: {error_basefiles}"
                 )
-        return audits_
+        return audits
 
     def _download_and_extract_files(
         self, audit, url, download_path, extract_path, has_progress_bar
@@ -157,7 +157,7 @@ class FileDownloadService:
                     progress.close()
             logger.info(f"Successfully downloaded file: {zip_filename}")
             audit.downloaded_at = datetime.now()
-            audit.file_size_bytes = get_file_size(local_filename)
+            # file_size_bytes removed - file size tracking moved to file manifest level
         except Exception as e:
             logger.error(f"Error downloading {zip_filename}: {e}")
             if has_progress_bar and progress:

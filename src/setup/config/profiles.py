@@ -14,7 +14,6 @@ class ProfileType(str, Enum):
     """Available configuration profiles."""
     DEVELOPMENT = "development"
     PRODUCTION = "production"
-    TESTING = "testing"
     PERFORMANCE = "performance"
     MEMORY_OPTIMIZED = "memory_optimized"
 
@@ -146,68 +145,6 @@ class ConfigurationProfile:
         "BATCH_ENABLE_MONITORING": "true",
     }
     
-    # Testing profile - optimized for fast test execution
-    TESTING = {
-        # ETL Configuration
-        "ETL_ENVIRONMENT": "testing",
-        "ETL_TIMEZONE": "America/Sao_Paulo",
-        "ETL_DELIMITER": ";",
-        "ETL_DELETE_FILES": "true",  # Clean up test artifacts
-        "ETL_IS_PARALLEL": "false",  # Sequential for deterministic tests
-        "ETL_INTERNAL_CONCURRENCY": "1",
-        "ETL_MANIFEST_TRACKING": "false",  # Disable for speed
-        
-        # Conversion Configuration (Minimal for testing)
-        "ETL_CONVERSION_CHUNK_SIZE": "1000",  # Very small chunks
-        "ETL_CONVERSION_MEMORY_LIMIT_MB": "256",
-        "ETL_CONVERSION_WORKERS": "1",
-        "ETL_CONVERSION_COMPRESSION": "snappy",
-        "ETL_CONVERSION_ROW_GROUP_SIZE": "10000",
-        "ETL_CONVERSION_FLUSH_THRESHOLD": "1",
-        "ETL_CONVERSION_AUTO_FALLBACK": "true",
-        "ETL_CONVERSION_ROW_ESTIMATION_FACTOR": "8000",
-        
-        # Loading Configuration (Minimal batches)
-        "ETL_LOADING_BATCH_SIZE": "100",  # Very small batches
-        "ETL_LOADING_SUB_BATCH_SIZE": "50",
-        "ETL_LOADING_WORKERS": "1",
-        "ETL_LOADING_MAX_RETRIES": "1",
-        "ETL_LOADING_TIMEOUT_SECONDS": "30",
-        "ETL_LOADING_USE_COPY": "true",
-        "ETL_LOADING_ENABLE_INTERNAL_PARALLELISM": "false",
-        "ETL_LOADING_MAX_BATCH_SIZE": "10000",
-        "ETL_LOADING_MIN_BATCH_SIZE": "10",
-        "ETL_LOADING_BATCH_SIZE_MB": "10",
-        
-        # Download Configuration
-        "ETL_DOWNLOAD_WORKERS": "1",
-        "ETL_DOWNLOAD_CHUNK_SIZE_MB": "10",
-        "ETL_DOWNLOAD_VERIFY_CHECKSUMS": "false",
-        "ETL_DOWNLOAD_CHECKSUM_THRESHOLD_MB": "50",
-        "ETL_DOWNLOAD_TIMEOUT_SECONDS": "30",
-        "ETL_DOWNLOAD_MAX_RETRIES": "1",
-        
-        # Development Configuration
-        "ETL_DEV_ENABLED": "true",
-        "ETL_DEV_FILE_SIZE_LIMIT_MB": "10",
-        "ETL_DEV_MAX_FILES_PER_TABLE": "1",
-        "ETL_DEV_MAX_FILES_PER_BLOB": "1",
-        "ETL_DEV_ROW_LIMIT_PERCENT": "0.01",  # 1% of data
-        
-        # Connection Pools
-        "ETL_ASYNC_POOL_MIN_SIZE": "1",
-        "ETL_ASYNC_POOL_MAX_SIZE": "2",
-        
-        # Batch Configuration
-        "BATCH_UPDATE_THRESHOLD": "10",
-        "BATCH_UPDATE_INTERVAL": "5",
-        "BATCH_ENABLE_BULK_UPDATES": "false",  # Simpler for testing
-        "BATCH_ENABLE_TEMPORAL_CONTEXT": "false",
-        "BATCH_DEFAULT_BATCH_SIZE": "1000",
-        "BATCH_RETENTION_DAYS": "1",
-        "BATCH_ENABLE_MONITORING": "false",
-    }
-    
     # Performance profile - maximum throughput optimization
     PERFORMANCE = {
         # Inherit from production and override specific settings
@@ -248,7 +185,6 @@ def load_profile(profile_name: str) -> Dict[str, Any]:
     profiles = {
         ProfileType.DEVELOPMENT: ConfigurationProfile.DEVELOPMENT,
         ProfileType.PRODUCTION: ConfigurationProfile.PRODUCTION,
-        ProfileType.TESTING: ConfigurationProfile.TESTING,
         ProfileType.PERFORMANCE: ConfigurationProfile.PERFORMANCE,
         ProfileType.MEMORY_OPTIMIZED: ConfigurationProfile.MEMORY_OPTIMIZED,
     }
@@ -291,7 +227,6 @@ def get_current_profile() -> Optional[str]:
     env_to_profile = {
         "development": ProfileType.DEVELOPMENT,
         "production": ProfileType.PRODUCTION,
-        "testing": ProfileType.TESTING,
     }
     
     return env_to_profile.get(environment)
@@ -325,7 +260,6 @@ def _get_optimization_focus(profile_name: str) -> str:
     focus_map = {
         ProfileType.DEVELOPMENT: "Fast iteration, debugging, stability",
         ProfileType.PRODUCTION: "High throughput, reliability, resource efficiency",
-        ProfileType.TESTING: "Fast execution, deterministic behavior, minimal resources",
         ProfileType.PERFORMANCE: "Maximum throughput, aggressive resource usage",
         ProfileType.MEMORY_OPTIMIZED: "Minimal memory usage, resource conservation",
     }
@@ -383,7 +317,6 @@ def get_profile(environment) -> Dict[str, str]:
     env_mapping = {
         "development": ProfileType.DEVELOPMENT,
         "production": ProfileType.PRODUCTION, 
-        "testing": ProfileType.TESTING,
         "performance": ProfileType.PERFORMANCE,
         "memory_optimized": ProfileType.MEMORY_OPTIMIZED,
     }

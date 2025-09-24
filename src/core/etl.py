@@ -452,7 +452,7 @@ class ReceitaCNPJPipeline(Pipeline):
         """Create audit metadata for Parquet files."""
         from ..core.constants import TABLES_INFO_DICT
         from ..core.schemas import AuditMetadata
-        from ..database.models.audit import TableAuditManifestSchema
+        from ..database.models.audit import TableAuditManifestSchema, AuditStatus
         from datetime import datetime
 
         # Development mode filtering
@@ -479,6 +479,10 @@ class ReceitaCNPJPipeline(Pipeline):
             logger.warning("No valid table mappings found for Parquet files")
             return None
 
+        # Determine ingestion temporal values (configured or current)
+        data_year = self.config.year if hasattr(self.config, 'year') and self.config.year else datetime.now().year
+        data_month = self.config.month if hasattr(self.config, 'month') and self.config.month else datetime.now().month
+
         # Create audit metadata entries
         audit_list = []
         for table_name, zip_to_files in tablename_to_files.items():
@@ -486,6 +490,10 @@ class ReceitaCNPJPipeline(Pipeline):
                 audit_entry = TableAuditManifestSchema(
                     entity_name=table_name,
                     source_files=file_list,  # Store actual processed files, not ZIP file
+                    status=AuditStatus.PENDING,
+                    ingestion_year=data_year,
+                    ingestion_month=data_month,
+                    created_at=datetime.now(),
                     inserted_at=None  # Will be set during loading
                 )
                 audit_list.append(audit_entry)

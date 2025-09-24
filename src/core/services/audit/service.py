@@ -136,9 +136,10 @@ class AuditService:
         else:
             batch_name_with_context = batch_name
         
-        batch_id = self._start_batch(target_table, batch_name_with_context, 
-                                     file_manifest_id=file_manifest_id, 
-                                     table_manifest_id=table_manifest_id)
+        batch_id = self._start_batch(
+            target_table, batch_name_with_context, 
+            file_manifest_id=file_manifest_id
+        )
         
         try:
             logger.info(f"Starting batch processing for {target_table}", 
@@ -264,10 +265,8 @@ class AuditService:
             # Extract table name
             table_name = getattr(audit, 'entity_name', 'unknown')
 
-            # Extract file size if available
-            filesize = getattr(audit, 'file_size_bytes', 0)
-            if filesize is None:
-                filesize = 0
+            # File size tracking moved to file level - default to 0 for table audit entries
+            filesize = 0
 
             # Extract audit ID (table manifest ID)
             table_audit_id = getattr(audit, 'table_audit_id', None)
@@ -486,7 +485,6 @@ class AuditService:
                 file_path,
                 checksum,
                 filesize, 
-                rows_processed,
                 notes
             )
             VALUES (
@@ -498,7 +496,6 @@ class AuditService:
                 :file_path,
                 :checksum,
                 :filesize, 
-                :rows_processed,
                 :notes
             )
             '''
@@ -649,14 +646,9 @@ class AuditService:
                     UPDATE file_audit_manifest
                     SET notes = :notes, updated_at = :updated_at
                     WHERE file_path = :file_path
-                    AND updated_at = (
-                        SELECT MAX(updated_at) FROM file_audit_manifest
-                        WHERE file_path = :file_path
-                    )
                 '''), {
                     'file_path': str(file_path_obj),
-                    'notes': json.dumps(updated_meta),
-                    'updated_at': datetime.now()
+                    'notes': json.dumps(updated_meta)
                 })
 
             logger.info(f"Updated notes for {file_path_obj.name}")
@@ -752,10 +744,6 @@ class AuditService:
                 'status': norm_status.value,
                 'completed_at': datetime.now()
             }
-            
-            if rows_processed is not None:
-                update_fields.append('rows_processed = :rows_processed')
-                params['rows_processed'] = rows_processed
                 
             if error_msg is not None:
                 update_fields.append('error_message = :error_msg')
@@ -836,8 +824,10 @@ class AuditService:
             logger.debug(f"Failed to collect file event: {e}")  # Non-critical
 
     # Batch lifecycle management methods
-    def _start_batch(self, target_table: str, batch_name: str, 
-                     file_manifest_id: Optional[str] = None) -> uuid.UUID:
+    def _start_batch(
+        self, target_table: str, batch_name: str, 
+        file_manifest_id: Optional[str] = None
+    ) -> uuid.UUID:
         """Start a new batch for a single target table and return its ID."""
         try:
             batch_id = uuid.uuid4()
@@ -855,8 +845,8 @@ class AuditService:
             with self.database.engine.begin() as conn:
                 conn.execute(text('''
                     INSERT INTO batch_audit_manifest
-                    (batch_audit_id, parent_file_audit_id, entity_name, target_table, status, created_at, started_at, description)
-                    VALUES (:batch_id, :parent_file_audit_id, :batch_name, :target_table, :status, :created_at, :started_at, :description)
+                    (batch_audit_id, parent_file_audit_id, target_table, status, created_at, started_at, description)
+                    VALUES (:batch_id, :parent_file_audit_id, :target_table, :status, :created_at, :started_at, :description)
                 '''), batch_data)
 
             # Start in-memory tracking
@@ -1304,8 +1294,7 @@ class AuditService:
                 conn.execute(text('''
                     UPDATE table_audit_manifest 
                     SET metrics = :metrics,
-                        notes = COALESCE(notes, '{}')::jsonb || (:additional_notes)::jsonb,
-                        updated_at = :updated_at
+                        notes = COALESCE(notes, '{}')::jsonb || (:additional_notes)::jsonb
                     WHERE table_audit_id = :table_audit_id
                 '''), {
                     'metrics': json.dumps(comprehensive_metrics),
@@ -1314,7 +1303,6 @@ class AuditService:
                         "metrics_collection_timestamp": comprehensive_metrics.get("collection_timestamp"),
                         "data_quality_score": comprehensive_metrics.get("data_quality", {}).get("completeness_percentage", 0)
                     }),
-                    'updated_at': datetime.now(),
                     'table_audit_id': str(table_audit_id)
                 })
                 
@@ -1646,8 +1634,7 @@ class AuditService:
                 conn.execute(text('''
                     UPDATE file_audit_manifest 
                     SET metrics = :metrics,
-                        notes = COALESCE(notes, '{}')::jsonb || (:additional_notes)::jsonb,
-                        updated_at = :updated_at
+                        notes = COALESCE(notes, '{}')::jsonb || (:additional_notes)::jsonb
                     WHERE file_audit_id = :file_audit_id
                 '''), {
                     'metrics': json.dumps(file_metrics),
@@ -1656,7 +1643,6 @@ class AuditService:
                         "metrics_collection_timestamp": file_metrics.get("collection_timestamp"),
                         "file_size_category": file_metrics.get("performance_classification", {}).get("size_category", "unknown")
                     }),
-                    'updated_at': datetime.now(),
                     'file_audit_id': file_audit_id
                 })
                 
@@ -1674,8 +1660,7 @@ class AuditService:
                 conn.execute(text('''
                     UPDATE batch_audit_manifest 
                     SET metrics = :metrics,
-                        notes = COALESCE(notes, '{}')::jsonb || (:additional_notes)::jsonb,
-                        updated_at = :updated_at
+                        notes = COALESCE(notes, '{}')::jsonb || (:additional_notes)::jsonb
                     WHERE batch_audit_id = :batch_audit_id
                 '''), {
                     'metrics': json.dumps(batch_metrics),
@@ -1703,8 +1688,7 @@ class AuditService:
                 conn.execute(text('''
                     UPDATE subbatch_audit_manifest 
                     SET metrics = :metrics,
-                        notes = COALESCE(notes, '{}')::jsonb || (:additional_notes)::jsonb,
-                        updated_at = :updated_at
+                        notes = COALESCE(notes, '{}')::jsonb || (:additional_notes)::jsonb
                     WHERE subbatch_audit_id = :subbatch_audit_id
                 '''), {
                     'metrics': json.dumps(subbatch_metrics),
