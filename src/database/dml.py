@@ -773,5 +773,3 @@ class LargeFileLoader(BaseFileLoader):
                     continue
 
             conn.commit()
-
-
