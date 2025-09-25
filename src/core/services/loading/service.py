@@ -32,12 +32,8 @@ class DataLoadingService:
         self.audit_service = audit_service  # Store audit service
         
         # Initialize batch optimizer if we have pipeline configuration
-        if hasattr(config, 'pipeline'):
-            self.batch_optimizer = BatchSizeOptimizer(config)
-            logger.debug("Initialized BatchSizeOptimizer with pipeline configuration")
-        else:
-            self.batch_optimizer = None
-            logger.debug("No pipeline configuration provided, batch optimization disabled")
+        self.batch_optimizer = BatchSizeOptimizer(config)
+        logger.debug("Initialized BatchSizeOptimizer with pipeline configuration")
         
         # Always use enhanced strategy (replace legacy implementation)
         if config:

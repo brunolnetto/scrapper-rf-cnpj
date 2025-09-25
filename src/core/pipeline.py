@@ -222,7 +222,7 @@ class ReceitaCNPJPipeline(Pipeline):
         # Apply development mode filtering to files before creating audits
         logger.info(f"Development mode enabled: {self.config.is_development_mode()}")
         if self.config.is_development_mode():
-            from ..core.utils.development_filter import DevelopmentFilter
+            from .utils.development_filter import DevelopmentFilter
             dev_filter = DevelopmentFilter(self.config)
             original_count = len(files_info)
             
@@ -251,7 +251,7 @@ class ReceitaCNPJPipeline(Pipeline):
                 
                 # Group files by table for diversity, but don't limit per table
                 from collections import defaultdict
-                from ..core.constants import TABLES_INFO_DICT
+                from .constants import TABLES_INFO_DICT
                 
                 table_groups = defaultdict(list)
                 unmatched_files = []
@@ -380,7 +380,7 @@ class ReceitaCNPJPipeline(Pipeline):
         logger.info(f"Processing {len(audit_map)} tables with {num_workers} workers")
 
         # Centralized conversion summary logging
-        from ..core.utils.development_filter import DevelopmentFilter
+        from .utils.development_filter import DevelopmentFilter
         dev_filter = DevelopmentFilter(self.config)
         dev_filter.log_conversion_summary(audit_map)
 
@@ -390,27 +390,25 @@ class ReceitaCNPJPipeline(Pipeline):
         logger.info(f"Parquet conversion completed. Files saved to: {output_dir}")
 
         # IMPROVEMENT: Update table audits to reference Parquet files instead of ZIP files
-        if hasattr(self, 'audit_service') and self.audit_service:
-            logger.info("Updating table audits to reference converted Parquet files...")
-            for table_name in audit_map.keys():
-                parquet_file_path = output_dir / f"{table_name}.parquet" 
-                if parquet_file_path.exists():
-                    processing_metadata = {
-                        "conversion_method": "convert_csvs_to_parquet_smart",
-                        "output_format": "parquet",
-                        "output_file_size_bytes": parquet_file_path.stat().st_size  # Moved from table to file level
-                    }
-                    self.audit_service.update_table_audit_after_conversion(
-                        table_name, str(parquet_file_path), processing_metadata
-                    )
-                else:
-                    logger.warning(f"Expected Parquet file not found: {parquet_file_path}")
-        else:
-            logger.warning("No audit service available - table audits will not be updated with Parquet file references")
+        logger.info("Updating table audits to reference converted Parquet files...")
+        for table_name in audit_map.keys():
+            parquet_file_path = output_dir / f"{table_name}.parquet" 
+            if parquet_file_path.exists():
+                processing_metadata = {
+                    "conversion_method": "convert_csvs_to_parquet_smart",
+                    "output_format": "parquet",
+                    "output_file_size_bytes": parquet_file_path.stat().st_size  # Moved from table to file level
+                }
+                self.audit_service.update_table_audit_after_conversion(
+                    table_name, str(parquet_file_path), processing_metadata
+                )
+            else:
+                logger.warning(f"Expected Parquet file not found: {parquet_file_path}")
+
 
         return output_dir
 
-    def create_audit_metadata_from_existing_csvs(self) -> Optional[AuditMetadata]:
+    def create_audit_metadata_from_existing_parquet(self) -> Optional[AuditMetadata]:
         """
         Create audit metadata from existing files (CSV or Parquet) in extraction/conversion directories.
 
@@ -428,6 +426,25 @@ class ReceitaCNPJPipeline(Pipeline):
             parquet_files = list(conversion_path.glob("*.parquet"))
             logger.info(f"Found {len(parquet_files)} Parquet files in {conversion_path}")
 
+        # Prioritize Parquet files over CSV files
+        if parquet_files:
+            logger.info(f"Using {len(parquet_files)} Parquet files for loading (preferred format)")
+            return self._create_audit_metadata_from_parquet_files(parquet_files, conversion_path)
+        else:
+            logger.warning("No files found in conversion directory")
+            return None
+
+    def create_audit_metadata_from_existing_csvs(self) -> Optional[AuditMetadata]:
+        """
+        Create audit metadata from existing files (CSV or Parquet) in extraction/conversion directories.
+
+        This reuses the existing audit metadata infrastructure but creates synthetic
+        entries that point to existing files instead of downloaded/extracted ones.
+        Priority: Parquet files (converted) > CSV files (extracted)
+
+        Returns:
+            AuditMetadata: Compatible audit metadata for existing files, or None if no files found
+        """
         # Check extraction directory for CSV files - fallback
         extract_path = self.config.pipeline.get_temporal_extraction_path(self.config.year, self.config.month)
         csv_files = []
@@ -438,10 +455,7 @@ class ReceitaCNPJPipeline(Pipeline):
             logger.warning(f"Extract path does not exist: {extract_path}")
 
         # Prioritize Parquet files over CSV files
-        if parquet_files:
-            logger.info(f"Using {len(parquet_files)} Parquet files for loading (preferred format)")
-            return self._create_audit_metadata_from_parquet_files(parquet_files, conversion_path)
-        elif csv_files:
+        if csv_files:
             logger.info(f"Using {len(csv_files)} CSV files for loading (fallback format)")
             return self._create_audit_metadata_from_csv_files(csv_files, extract_path)
         else:
@@ -450,14 +464,14 @@ class ReceitaCNPJPipeline(Pipeline):
 
     def _create_audit_metadata_from_parquet_files(self, parquet_files: List[Path], base_path: Path) -> Optional[AuditMetadata]:
         """Create audit metadata for Parquet files."""
-        from ..core.constants import TABLES_INFO_DICT
-        from ..core.schemas import AuditMetadata
+        from .constants import TABLES_INFO_DICT
+        from .schemas import AuditMetadata
         from ..database.models.audit import TableAuditManifestSchema, AuditStatus
         from datetime import datetime
 
         # Development mode filtering
         if self.config.is_development_mode():
-            from ..core.utils.development_filter import DevelopmentFilter
+            from .utils.development_filter import DevelopmentFilter
             dev_filter = DevelopmentFilter(self.config)
             original_count = len(parquet_files)
             parquet_files = [f for f in parquet_files if dev_filter.check_blob_size_limit(f)]
@@ -503,15 +517,15 @@ class ReceitaCNPJPipeline(Pipeline):
 
     def _create_audit_metadata_from_csv_files(self, csv_files: List[Path], base_path: Path) -> Optional[AuditMetadata]:
         """Create audit metadata for CSV files (original implementation)."""
-        from ..core.constants import TABLES_INFO_DICT
-        from ..core.schemas import AuditMetadata  
+        from .constants import TABLES_INFO_DICT
+        from .schemas import AuditMetadata  
         from ..database.models.audit import TableAuditManifestSchema
         from datetime import datetime
         from uuid import uuid4
 
         # Development mode filtering
         if self.config.is_development_mode():
-            from ..core.utils.development_filter import DevelopmentFilter
+            from .utils.development_filter import DevelopmentFilter
             dev_filter = DevelopmentFilter(self.config)
             original_count = len(csv_files)
             csv_files = [f for f in csv_files if dev_filter.check_blob_size_limit(f)]
@@ -583,6 +597,7 @@ class ReceitaCNPJPipeline(Pipeline):
         """
         # Create synthetic audit metadata from existing CSV files
         audit_metadata = self.create_audit_metadata_from_existing_csvs()
+        
         if not audit_metadata:
             logger.error("No existing CSV files found to convert")
             return None
@@ -602,8 +617,8 @@ class ReceitaCNPJPipeline(Pipeline):
         Returns:
             AuditMetadata: Audit metadata for loaded CSV files, or None if no CSV files found
         """
-        from ..core.constants import TABLES_INFO_DICT
-        from ..core.schemas import AuditMetadata
+        from .constants import TABLES_INFO_DICT
+        from .schemas import AuditMetadata
         from ..database.models.audit import TableAuditManifestSchema
         from datetime import datetime
         from uuid import uuid4
@@ -629,7 +644,7 @@ class ReceitaCNPJPipeline(Pipeline):
 
         # Development mode filtering
         if self.config.is_development_mode():
-            from ..core.utils.development_filter import DevelopmentFilter
+            from .utils.development_filter import DevelopmentFilter
             dev_filter = DevelopmentFilter(self.config)
             original_count = len(csv_files)
             csv_files = [f for f in csv_files if dev_filter.check_blob_size_limit(f)]
@@ -690,18 +705,13 @@ class ReceitaCNPJPipeline(Pipeline):
         audit_metadata = AuditMetadata(audit_list=audit_list, tablename_to_zipfile_to_files=tablename_to_files)
         
         # Insert table audits before loading (without creating file manifests to avoid duplicates)
-        if hasattr(self, 'audit_service'):
-            self.audit_service.insert_audits(audit_metadata, create_file_manifests=False)
-            logger.info("[CSV-DIRECT] Table audits inserted successfully (file manifests will be created during processing)")
+        self.audit_service.insert_audits(audit_metadata, create_file_manifests=False)
+        logger.info("[CSV-DIRECT] Table audits inserted successfully (file manifests will be created during processing)")
 
         # Load data directly using the data loader with force_csv=True
-        if hasattr(self, 'data_loader'):
-            self.data_loader.load_data(audit_metadata, force_csv=True)
-            logger.info("[CSV-DIRECT] Successfully loaded CSV files directly to database")
-            return audit_metadata
-        else:
-            logger.error("[CSV-DIRECT] Pipeline does not have data loader")
-            return None
+        self.data_loader.load_data(audit_metadata, force_csv=True)
+        logger.info("[CSV-DIRECT] Successfully loaded CSV files directly to database")
+        return audit_metadata
 
     def validate_config(self) -> bool:
         """Validate pipeline configuration."""

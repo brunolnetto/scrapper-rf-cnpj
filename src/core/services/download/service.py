@@ -169,11 +169,10 @@ class FileDownloadService:
         full_path = os.path.join(download_path, zip_filename)
         try:
             logger.info(f"Extracting file {zip_filename}...")
+            
             # Check if we're in development mode and limit files per blob
-            max_files = None
-            if hasattr(self, 'config') and self.config and self.config.is_development_mode():
-                max_files = self.config.get_max_files_per_blob()
-                logger.debug(f"[DEV-MODE] Limiting extraction to {max_files} files per blob for {zip_filename}")
+            max_files = self.config.get_max_files_per_blob()
+            logger.debug(f"[DEV-MODE] Limiting extraction to {max_files} files per blob for {zip_filename}")
             
             extract_zip_file(full_path, extract_path, max_files)
         except Exception as e:

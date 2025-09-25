@@ -77,14 +77,13 @@ def extract_primary_keys(table_info) -> list[str]:
         logger.warning(f"[ConnectionFactory] Failed to extract primary keys for {table_info.table_name}: {e}")
     
     # Fallback: try to get from table_info directly
-    if hasattr(table_info, 'table_model') and table_info.table_model:
-        try:
-            pk_columns = [col.name for col in table_info.table_model.__table__.primary_key.columns]
-            if pk_columns:
-                logger.debug(f"[ConnectionFactory] Fallback primary keys for {table_info.table_name}: {pk_columns}")
-                return pk_columns
-        except Exception as e:
-            logger.warning(f"[ConnectionFactory] Fallback primary key extraction failed for {table_info.table_name}: {e}")
+    try:
+        pk_columns = [col.name for col in table_info.table_model.__table__.primary_key.columns]
+        if pk_columns:
+            logger.debug(f"[ConnectionFactory] Fallback primary keys for {table_info.table_name}: {pk_columns}")
+            return pk_columns
+    except Exception as e:
+        logger.warning(f"[ConnectionFactory] Fallback primary key extraction failed for {table_info.table_name}: {e}")
     
     logger.error(f"[ConnectionFactory] Could not determine primary keys for {table_info.table_name}")
     return []

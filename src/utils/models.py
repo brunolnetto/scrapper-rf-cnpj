@@ -10,7 +10,7 @@ from .zip import list_zip_contents
 from ..database.engine import Database
 from ..database.models.audit import TableAuditManifest, AuditStatus
 from ..setup.logging import logger
-from ..core.utils.etl import get_zip_to_tablename
+from ..core.utils.pipeline import get_zip_to_tablename
 from ..core.schemas import FileGroupInfo, AuditMetadata, TableAuditManifestSchema
 
 

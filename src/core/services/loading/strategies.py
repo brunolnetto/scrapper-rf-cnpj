@@ -114,9 +114,8 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
         """
         try:
             # Get batch configuration from config
-            if hasattr(self.config, 'pipeline'):
-                batch_size = getattr(self.config.pipeline.loading, 'batch_size', 1000)
-                subbatch_size = getattr(self.config.pipeline.loading, 'sub_batch_size', 500)
+            batch_size = getattr(self.config.pipeline.loading, 'batch_size', 1000)
+            subbatch_size = getattr(self.config.pipeline.loading, 'sub_batch_size', 500)
             
             # Check file size and row count
             import polars as pl

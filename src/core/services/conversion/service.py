@@ -4,16 +4,15 @@ Key improvements: proper schema inference, true streaming, memory cleanup betwee
 """
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import os
 import gc
 import time
 from typing import List, Dict, Optional, Callable
 from dataclasses import dataclass
-import threading
 
 import polars as pl
 
 from ....setup.config import ConversionConfig
+from ..memory.service import MemoryMonitor
 from ....setup.logging import logger
 
 import psutil
@@ -703,6 +702,7 @@ def convert_csvs_to_parquet(
         Progress, SpinnerColumn, BarColumn, TextColumn,
         TimeElapsedColumn, MofNCompleteColumn, TimeRemainingColumn
     )
+    from ...utils.models import get_table_columns
 
     success_count = 0
     error_count = 0
@@ -724,7 +724,6 @@ def convert_csvs_to_parquet(
                 tasks = {}
                 
                 for table_name, zip_map, csv_paths, total_bytes in table_work:
-                    from ...utils.models import get_table_columns
                     expected_columns = get_table_columns(table_name)
 
                     task = executor.submit(

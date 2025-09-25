@@ -8,7 +8,7 @@ import threading
 
 import polars as pl
 
-from ....setup.config import MemoryMonitorConfig
+from ....setup.config.models import MemoryMonitorConfig
 from ....setup.logging import logger
 
 import psutil

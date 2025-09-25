@@ -275,16 +275,15 @@ class DevelopmentFilter:
             return True
         
         # If file_info has file_size attribute, check it
-        if hasattr(file_info, 'file_size') and file_info.file_size:
-            file_size_mb = file_info.file_size / (1024 * 1024)
-            max_size_mb = self.development.file_size_limit_mb
-            
-            if file_size_mb > max_size_mb:
-                logger.debug(
-                    f"[DEV-MODE] Skipping {file_info.filename} "
-                    f"({file_size_mb:.1f}MB > {max_size_mb}MB limit)"
-                )
-                return False
+        file_size_mb = file_info.file_size / (1024 * 1024)
+        max_size_mb = self.development.file_size_limit_mb
+        
+        if file_size_mb > max_size_mb:
+            logger.debug(
+                f"[DEV-MODE] Skipping {file_info.filename} "
+                f"({file_size_mb:.1f}MB > {max_size_mb}MB limit)"
+            )
+            return False
         
         return True
 
