@@ -17,25 +17,9 @@ class DevelopmentFilter:
 
     def __init__(self, config: Any):
         # Handle both new SOLID config and legacy config formats
-        if hasattr(config, 'pipeline') and hasattr(config.pipeline, 'development'):
-            # SOLID ConfigurationService format via config service
-            self.development = config.pipeline.development
-            self.is_enabled = config.pipeline.development.enabled
-        elif hasattr(config, 'development'):
-            # Already new format via config service  
-            self.development = config.development
-            self.is_enabled = config.development.enabled
-        else:
-            # Legacy format - create wrapper
-            dev_config = DevelopmentConfig(
-                enabled=getattr(config, 'is_development_mode', lambda: False)(),
-                max_files_per_table=getattr(config, 'get_max_files_per_table', lambda: 5)(),
-                max_files_per_blob=getattr(config, 'get_max_files_per_blob', lambda: 3)(),
-                file_size_limit_mb=50,  # Default - fixed property name
-                row_limit_percent=0.1
-            )
-            self.development = dev_config
-            self.is_enabled = dev_config.enabled
+        # SOLID ConfigurationService format via config service
+        self.development = config.pipeline.development
+        self.is_enabled = config.pipeline.development.enabled
 
     def filter_audits_by_size(self, audits: List[TableAuditManifest]) -> List[TableAuditManifest]:
         """Filter audits by file size limit."""

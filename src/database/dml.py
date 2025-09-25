@@ -402,13 +402,7 @@ class UnifiedLoader(BaseFileLoader):
 
     def _apply_development_sampling(self, batch_generator, table_info: TableInfo, headers: List[str], file_path: Path = None):
         """Apply development mode row sampling to batch generator based on file size threshold."""
-        # Check if development mode is enabled
-        if not self.config or not hasattr(self.config, 'pipeline') or not hasattr(self.config.pipeline, 'development'):
-            # No development config, pass through unchanged
-            for batch in batch_generator:
-                yield batch
-            return
-
+        
         from ..core.utils.development_filter import DevelopmentFilter
         
         try:
@@ -666,9 +660,6 @@ class LargeFileLoader(BaseFileLoader):
 
     def _get_development_skip_probability(self, file_path: Path = None) -> float:
         """Get the probability of skipping rows in development mode based on file size."""
-        if not self.config or not hasattr(self.config, 'pipeline') or not hasattr(self.config.pipeline, 'development'):
-            return 0.0
-        
         from ..core.utils.development_filter import DevelopmentFilter
         
         try:

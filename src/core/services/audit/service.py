@@ -129,12 +129,9 @@ class AuditService:
             batch_id: UUID for the created batch
         """
         # Use config's temporal context if enabled and not provided
-        if hasattr(self.config, 'year') and hasattr(self.config, 'month'):
-            year = year or self.config.year
-            month = month or self.config.month
-            batch_name_with_context = f"{batch_name} ({year}-{month:02d})"
-        else:
-            batch_name_with_context = batch_name
+        year = year or self.config.year
+        month = month or self.config.month
+        batch_name_with_context = f"{batch_name} ({year}-{month:02d})"
         
         batch_id = self._start_batch(
             target_table, batch_name_with_context, 
@@ -252,9 +249,7 @@ class AuditService:
         """
         try:
             # Extract file information from audit
-            file_path = "unknown"
-            if hasattr(audit, 'source_files') and audit.source_files:
-                file_path = audit.source_files[0]  # Use first filename
+            file_path = audit.source_files[0]  # Use first filename
 
             # Skip ZIP files - they shouldn't be in file_ingestion_manifests
             # Only processed CSV/Parquet files should be tracked there

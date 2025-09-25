@@ -105,3 +105,128 @@ def batch_generator_csv(path: str, headers: List[str], chunk_size: int = 20_000,
         # Yield remaining rows
         if batch:
             yield batch
+
+def memory_aware_batch_generator_parquet(path: str, headers: List[str], chunk_size: int = 20_000, 
+                                        memory_monitor=None) -> Iterable[List[Tuple]]:
+    """
+    Memory-aware Parquet batch generator.
+    """
+    import pyarrow.parquet as pq
+    import gc
+    
+    try:
+        pf = pq.ParquetFile(path)
+        name_to_idx = None
+        batch_count = 0
+        
+        for record_batch in pf.iter_batches(batch_size=chunk_size):
+            # Build column mapping only once
+            if name_to_idx is None:
+                name_to_idx = {record_batch.schema.field(i).name: i for i in range(record_batch.num_columns)}
+            
+            # Memory check before processing batch
+            if memory_monitor and memory_monitor.should_prevent_processing():
+                raise MemoryError("Memory limit exceeded during Parquet processing")
+            
+            batch_rows = []
+            for i in range(record_batch.num_rows):
+                row = []
+                for h in headers:
+                    if h in name_to_idx:
+                        val = record_batch.column(name_to_idx[h])[i].as_py()
+                        row.append(str(val) if val is not None else None)
+                    else:
+                        row.append(None)
+                batch_rows.append(tuple(row))
+            
+            yield batch_rows
+            batch_count += 1
+            
+            # Clean up references
+            del batch_rows
+            del record_batch
+            
+            # Aggressive cleanup every few batches
+            if batch_count % 5 == 0:
+                gc.collect()
+                if memory_monitor and memory_monitor.is_memory_pressure_high():
+                    memory_monitor.perform_aggressive_cleanup()
+                    
+    finally:
+        # Final cleanup
+        gc.collect()
+
+
+def memory_aware_batch_generator_csv(
+    path: str, headers: List[str], chunk_size: int = 20_000, 
+    encoding: str = 'utf-8', memory_monitor=None) -> Iterable[List[Tuple]]:
+    """
+    Memory-aware CSV batch generator.
+    """
+    import csv
+    import gc
+    
+    with open(path, 'r', newline='', encoding=encoding, errors='replace') as f:
+        # Use smaller sample for dialect detection
+        sample = f.read(min(4096, chunk_size * 50))
+        f.seek(0)
+        
+        try:
+            dialect = csv.Sniffer().sniff(sample)
+        except Exception:
+            dialect = csv.excel()
+            dialect.delimiter = ';'
+        
+        reader = csv.reader(f, dialect=dialect)
+        first_row = next(reader, None)
+        
+        # Header detection
+        skip_header = False
+        if first_row:
+            if any(header in first_row for header in headers):
+                skip_header = True
+            elif all(not cell.isdigit() for cell in first_row if cell):
+                skip_header = True
+        
+        if not skip_header and first_row:
+            f.seek(0)
+            reader = csv.reader(f, dialect=dialect)
+        
+        # Process with memory monitoring
+        batch = []
+        batch_count = 0
+        row_count = 0
+        
+        for row in reader:
+            # Memory check periodically
+            if row_count % 1000 == 0 and memory_monitor:
+                if memory_monitor.should_prevent_processing():
+                    raise MemoryError(f"Memory limit exceeded at row {row_count}")
+            
+            # Process row
+            while len(row) < len(headers):
+                row.append(None)
+            if len(row) > len(headers):
+                row = row[:len(headers)]
+            
+            batch.append(tuple(row))
+            row_count += 1
+            
+            # Yield batch when size reached
+            if len(batch) >= chunk_size:
+                yield batch
+                batch = []
+                batch_count += 1
+                
+                # Cleanup every few batches
+                if batch_count % 5 == 0:
+                    gc.collect()
+                    if memory_monitor and memory_monitor.is_memory_pressure_high():
+                        memory_monitor.perform_aggressive_cleanup()
+        
+        # Yield remaining rows
+        if batch:
+            yield batch
+        
+        # Final cleanup
+        gc.collect()

@@ -52,14 +52,13 @@ class ReceitaCNPJPipeline(Pipeline):
         """Lazy data loader initialization."""
         from .services.loading.service import DataLoadingService
 
-        if not hasattr(self, '_data_loader') or self._data_loader is None:
-            self._data_loader = DataLoadingService(
-                self.database, 
-                self.config.pipeline.data_sink.paths, 
-                self.loading_strategy, 
-                self.config,
-                audit_service=self.audit_service
-            )
+        self._data_loader = DataLoadingService(
+            self.database, 
+            self.config.pipeline.data_sink.paths, 
+            self.loading_strategy, 
+            self.config,
+            audit_service=self.audit_service
+        )
         return self._data_loader
 
     @property
@@ -67,8 +66,7 @@ class ReceitaCNPJPipeline(Pipeline):
         """Lazy discovery service initialization for Federal Revenue data periods."""
         from .services.discovery.service import FederalRevenueDiscoveryService
 
-        if not hasattr(self, '_discovery_service') or self._discovery_service is None:
-            self._discovery_service = FederalRevenueDiscoveryService(self.config)
+        self._discovery_service = FederalRevenueDiscoveryService(self.config)
         return self._discovery_service
 
     def _init_databases(self) -> None:
@@ -113,9 +111,6 @@ class ReceitaCNPJPipeline(Pipeline):
 
     def _start_batch_tracking(self, target_table: Optional[str] = None) -> UUID:
         """Start batch tracking for the pipeline execution."""
-        if not hasattr(self.config.pipeline, 'loading') or not self.config.pipeline.loading:
-            return None
-            
         self._batch_name = self._generate_batch_name()
         
         logger.info(f"Starting batch tracking: {self._batch_name}")
@@ -130,9 +125,6 @@ class ReceitaCNPJPipeline(Pipeline):
 
     def _complete_batch_tracking(self, success: bool = True) -> None:
         """Complete batch tracking for the pipeline execution."""
-        if not hasattr(self.config.pipeline, 'loading') or not self.config.pipeline.loading or not self._current_batch_id:
-            return
-            
         logger.info(f"Completing batch tracking: {self._batch_name} (success={success})")
         
         # Complete the batch manually using the correct method name
@@ -493,9 +485,9 @@ class ReceitaCNPJPipeline(Pipeline):
             logger.warning("No valid table mappings found for Parquet files")
             return None
 
-        # Determine ingestion temporal values (configured or current)
-        data_year = self.config.year if hasattr(self.config, 'year') and self.config.year else datetime.now().year
-        data_month = self.config.month if hasattr(self.config, 'month') and self.config.month else datetime.now().month
+        # Determine ingestion temporal values
+        data_year = self.config.year
+        data_month = self.config.month
 
         # Create audit metadata entries
         audit_list = []
@@ -561,8 +553,8 @@ class ReceitaCNPJPipeline(Pipeline):
         }
         
         # Use configured temporal values or current time
-        data_year = self.config.year if hasattr(self.config, 'year') and self.config.year else datetime.now().year
-        data_month = self.config.month if hasattr(self.config, 'month') and self.config.month else datetime.now().month
+        data_year = self.config.year
+        data_month = self.config.month
         
         # Create a minimal audit list for compatibility
         audit_list = []
@@ -624,8 +616,8 @@ class ReceitaCNPJPipeline(Pipeline):
         from uuid import uuid4
 
         # Use configured temporal values or current time
-        data_year = self.config.year if hasattr(self.config, 'year') and self.config.year else datetime.now().year
-        data_month = self.config.month if hasattr(self.config, 'month') and self.config.month else datetime.now().month
+        data_year = self.config.year
+        data_month = self.config.month
         
         # Only check extraction directory for CSV files - ignore conversion directory
         extract_path = self.config.pipeline.get_temporal_extraction_path(self.config.year, self.config.month)

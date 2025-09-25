@@ -578,108 +578,103 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
         if error_msg and status in [AuditStatus.FAILED, AuditStatus.ERROR]:
             logger.error(f"[LoadingStrategy] Error processing {file_path}: {error_msg}")
         
-        if self.audit_service and hasattr(self.audit_service, 'create_file_manifest'):
-            try:
-                from pathlib import Path
-                import json
-                file_path_obj = Path(file_path)
-                
-                # Find table_manifest_id if not provided
+        try:
+            from pathlib import Path
+            import json
+            file_path_obj = Path(file_path)
+            
+            # Find table_manifest_id if not provided
+            if not table_manifest_id:
+                table_manifest_id = self._find_table_audit_for_file(table_name, file_path_obj.name)
                 if not table_manifest_id:
-                    table_manifest_id = self._find_table_audit_for_file(table_name, file_path_obj.name)
-                    if not table_manifest_id:
-                        logger.warning(f"No table audit entry found for table {table_name}, file {file_path_obj.name}")
-                        # Create a placeholder table audit entry (this is a fallback for real files only)
-                        table_manifest_id = self._create_placeholder_table_audit_entry(table_name, file_path_obj.name)
-                
-                # Calculate file info if file exists
-                checksum = None
-                filesize = None
-                if file_path_obj.exists():
-                    filesize = file_path_obj.stat().st_size
-                    # Calculate SHA256 checksum
-                    import hashlib
-                    with open(file_path_obj, 'rb') as f:
-                        file_hash = hashlib.sha256()
-                        # Read file in chunks to handle large files efficiently
-                        for chunk in iter(lambda: f.read(4096), b""):
-                            file_hash.update(chunk)
-                        checksum = file_hash.hexdigest()
-                
-                # Create structured JSON notes
-                notes_data = {
-                    "file_info": {
-                        "size_bytes": filesize,
-                        "format": file_path_obj.suffix.lstrip('.') if file_path_obj.suffix else "unknown"
-                    },
-                    "processing": {
-                        "status": status.value,
-                        "table_name": table_name
-                    }
+                    logger.warning(f"No table audit entry found for table {table_name}, file {file_path_obj.name}")
+                    # Create a placeholder table audit entry (this is a fallback for real files only)
+                    table_manifest_id = self._create_placeholder_table_audit_entry(table_name, file_path_obj.name)
+            
+            # Calculate file info if file exists
+            checksum = None
+            filesize = None
+            if file_path_obj.exists():
+                filesize = file_path_obj.stat().st_size
+                # Calculate SHA256 checksum
+                import hashlib
+                with open(file_path_obj, 'rb') as f:
+                    file_hash = hashlib.sha256()
+                    # Read file in chunks to handle large files efficiently
+                    for chunk in iter(lambda: f.read(4096), b""):
+                        file_hash.update(chunk)
+                    checksum = file_hash.hexdigest()
+            
+            # Create structured JSON notes
+            notes_data = {
+                "file_info": {
+                    "size_bytes": filesize,
+                    "format": file_path_obj.suffix.lstrip('.') if file_path_obj.suffix else "unknown"
+                },
+                "processing": {
+                    "status": status.value,
+                    "table_name": table_name
                 }
+            }
+            
+            if rows_processed is not None:
+                notes_data["processing"]["rows_processed"] = rows_processed
                 
-                if rows_processed is not None:
-                    notes_data["processing"]["rows_processed"] = rows_processed
+            if error_msg:
+                notes_data["processing"]["error_message"] = error_msg
+            
+            # Create manifest entry with table audit reference
+            manifest_id = self.audit_service.create_file_manifest(
+                str(file_path_obj),
+                status=status,
+                table_manifest_id=table_manifest_id,  # Table audit reference
+                checksum=checksum,
+                filesize=filesize,
+                rows=rows_processed,
+                table_name=table_name,
+                notes=json.dumps(notes_data)
+            )
+            return manifest_id
                     
-                if error_msg:
-                    notes_data["processing"]["error_message"] = error_msg
-                
-                # Create manifest entry with table audit reference
-                manifest_id = self.audit_service.create_file_manifest(
-                    str(file_path_obj),
-                    status=status,
-                    table_manifest_id=table_manifest_id,  # Table audit reference
-                    checksum=checksum,
-                    filesize=filesize,
-                    rows=rows_processed,
-                    table_name=table_name,
-                    notes=json.dumps(notes_data)
-                )
-                return manifest_id
-                        
-            except Exception as e:
-                logger.warning(f"Failed to create manifest entry for {file_path}: {e}")
-        else:
-            logger.debug("No audit service available for manifest tracking")
+        except Exception as e:
+            logger.warning(f"Failed to create manifest entry for {file_path}: {e}")
         
         return None
 
     def _update_manifest_entry(self, manifest_id: str, status: str, 
                               rows_processed: Optional[int] = None, error_msg: Optional[str] = None) -> None:
-        """Update existing manifest entry with processing results."""
-        if self.audit_service and manifest_id and hasattr(self.audit_service, 'update_file_manifest'):
-            try:
-                import json
-                from datetime import datetime
-                
-                # Create updated notes
-                notes_data = {
-                    "processing_update": {
-                        "final_status": status.value,
-                        "completion_timestamp": str(datetime.now())
-                    }
+        """Update existing manifest entry with processing results."""        
+        try:
+            import json
+            from datetime import datetime
+            
+            # Create updated notes
+            notes_data = {
+                "processing_update": {
+                    "final_status": status.value,
+                    "completion_timestamp": str(datetime.now())
                 }
+            }
+            
+            if rows_processed is not None:
+                notes_data["processing_update"]["rows_processed"] = rows_processed
                 
-                if rows_processed is not None:
-                    notes_data["processing_update"]["rows_processed"] = rows_processed
-                    
-                if error_msg:
-                    notes_data["processing_update"]["error_message"] = error_msg
-                
-                # Update the manifest entry
-                self.audit_service.update_file_manifest(
-                    manifest_id=manifest_id,
-                    status=status,
-                    rows_processed=rows_processed,
-                    error_msg=error_msg,
-                    notes=json.dumps(notes_data)
-                )
-                logger.debug(f"Updated manifest entry {manifest_id} with status {status}")
-                
-            except Exception as e:
-                logger.warning(f"Failed to update manifest entry {manifest_id}: {e}")
-        else:
-            logger.debug("No audit service available for manifest update")
+            if error_msg:
+                notes_data["processing_update"]["error_message"] = error_msg
+            
+            # Update the manifest entry
+            self.audit_service.update_file_manifest(
+                manifest_id=manifest_id,
+                status=status,
+                rows_processed=rows_processed,
+                error_msg=error_msg,
+                notes=json.dumps(notes_data)
+            )
+            logger.debug(f"Updated manifest entry {manifest_id} with status {status}")
+            
+        except Exception as e:
+            logger.warning(f"Failed to update manifest entry {manifest_id}: {e}")
+        
 
     def load_multiple_tables(self, database, table_to_files, pipeline_config, force_csv: bool = False):
         """
@@ -763,8 +758,8 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
                         # Update table audit completion immediately for this table
                         with self.audit_service.database.engine.begin() as conn:
                             # Get year and month from config
-                            year = self.config.year if hasattr(self.config, 'year') else self.config.pipeline.year
-                            month = self.config.month if hasattr(self.config, 'month') else self.config.pipeline.month
+                            year = self.config.year
+                            month = self.config.month
                             
                             # First, get current audit_metadata for this specific table
                             current_result = conn.execute(text('''

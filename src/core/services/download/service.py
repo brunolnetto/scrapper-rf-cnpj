@@ -15,14 +15,7 @@ from ....utils.zip import extract_zip_file
 class FileDownloadService:
     def __init__(self, max_workers: int = None, config: ConfigurationService = None):
         self.config = config
-        # Use config for max_workers if available and not explicitly provided
-        if max_workers is not None:
-            self.max_workers = max_workers
-        elif config and hasattr(config, 'etl'):
-            # Use nested download config instead of legacy property
-            self.max_workers = config.pipeline.download.workers
-        else:
-            self.max_workers = get_max_workers()
+        self.max_workers = max_workers or get_max_workers()
             
         # Apply development mode filtering if enabled
         if config and config.is_development_mode():
