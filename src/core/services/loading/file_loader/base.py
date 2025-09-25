@@ -43,28 +43,25 @@ def upsert_from_temp_sql(
     headers: List[str],
     primary_keys: List[str],
 ) -> str:
-    """
-    Build an upsert SQL that deduplicates rows from tmp_table by primary key
-    before performing the INSERT ... ON CONFLICT ... DO UPDATE.
-
-    Deduplication method: use DISTINCT ON to pick the LAST row per primary key.
-    This ensures "last value wins" behavior for proper upsert semantics.
-    """
+    # Validate primary keys
+    if not primary_keys:
+        raise ValueError(f"No primary keys provided for table {target_table}")
+    
     pk_list = ", ".join(quote_ident(c) for c in primary_keys)
     collist = ", ".join(quote_ident(c) for c in headers)
-
-    # Build SELECT using DISTINCT ON with CTID DESC to get last occurrence
     select_list = ", ".join(quote_ident(c) for c in headers)
+
+    # Using ROW_NUMBER() for deduplication instead of DISTINCT ON
     sql = (
-        f"WITH dedup AS ("
-        f"  SELECT DISTINCT ON ({pk_list}) {select_list} "
+        f"WITH ranked AS ("
+        f"  SELECT {select_list}, ROW_NUMBER() OVER (PARTITION BY {pk_list} ORDER BY (SELECT NULL)) as rn "
         f"  FROM {quote_ident(tmp_table)} "
-        f"  ORDER BY {pk_list}, CTID DESC "
         f") "
         f"INSERT INTO {quote_ident(target_table)} ({collist}) "
-        f"SELECT {select_list} FROM dedup "
+        f"SELECT {select_list} FROM ranked WHERE rn = 1 "
         f"ON CONFLICT ({pk_list}) DO UPDATE SET "
         + ", ".join(f'{quote_ident(c)} = EXCLUDED.{quote_ident(c)}' for c in headers if c not in primary_keys)
         + ";"
     )
+    
     return sql

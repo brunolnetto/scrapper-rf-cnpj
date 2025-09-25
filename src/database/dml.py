@@ -328,12 +328,11 @@ class UnifiedLoader(BaseFileLoader):
         base_chunk_size = chunk_size or getattr(self.config.pipeline.loading, 'batch_size', 50000)
         
         # Memory optimization for large files
-        if hasattr(self, 'database') and self.config:
-            # Check if we're dealing with a large file by looking at recent file operations
-            # This is a heuristic - in production you might want more sophisticated detection
-            if base_chunk_size > 50000:
-                base_chunk_size = min(base_chunk_size, 50000)
-                logger.info(f"[MEMORY] Reduced chunk_size to {base_chunk_size} for memory efficiency")
+        # Check if we're dealing with a large file by looking at recent file operations
+        # This is a heuristic - in production you might want more sophisticated detection
+        if base_chunk_size > 50000:
+            base_chunk_size = min(base_chunk_size, 50000)
+            logger.info(f"[MEMORY] Reduced chunk_size to {base_chunk_size} for memory efficiency")
         
         return {
             'chunk_size': base_chunk_size,
@@ -403,13 +402,7 @@ class UnifiedLoader(BaseFileLoader):
 
     def _apply_development_sampling(self, batch_generator, table_info: TableInfo, headers: List[str], file_path: Path = None):
         """Apply development mode row sampling to batch generator based on file size threshold."""
-        # Check if development mode is enabled
-        if not self.config or not hasattr(self.config, 'pipeline') or not hasattr(self.config.pipeline, 'development'):
-            # No development config, pass through unchanged
-            for batch in batch_generator:
-                yield batch
-            return
-
+        
         from ..core.utils.development_filter import DevelopmentFilter
         
         try:
@@ -667,9 +660,6 @@ class LargeFileLoader(BaseFileLoader):
 
     def _get_development_skip_probability(self, file_path: Path = None) -> float:
         """Get the probability of skipping rows in development mode based on file size."""
-        if not self.config or not hasattr(self.config, 'pipeline') or not hasattr(self.config.pipeline, 'development'):
-            return 0.0
-        
         from ..core.utils.development_filter import DevelopmentFilter
         
         try:
@@ -773,5 +763,3 @@ class LargeFileLoader(BaseFileLoader):
                     continue
 
             conn.commit()
-
-

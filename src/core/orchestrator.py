@@ -31,13 +31,12 @@ class PipelineOrchestrator:
             if year is not None:
                 self.config_service._year = year
                 # Also update pipeline config if it exists
-                if hasattr(self.config_service, 'pipeline'):
-                    self.config_service.pipeline.year = year
+                self.config_service.pipeline.year = year
             if month is not None:
                 self.config_service._month = month
+
                 # Also update pipeline config if it exists
-                if hasattr(self.config_service, 'pipeline'):
-                    self.config_service.pipeline.month = month
+                self.config_service.pipeline.month = month
             
             current_year = getattr(self.config_service, '_year', year)
             current_month = getattr(self.config_service, '_month', month)

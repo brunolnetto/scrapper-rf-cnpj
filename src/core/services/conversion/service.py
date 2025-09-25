@@ -4,487 +4,28 @@ Key improvements: proper schema inference, true streaming, memory cleanup betwee
 """
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import os
 import gc
 import time
 from typing import List, Dict, Optional, Callable
 from dataclasses import dataclass
-import threading
 
 import polars as pl
 
 from ....setup.config import ConversionConfig
+from ..memory.service import MemoryMonitor
 from ....setup.logging import logger
 
 import psutil
-import pyarrow as pa
-import pyarrow.parquet as pq
 
 
-def _derive_schema_from_sample(csv_path: Path, expected_columns: List[str], delimiter: str) -> tuple:
+def infer_optimal_schema(csv_path: Path, delimiter: str, sample_size: int = 10000) -> Dict:
     """
-    Derive PyArrow schema from a sample of the CSV file.
-
-    Returns:
-        tuple: (pa_schema, used_fallback) where used_fallback indicates if fallback was used
-    """
-    try:
-        # Try to read a small sample to infer schema
-        sample_size = min(1000, csv_path.stat().st_size // 100)  # Sample based on file size
-        if sample_size < 10:
-            sample_size = 10
-
-        # Use Polars to scan and infer schema
-        lazy_frame = pl.scan_csv(
-            str(csv_path),
-            separator=delimiter,
-            quote_char='"',
-            encoding="utf8-lossy",
-            ignore_errors=True,
-            has_header=False,
-            try_parse_dates=False,
-            n_rows=sample_size
-        )
-
-        # Get schema from the sample
-        schema = lazy_frame.collect_schema()
-        current_columns = schema.names()
-
-        # Create PyArrow schema
-        if expected_columns and len(current_columns) == len(expected_columns):
-            # Map to expected column names
-            pa_fields = []
-            for i, expected_name in enumerate(expected_columns):
-                col_name = current_columns[i] if i < len(current_columns) else f"column_{i+1}"
-                # Use string type for all columns initially
-                pa_fields.append((expected_name, pa.string()))
-            pa_schema = pa.schema(pa_fields)
-            return pa_schema, False
-        else:
-            # Fallback: use detected column names
-            pa_fields = [(name, pa.string()) for name in current_columns]
-            pa_schema = pa.schema(pa_fields)
-            return pa_schema, True
-
-    except Exception as e:
-        logger.warning(f"Schema derivation failed: {e}. Using fallback schema.")
-        # Fallback schema
-        if expected_columns:
-            pa_fields = [(name, pa.string()) for name in expected_columns]
-        else:
-            pa_fields = [("column_1", pa.string())]
-        pa_schema = pa.schema(pa_fields)
-        return pa_schema, True
-
-
-def _try_native_streaming(csv_path: Path, tmp_output: Path, delimiter: str,
-                         expected_columns: List[str], config) -> bool:
-    """
-    Try to use Polars native streaming (sink_parquet) for maximum performance.
-
-    Returns:
-        bool: True if successful, False if fallback needed
-    """
-    try:
-        logger.info(f"Attempting native Polars streaming for {csv_path.name}")
-
-        # Use native streaming if available
-        if expected_columns:
-            schema_overrides = {f"column_{i+1}": pl.Utf8 for i in range(len(expected_columns))}
-        else:
-            schema_overrides = None
-
-        lazy_frame = pl.scan_csv(
-            str(csv_path),
-            separator=delimiter,
-            quote_char='"',
-            encoding="utf8-lossy",
-            ignore_errors=True,
-            has_header=False,
-            try_parse_dates=False,
-            schema_overrides=schema_overrides
-        )
-
-        # Apply column renaming efficiently
-        if expected_columns:
-            try:
-                current_columns = lazy_frame.collect_schema().names()
-                if len(current_columns) == len(expected_columns):
-                    column_mapping = {f"column_{i+1}": expected_columns[i] for i in range(len(expected_columns))}
-                    lazy_frame = lazy_frame.rename(column_mapping)
-                    lazy_frame = lazy_frame.select(expected_columns)
-            except Exception as col_error:
-                logger.debug(f"Column processing failed: {col_error}")
-
-        # Try native sink_parquet first - this is the fastest approach
-        try:
-            logger.info("Using native sink_parquet for maximum performance...")
-            lazy_frame.sink_parquet(
-                str(tmp_output),
-                compression=getattr(config, "compression", "snappy"),
-                maintain_order=False,
-                statistics=False  # Disable for speed
-            )
-            return True
-
-        except Exception as sink_error:
-            logger.warning(f"Native sink_parquet failed: {sink_error}. Falling back to manual chunking...")
-            return False
-
-    except Exception as e:
-        logger.warning(f"Native streaming setup failed: {e}. Falling back to manual chunking...")
-        return False
-
-
-def _process_with_manual_chunking(csv_path: Path, tmp_output: Path, pa_schema,
-                                 delimiter: str, expected_columns: List[str],
-                                 config, memory_monitor) -> int:
-    """
-    Process CSV file using manual chunking with PyArrow writer.
-
-    Returns:
-        int: Number of rows processed
-    """
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
-    total_rows_written = 0
-    writer = None
-
-    try:
-        fsize_mb = csv_path.stat().st_size / (1024 * 1024)
-        local_chunksize = min(50000, max(1000, int(50_000_000 / (fsize_mb + 1))))  # Adaptive chunking
-
-        logger.info(f"Processing {csv_path.name} ({fsize_mb:.1f}MB) with chunk size: {local_chunksize:,}")
-
-        # Initialize writer
-        writer = pq.ParquetWriter(str(tmp_output), pa_schema, compression=getattr(config, "compression", "snappy"))
-
-        # Use polars streaming approach
-        if expected_columns:
-            schema_overrides = {f"column_{i+1}": pl.Utf8 for i in range(len(expected_columns))}
-        else:
-            schema_overrides = None
-
-        lazy_frame = pl.scan_csv(
-            str(csv_path),
-            separator=delimiter,
-            quote_char='"',
-            encoding="utf8-lossy",
-            ignore_errors=True,
-            has_header=False,
-            try_parse_dates=False,
-            schema_overrides=schema_overrides
-        )
-
-        # Apply column renaming if needed
-        if expected_columns:
-            try:
-                current_columns = lazy_frame.collect_schema().names()
-                if len(current_columns) == len(expected_columns):
-                    column_mapping = {f"column_{i+1}": expected_columns[i] for i in range(len(expected_columns))}
-                    for old_pattern, new_name in zip(current_columns, expected_columns):
-                        column_mapping[old_pattern] = new_name
-                    lazy_frame = lazy_frame.rename(column_mapping)
-
-                # Ensure all expected columns exist
-                existing_cols = set(lazy_frame.collect_schema().names())
-                for col in expected_columns:
-                    if col not in existing_cols:
-                        lazy_frame = lazy_frame.with_columns(pl.lit(None).alias(col))
-
-                lazy_frame = lazy_frame.select(expected_columns)
-            except Exception as col_error:
-                logger.warning(f"Column processing failed, using original schema: {col_error}")
-
-        # Process in chunks
-        offset = 0
-        chunk_count = 0
-        last_memory_check = time.time()
-
-        while True:
-            chunk_lf = lazy_frame.slice(offset, local_chunksize)
-            try:
-                batch_df = chunk_lf.collect()
-
-                if batch_df.height == 0:
-                    break
-
-            except Exception as collect_error:
-                logger.debug(f"Failed to collect chunk at offset {offset}: {collect_error}")
-                break
-
-            # Convert to arrow and write
-            try:
-                table = batch_df.to_arrow()
-                if table.schema != pa_schema:
-                    table = table.select(pa_schema.names)
-                    table = table.cast(pa_schema)
-                writer.write_table(table)
-                total_rows_written += table.num_rows
-
-            except Exception as conversion_error:
-                logger.debug(f"Batch conversion failed: {conversion_error}. Falling back to string casting")
-                string_batch = batch_df.with_columns([
-                    pl.col(col).cast(pl.Utf8, strict=False).alias(col)
-                    for col in batch_df.columns
-                ])
-                table = string_batch.to_arrow()
-                if table.schema != pa_schema:
-                    table = table.select(pa_schema.names)
-                writer.write_table(table)
-                total_rows_written += table.num_rows
-
-            # Memory management
-            chunk_count += 1
-            current_time = time.time()
-            if chunk_count % 10 == 0 or (current_time - last_memory_check) > 30:
-                if memory_monitor and memory_monitor.should_prevent_processing():
-                    logger.warning(f"Memory pressure detected at chunk {chunk_count}, performing cleanup...")
-                    try:
-                        gc.collect()
-                        time.sleep(0.1)
-                    except Exception:
-                        pass
-                last_memory_check = current_time
-
-                if chunk_count % 50 == 0:
-                    logger.info(f"Processed {chunk_count} chunks, {total_rows_written:,} rows so far...")
-
-            offset += local_chunksize
-            if batch_df.height < local_chunksize:
-                break
-
-    finally:
-        if writer is not None:
-            writer.close()
-
-    return total_rows_written
-
-
-@dataclass
-class MemorySnapshot:
-    """Snapshot of memory usage at a point in time."""
-    timestamp: float
-    process_rss_mb: float
-    process_vms_mb: float
-    system_available_mb: float
-    system_used_percent: float
-
-    def __post_init__(self):
-        if self.timestamp == 0:
-            self.timestamp = time.time()
-
-class MemoryMonitor:
-    """
-    Enhanced memory monitoring with better cleanup between operations.
-    """
-
-    def __init__(self, config: ConversionConfig):
-        self.config = config
-        self.baseline_snapshot: Optional[MemorySnapshot] = None
-        self.process = None
-        self.lock = threading.Lock()
-        self.last_cleanup_time = 0
-        
-        try:
-            self.process = psutil.Process()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            logger.warning("Cannot monitor process memory - using fallback mode")
-        
-        # Establish baseline immediately
-        self._establish_baseline()
-
-    def _get_current_memory_info(self) -> MemorySnapshot:
-        """Get current comprehensive memory information."""
-        if self.process:
-            try:
-                proc_info = self.process.memory_info()
-                sys_info = psutil.virtual_memory()
-                
-                return MemorySnapshot(
-                    timestamp=time.time(),
-                    process_rss_mb=proc_info.rss / (1024 * 1024),
-                    process_vms_mb=proc_info.vms / (1024 * 1024),
-                    system_available_mb=sys_info.available / (1024 * 1024),
-                    system_used_percent=sys_info.percent
-                )
-            except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError):
-                pass
-        
-        # Fallback when psutil is unavailable
-        return MemorySnapshot(
-            timestamp=time.time(),
-            process_rss_mb=0.0,
-            process_vms_mb=0.0,
-            system_available_mb=float('inf'),
-            system_used_percent=0.0
-        )
-
-    def _establish_baseline(self) -> None:
-        """Establish baseline memory usage before processing starts."""
-        with self.lock:
-            # Take multiple samples to get stable baseline
-            samples = []
-            for _ in range(3):
-                samples.append(self._get_current_memory_info())
-                time.sleep(0.1)
-            
-            # Use median values for stability
-            rss_values = [s.process_rss_mb for s in samples]
-            vms_values = [s.process_vms_mb for s in samples]
-            
-            rss_values.sort()
-            vms_values.sort()
-            median_idx = len(rss_values) // 2
-            
-            self.baseline_snapshot = MemorySnapshot(
-                timestamp=time.time(),
-                process_rss_mb=rss_values[median_idx],
-                process_vms_mb=vms_values[median_idx],
-                system_available_mb=samples[-1].system_available_mb,
-                system_used_percent=samples[-1].system_used_percent
-            )
-            
-        logger.info(f"Memory baseline established: "
-                   f"Process={self.baseline_snapshot.process_rss_mb:.1f}MB, "
-                   f"System available={self.baseline_snapshot.system_available_mb:.1f}MB")
-
-    def get_memory_usage_above_baseline(self) -> float:
-        """Get current memory usage above the established baseline in MB."""
-        if not self.baseline_snapshot:
-            return 0.0
-            
-        current = self._get_current_memory_info()
-        return max(0.0, current.process_rss_mb - self.baseline_snapshot.process_rss_mb)
-
-    def get_available_memory_budget(self) -> float:
-        """Get remaining memory budget in MB considering baseline."""
-        usage_above_baseline = self.get_memory_usage_above_baseline()
-        return max(0.0, self.config.memory_limit_mb - usage_above_baseline)
-
-    def get_memory_pressure_level(self) -> float:
-        """Get memory pressure as a ratio (0.0 = no pressure, 1.0 = at limit)."""
-        usage_above_baseline = self.get_memory_usage_above_baseline()
-        if self.config.memory_limit_mb <= 0:
-            return 0.0
-        return min(1.0, usage_above_baseline / self.config.memory_limit_mb)
-
-    def is_memory_pressure_high(self) -> bool:
-        """Check if memory pressure is above cleanup threshold."""
-        return self.get_memory_pressure_level() >= self.config.cleanup_threshold_ratio
-
-    def is_memory_limit_exceeded(self) -> bool:
-        """Check if memory usage exceeds the configured limit above baseline."""
-        usage_above_baseline = self.get_memory_usage_above_baseline()
-        return usage_above_baseline > self.config.memory_limit_mb
-
-    def should_prevent_processing(self) -> bool:
-        """
-        Determine if processing should be prevented due to memory constraints.
-        This considers both process memory and system-wide memory availability.
-        """
-        if self.is_memory_limit_exceeded():
-            return True
-            
-        # Also check system memory availability
-        current = self._get_current_memory_info()
-        if current.system_available_mb < self.config.baseline_buffer_mb:
-            logger.warning(f"Low system memory: {current.system_available_mb:.1f}MB available")
-            return True
-            
-        if current.system_used_percent > 90:
-            logger.warning(f"High system memory usage: {current.system_used_percent:.1f}%")
-            return True
-            
-        return False
-
-    def perform_aggressive_cleanup(self) -> Dict[str, float]:
-        """
-        Perform more aggressive cleanup between large files.
-        """
-        with self.lock:
-            now = time.time()
-            if now - self.last_cleanup_time < 0.5:  # Reduced rate limit
-                return {"skipped": True}
-                
-            self.last_cleanup_time = now
-            
-        before_snapshot = self._get_current_memory_info()
-        
-        # Multi-stage aggressive cleanup
-        cleanup_stats = {
-            "before_mb": before_snapshot.process_rss_mb,
-            "cleanup_type": "aggressive_inter_file"
-        }
-        
-        # Stage 1: Multiple garbage collections
-        for i in range(5):
-            gc.collect()
-            
-        # Stage 2: Clear generation-specific collections
-        for gen in range(3):
-            try:
-                gc.collect(gen)
-            except:
-                pass
-                
-        # Stage 3: Force Polars cleanup if available
-        try:
-            # Clear any cached state in Polars
-            import polars as pl
-            pl.clear_schema_cache()
-        except:
-            pass
-            
-        # Stage 4: OS-level hints
-        try:
-            os.sync()  # Flush OS buffers
-        except:
-            pass
-        
-        # Brief pause for cleanup to take effect
-        time.sleep(0.1)
-        
-        after_snapshot = self._get_current_memory_info()
-        cleanup_stats["after_mb"] = after_snapshot.process_rss_mb
-        cleanup_stats["freed_mb"] = max(0, before_snapshot.process_rss_mb - after_snapshot.process_rss_mb)
-        
-        if cleanup_stats["freed_mb"] > 0:
-            logger.info(f"Aggressive cleanup freed {cleanup_stats['freed_mb']:.1f}MB")
-        
-        return cleanup_stats
-
-    def get_status_report(self) -> Dict[str, any]:
-        """Get comprehensive memory status report."""
-        current = self._get_current_memory_info()
-        usage_above_baseline = self.get_memory_usage_above_baseline()
-        budget_remaining = self.get_available_memory_budget()
-        pressure = self.get_memory_pressure_level()
-        
-        return {
-            "timestamp": current.timestamp,
-            "baseline_mb": self.baseline_snapshot.process_rss_mb if self.baseline_snapshot else 0,
-            "current_process_mb": current.process_rss_mb,
-            "usage_above_baseline_mb": usage_above_baseline,
-            "configured_limit_mb": self.config.memory_limit_mb,
-            "budget_remaining_mb": budget_remaining,
-            "pressure_level": pressure,
-            "system_available_mb": current.system_available_mb,
-            "system_used_percent": current.system_used_percent,
-            "should_cleanup": self.is_memory_pressure_high(),
-            "should_block": self.should_prevent_processing()
-        }
-
-def infer_optimal_schema(csv_path: Path, delimiter: str, sample_size: int = 50000) -> Dict:
-    """
-    Infer optimal schema instead of using all strings.
-    Reduced sample size for faster processing of large files.
+    Infer optimal schema with reduced sample size for safety.
     """
     logger.debug(f"Inferring schema for {csv_path.name}...")
     
     try:
-        # Smaller sample for faster inference on large files
+        # Smaller sample for safety - reduced from 50000 to 10000
         sample_df = pl.read_csv(
             str(csv_path),
             separator=delimiter,
@@ -493,8 +34,8 @@ def infer_optimal_schema(csv_path: Path, delimiter: str, sample_size: int = 5000
             ignore_errors=True,
             truncate_ragged_lines=True,
             null_values=["", "NULL", "null", "N/A", "n/a"],
-            infer_schema_length=min(sample_size, 10000),  # Limit inference for speed
-            try_parse_dates=False,  # Disable date parsing for speed
+            infer_schema_length=min(sample_size, 5000),  # Further reduced
+            try_parse_dates=False,  # Disable for safety and speed
             has_header=False
         )
         
@@ -511,7 +52,52 @@ def infer_optimal_schema(csv_path: Path, delimiter: str, sample_size: int = 5000
         logger.debug(f"Schema inference failed for {csv_path.name}: {e}. Using string fallback.")
         return None
 
-def process_csv_with_memory(
+@dataclass
+class ProcessingStrategy:
+    """Configuration for a specific processing approach."""
+    name: str
+    row_group_size: int
+    batch_size: Optional[int] = None  # For chunked approaches
+    compression: str = "snappy"
+    low_memory: bool = True
+    streaming: bool = True
+
+def get_processing_strategies(file_size_mb: float, memory_pressure: float) -> List[ProcessingStrategy]:
+    """
+    Select appropriate processing strategies based on file size and memory pressure.
+    Returns strategies ordered from most to least aggressive.
+    """
+    strategies = []
+    
+    # Strategy selection based on memory pressure
+    if memory_pressure < 0.3:  # Low pressure - can be aggressive
+        strategies.extend([
+            ProcessingStrategy("full_streaming", row_group_size=100000),
+            ProcessingStrategy("standard_streaming", row_group_size=50000),
+            ProcessingStrategy("conservative_streaming", row_group_size=25000),
+        ])
+    elif memory_pressure < 0.6:  # Medium pressure - more conservative
+        strategies.extend([
+            ProcessingStrategy("standard_streaming", row_group_size=50000),
+            ProcessingStrategy("conservative_streaming", row_group_size=25000),
+            ProcessingStrategy("chunked_processing", row_group_size=25000, batch_size=500000),
+        ])
+    else:  # High pressure - very conservative
+        strategies.extend([
+            ProcessingStrategy("conservative_streaming", row_group_size=25000),
+            ProcessingStrategy("chunked_processing", row_group_size=25000, batch_size=250000),
+            ProcessingStrategy("minimal_processing", row_group_size=10000, batch_size=100000),
+        ])
+    
+    # Add file size considerations
+    if file_size_mb > 1000:  # Large files get additional conservative strategies
+        strategies.append(
+            ProcessingStrategy("micro_chunked", row_group_size=5000, batch_size=50000)
+        )
+    
+    return strategies
+
+def process_csv_with_polars_strategies(
     csv_path: Path,
     output_path: Path,
     expected_columns: List[str],
@@ -521,12 +107,14 @@ def process_csv_with_memory(
     progress_callback: Optional[Callable[[int], None]] = None
 ) -> Dict[str, any]:
     """
-    Improved CSV processing with proper streaming and schema inference.
+    Process CSV using progressive Polars-only strategies.
+    Replaces the old PyArrow fallback approach.
     """
     if not csv_path.exists():
         raise FileNotFoundError(f"CSV file not found: {csv_path}")
 
     input_bytes = csv_path.stat().st_size
+    file_size_mb = input_bytes / (1024 * 1024)
     logger.info(f"Processing {csv_path.name} ({input_bytes:,} bytes)")
 
     # Pre-processing memory check
@@ -536,121 +124,351 @@ def process_csv_with_memory(
                          f"Usage: {status['usage_above_baseline_mb']:.1f}MB above baseline, "
                          f"Limit: {status['configured_limit_mb']}MB")
 
+    # Get processing strategies based on current conditions
+    memory_pressure = memory_monitor.get_memory_pressure_level()
+    strategies = get_processing_strategies(file_size_mb, memory_pressure)
+    
+    logger.info(f"Selected {len(strategies)} processing strategies for {csv_path.name}")
+
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # IMPROVEMENT 1: Infer proper schema instead of all strings
-        inferred_schema = infer_optimal_schema(csv_path, delimiter)
-        
-        # If schema inference failed, use a more memory-efficient fallback
-        if inferred_schema is None:
-            # For headerless CSV, use generated column names (column_1, column_2, etc.)
-            if expected_columns:
-                schema_override = {f"column_{i+1}": pl.Utf8 for i in range(len(expected_columns))}
-            else:
-                schema_override = None
-        else:
-            schema_override = inferred_schema
-
-        # IMPROVEMENT 2: Use streaming-optimized scan configuration
-        lazy_frame = pl.scan_csv(
-            str(csv_path),
-            separator=delimiter,
-            schema_overrides=schema_override,  # Use schema_overrides instead of schema
-            encoding="utf8-lossy",
-            ignore_errors=True,
-            truncate_ragged_lines=True,
-            null_values=["", "NULL", "null", "N/A", "n/a"],
-            try_parse_dates=True,
-            low_memory=True,
-            rechunk=False,
-            infer_schema_length=50000,
-            has_header=False,
-            quote_char='"'
-        )
-
-        # Rename columns to expected names if we have them
-        if expected_columns and len(expected_columns) == len(lazy_frame.collect_schema()):
-            column_mapping = {f"column_{i+1}": expected_columns[i] for i in range(len(expected_columns))}
-            lazy_frame = lazy_frame.rename(column_mapping)
-            logger.info(f"Renamed columns to expected names: {expected_columns}")
-        elif expected_columns:
-            logger.warning(f"Column count mismatch: expected {len(expected_columns)} columns, "
-                          f"got {len(lazy_frame.collect_schema())} columns. Using auto-generated names.")
-
-        # IMPROVEMENT 3: Add memory-efficient transformations
-        # Filter to only expected columns if we have them
-        if expected_columns:
-            available_cols = []
-            try:
-                # Check which expected columns actually exist
-                schema_cols = lazy_frame.collect_schema()
-                available_cols = [col for col in expected_columns if col in schema_cols]
-                
-                if available_cols:
-                    lazy_frame = lazy_frame.select(available_cols)
-                    logger.info(f"Selected {len(available_cols)} of {len(expected_columns)} expected columns")
-            except Exception as e:
-                logger.warning(f"Column selection failed: {e}")
-
-        # IMPROVEMENT 4: Use streaming sink with optimal parameters
-        logger.info(f"Streaming {csv_path.name} directly to Parquet...")
-        
-        # Configure sink for maximum memory efficiency
-        lazy_frame.sink_parquet(
-            str(output_path),
-            compression=config.compression,
-            row_group_size=min(config.row_group_size, 50000),  # Smaller row groups for big files
-            maintain_order=False,
-            statistics=False,  # Disable statistics for memory savings
-            compression_level=1 if config.compression in ['zstd', 'gzip'] else None  # Fast compression
-        )
-
-        # IMPROVEMENT 5: Immediate cleanup after sink
-        del lazy_frame
-        gc.collect()
-        gc.collect()
-
-        # Verify output and collect minimal metrics
-        if not output_path.exists():
-            raise RuntimeError("Output file was not created")
+        # Try each strategy until one succeeds
+        for i, strategy in enumerate(strategies):
+            logger.info(f"Attempting strategy {i+1}/{len(strategies)}: {strategy.name}")
             
-        output_bytes = output_path.stat().st_size
+            try:
+                # Cleanup before each strategy attempt
+                if i > 0:
+                    memory_monitor.perform_aggressive_cleanup()
+                    time.sleep(0.5)
+                
+                # Check memory again before attempting
+                if memory_monitor.should_prevent_processing():
+                    logger.warning(f"Memory pressure too high for strategy {strategy.name}")
+                    continue
+                
+                result = _execute_polars_strategy(
+                    csv_path, output_path, expected_columns, delimiter,
+                    strategy, memory_monitor, progress_callback
+                )
+                
+                # Strategy succeeded
+                logger.info(f"✅ Strategy {strategy.name} succeeded for {csv_path.name}")
+                return result
+                
+            except (MemoryError, pl.ComputeError) as e:
+                logger.warning(f"Strategy {strategy.name} failed: {e}")
+                # Clean up any partial output
+                if output_path.exists():
+                    try:
+                        output_path.unlink()
+                    except:
+                        pass
+                # Try next strategy
+                continue
+            except Exception as e:
+                logger.error(f"Unexpected error in strategy {strategy.name}: {e}")
+                # Clean up and try next strategy
+                if output_path.exists():
+                    try:
+                        output_path.unlink()
+                    except:
+                        pass
+                continue
         
-        # Get row count efficiently without loading into memory
-        try:
-            row_count = pl.scan_parquet(str(output_path)).select(pl.len()).collect().item()
-        except Exception as e:
-            logger.warning(f"Could not determine row count: {e}")
-            row_count = 0
-
-        if progress_callback:
-            progress_callback(row_count)
-
-        result = {
-            "rows_processed": row_count,
-            "input_bytes": input_bytes,
-            "output_bytes": output_bytes,
-            "memory_stats": memory_monitor.get_status_report()
-        }
-
-        logger.info(f"✅ Processed {csv_path.name}: {row_count:,} rows, "
-                   f"{input_bytes:,} → {output_bytes:,} bytes, "
-                   f"Memory: {result['memory_stats']['usage_above_baseline_mb']:.1f}MB above baseline")
-
-        return result
-
+        # All strategies failed
+        raise RuntimeError(f"All processing strategies failed for {csv_path.name}")
+        
     except Exception as e:
-        # Cleanup on failure
+        # Final cleanup on total failure
         if output_path.exists():
             try:
                 output_path.unlink()
             except:
                 pass
-        
-        # Emergency cleanup
         memory_monitor.perform_aggressive_cleanup()
         raise e
+
+def _execute_polars_strategy(
+    csv_path: Path,
+    output_path: Path,
+    expected_columns: List[str],
+    delimiter: str,
+    strategy: ProcessingStrategy,
+    memory_monitor: MemoryMonitor,
+    progress_callback: Optional[Callable[[int], None]] = None
+) -> Dict[str, any]:
+    """
+    Execute a specific Polars processing strategy.
+    """
+    logger.debug(f"Executing {strategy.name} on {csv_path.name}")
+    
+    # Schema inference with error handling
+    try:
+        inferred_schema = infer_optimal_schema(csv_path, delimiter, sample_size=5000)
+    except Exception as e:
+        logger.warning(f"Schema inference failed: {e}. Using string schema.")
+        inferred_schema = None
+    
+    if strategy.batch_size is None:
+        # Direct streaming approach
+        return _execute_streaming_strategy(
+            csv_path, output_path, expected_columns, delimiter,
+            strategy, inferred_schema, memory_monitor, progress_callback
+        )
+    else:
+        # Chunked processing approach
+        return _execute_chunked_strategy(
+            csv_path, output_path, expected_columns, delimiter,
+            strategy, inferred_schema, memory_monitor, progress_callback
+        )
+
+def _execute_streaming_strategy(
+    csv_path: Path,
+    output_path: Path,
+    expected_columns: List[str],
+    delimiter: str,
+    strategy: ProcessingStrategy,
+    inferred_schema: Optional[Dict],
+    memory_monitor: MemoryMonitor,
+    progress_callback: Optional[Callable[[int], None]] = None
+) -> Dict[str, any]:
+    """
+    Execute streaming strategy using Polars native streaming.
+    """
+    # Set up schema overrides
+    if inferred_schema is None:
+        if expected_columns:
+            schema_override = {f"column_{i+1}": pl.Utf8 for i in range(len(expected_columns))}
+        else:
+            schema_override = None
+    else:
+        schema_override = inferred_schema
+
+    # Create lazy frame with strategy-specific settings
+    lazy_frame = pl.scan_csv(
+        str(csv_path),
+        separator=delimiter,
+        schema_overrides=schema_override,
+        encoding="utf8-lossy",
+        ignore_errors=True,
+        truncate_ragged_lines=True,
+        null_values=["", "NULL", "null", "N/A", "n/a"],
+        try_parse_dates=True,
+        low_memory=strategy.low_memory,
+        rechunk=False,
+        infer_schema_length=5000,  # Reduced for safety
+        has_header=False,
+        quote_char='"'
+    )
+
+    # Handle column renaming
+    if expected_columns:
+        try:
+            current_columns = lazy_frame.collect_schema().names()
+            if len(current_columns) == len(expected_columns):
+                column_mapping = {current_columns[i]: expected_columns[i] for i in range(len(expected_columns))}
+                lazy_frame = lazy_frame.rename(column_mapping)
+                lazy_frame = lazy_frame.select(expected_columns)
+                logger.info(f"Renamed columns to expected names: {expected_columns}")
+        except Exception as e:
+            logger.warning(f"Column processing failed: {e}")
+
+    # Execute streaming with strategy parameters
+    logger.info(f"Streaming {csv_path.name} with {strategy.name} (row_group_size={strategy.row_group_size})")
+    
+    lazy_frame.sink_parquet(
+        str(output_path),
+        compression=strategy.compression,
+        row_group_size=strategy.row_group_size,
+        maintain_order=False,
+        statistics=False,  # Disable for memory savings
+        compression_level=1 if strategy.compression in ['zstd', 'gzip'] else None
+    )
+
+    # Cleanup and verification
+    del lazy_frame
+    gc.collect()
+
+    if not output_path.exists():
+        raise RuntimeError("Output file was not created")
+        
+    output_bytes = output_path.stat().st_size
+    
+    # Get row count efficiently
+    try:
+        row_count = pl.scan_parquet(str(output_path)).select(pl.len()).collect().item()
+    except Exception as e:
+        logger.warning(f"Could not determine row count: {e}")
+        row_count = 0
+
+    if progress_callback:
+        progress_callback(row_count)
+
+    return {
+        "rows_processed": row_count,
+        "input_bytes": csv_path.stat().st_size,
+        "output_bytes": output_bytes,
+        "strategy_used": strategy.name,
+        "memory_stats": memory_monitor.get_status_report()
+    }
+
+def _execute_chunked_strategy(
+    csv_path: Path,
+    output_path: Path,
+    expected_columns: List[str],
+    delimiter: str,
+    strategy: ProcessingStrategy,
+    inferred_schema: Optional[Dict],
+    memory_monitor: MemoryMonitor,
+    progress_callback: Optional[Callable[[int], None]] = None
+) -> Dict[str, any]:
+    """
+    Execute chunked processing strategy using Polars with file-level chunking.
+    This processes the file in chunks and combines them.
+    """
+    logger.info(f"Using chunked strategy: {strategy.name} with batch_size={strategy.batch_size}")
+    
+    # Create temporary directory for chunks
+    temp_dir = output_path.parent / f".temp_{output_path.stem}"
+    temp_dir.mkdir(exist_ok=True)
+    
+    try:
+        chunk_files = []
+        total_rows = 0
+        chunk_num = 1
+        offset = 0
+        
+        while True:
+            chunk_output = temp_dir / f"chunk_{chunk_num:03d}.parquet"
+            
+            try:
+                # Process chunk using streaming
+                if inferred_schema:
+                    schema_override = inferred_schema
+                else:
+                    schema_override = {f"column_{i+1}": pl.Utf8 for i in range(len(expected_columns))} if expected_columns else None
+                
+                lazy_chunk = pl.scan_csv(
+                    str(csv_path),
+                    separator=delimiter,
+                    schema_overrides=schema_override,
+                    encoding="utf8-lossy",
+                    ignore_errors=True,
+                    skip_rows=offset,
+                    n_rows=strategy.batch_size,
+                    has_header=False,
+                    low_memory=True,
+                    quote_char='"'
+                )
+                
+                # Apply column renaming if needed
+                if expected_columns:
+                    try:
+                        current_columns = lazy_chunk.collect_schema().names()
+                        if len(current_columns) == len(expected_columns):
+                            column_mapping = {current_columns[i]: expected_columns[i] for i in range(len(expected_columns))}
+                            lazy_chunk = lazy_chunk.rename(column_mapping).select(expected_columns)
+                    except Exception:
+                        pass
+                
+                # Check if chunk has data
+                chunk_df = lazy_chunk.collect()
+                if len(chunk_df) == 0:
+                    break
+                
+                # Write chunk
+                chunk_df.write_parquet(
+                    str(chunk_output),
+                    compression=strategy.compression,
+                    row_group_size=strategy.row_group_size,
+                    statistics=False
+                )
+                
+                chunk_files.append(chunk_output)
+                total_rows += len(chunk_df)
+                
+                logger.debug(f"Chunk {chunk_num}: {len(chunk_df):,} rows")
+                
+                # Cleanup chunk data
+                del chunk_df, lazy_chunk
+                gc.collect()
+                
+                # Memory pressure check
+                if memory_monitor.is_memory_pressure_high():
+                    logger.info(f"Memory pressure detected after chunk {chunk_num}, performing cleanup")
+                    memory_monitor.perform_aggressive_cleanup()
+                    time.sleep(0.5)
+                
+                offset += strategy.batch_size
+                chunk_num += 1
+                
+                # Safety check
+                if chunk_num > 1000:
+                    logger.warning("Created 1000+ chunks, stopping to prevent excessive fragmentation")
+                    break
+                    
+            except Exception as e:
+                logger.error(f"Failed to process chunk {chunk_num}: {e}")
+                break
+        
+        if not chunk_files:
+            raise RuntimeError("No chunks were successfully processed")
+        
+        # Combine chunks
+        logger.info(f"Combining {len(chunk_files)} chunks into final output")
+        
+        if len(chunk_files) == 1:
+            # Just move the single chunk
+            chunk_files[0].rename(output_path)
+        else:
+            # Combine multiple chunks using Polars
+            lazy_frames = [pl.scan_parquet(str(f)) for f in chunk_files]
+            combined = pl.concat(lazy_frames, how="vertical")
+            combined.sink_parquet(
+                str(output_path),
+                compression=strategy.compression,
+                row_group_size=strategy.row_group_size,
+                maintain_order=False,
+                statistics=False
+            )
+            
+            # Cleanup intermediate files
+            for chunk_file in chunk_files:
+                try:
+                    chunk_file.unlink()
+                except:
+                    pass
+        
+        # Final verification
+        if not output_path.exists():
+            raise RuntimeError("Final output file was not created")
+        
+        output_bytes = output_path.stat().st_size
+        
+        if progress_callback:
+            progress_callback(total_rows)
+        
+        return {
+            "rows_processed": total_rows,
+            "input_bytes": csv_path.stat().st_size,
+            "output_bytes": output_bytes,
+            "strategy_used": strategy.name,
+            "chunks_processed": len(chunk_files),
+            "memory_stats": memory_monitor.get_status_report()
+        }
+        
+    finally:
+        # Cleanup temp directory
+        try:
+            for chunk_file in chunk_files:
+                if chunk_file.exists():
+                    chunk_file.unlink()
+            if temp_dir.exists():
+                temp_dir.rmdir()
+        except Exception as e:
+            logger.warning(f"Cleanup of temp files failed: {e}")
 
 def convert_table_csvs(
     table_name: str,
@@ -661,138 +479,46 @@ def convert_table_csvs(
     config: ConversionConfig
 ) -> str:
     """
-    Convert table CSVs with improved memory management.
-    Process files individually and combine only if necessary.
+    Convert table CSVs with improved memory management using Polars-only strategies.
     """
     memory_monitor = MemoryMonitor(config)
     
     try:
-        # --- helper method: validate and prepare files ---
-        def _validate_and_prepare_files(
-            table_name: str, csv_paths: List[Path], output_dir: Path, expected_columns: List[str]
-        ) -> tuple[List[Path], Path]:
-            """Validate inputs and prepare output directory. Returns (valid_files, final_output)."""
-            if not expected_columns:
-                raise ValueError(f"No column mapping for '{table_name}'")
+        if not expected_columns:
+            return f"[ERROR] No column mapping for '{table_name}'"
 
-            valid_files = [p for p in csv_paths if p.exists()]
-            if not valid_files:
-                raise ValueError(f"No valid CSV files for '{table_name}'")
+        valid_files = [p for p in csv_paths if p.exists()]
+        if not valid_files:
+            return f"[ERROR] No valid CSV files for '{table_name}'"
 
-            output_dir.mkdir(parents=True, exist_ok=True)
-            final_output = output_dir / f"{table_name}.parquet"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        final_output = output_dir / f"{table_name}.parquet"
 
-            if final_output.exists():
-                final_output.unlink()
+        if final_output.exists():
+            final_output.unlink()
 
-            return valid_files, final_output
-
-        # --- helper method: process single file with memory check ---
-        def _process_single_file_with_memory_check(
-            self, csv_path: Path, temp_output: Path, expected_columns: List[str],
-            delimiter: str, config: ConversionConfig, memory_monitor: MemoryMonitor,
-            file_index: int, total_files: int
-        ) -> dict:
-            """Process a single CSV file with memory monitoring. Returns processing result."""
-            logger.info(f"Processing file {file_index}/{total_files}: {csv_path.name}")
-
-            # Check memory before processing
-            if memory_monitor.should_prevent_processing():
-                status = memory_monitor.get_status_report()
-                logger.error(f"Memory limit reached before file {file_index}. "
-                            f"Usage: {status['usage_above_baseline_mb']:.1f}MB above baseline")
-                raise MemoryError("Insufficient memory to process file")
-
-            result = process_csv_with_memory(
-                csv_path, temp_output, expected_columns, delimiter,
-                config, memory_monitor
-            )
-
-            logger.info(f"✅ File {file_index}/{total_files} completed: "
-                       f"{result['rows_processed']:,} rows, "
-                       f"Memory: {result['memory_stats']['usage_above_baseline_mb']:.1f}MB above baseline")
-
-            return result
-
-        # --- helper method: combine parquet files ---
-        def _combine_parquet_files(
-            processed_files: List[Path], final_output: Path, config: ConversionConfig,
-            memory_monitor: MemoryMonitor
-        ) -> bool:
-            """Combine multiple parquet files into one. Returns True if successful."""
-            if len(processed_files) == 1:
-                # Just rename the single file
-                processed_files[0].rename(final_output)
-                logger.info(f"✅ Single file renamed to {final_output.name}")
-                return True
-
-            logger.info(f"🔄 Combining {len(processed_files)} parquet files...")
-
-            # Validate all parts exist
-            missing = [f for f in processed_files if not f.exists()]
-            if missing:
-                logger.error("Cannot combine: missing part files:\n  " + "\n  ".join(str(m) for m in missing))
-                return False
-
-            # Pre-combine memory check
-            memory_monitor.perform_aggressive_cleanup()
-            time.sleep(1.0)
-            if memory_monitor.should_prevent_processing():
-                logger.error("Insufficient memory to combine files")
-                return False
-
-            tmp_output = final_output.with_suffix(".combining.tmp")
-            try:
-                lazy_frames = [pl.scan_parquet(str(f)) for f in processed_files]
-                combined = pl.concat(lazy_frames, how="vertical")
-                combined.sink_parquet(
-                    str(tmp_output),
-                    compression=config.compression,
-                    row_group_size=config.row_group_size,
-                    maintain_order=False,
-                    statistics=False
-                )
-
-                # Atomic move to final location
-                import shutil
-                shutil.move(str(tmp_output), str(final_output))
-
-                # Cleanup parts
-                for part_file in processed_files:
-                    try:
-                        if part_file.exists() and part_file != final_output:
-                            part_file.unlink()
-                    except Exception as e:
-                        logger.warning(f"Could not remove part {part_file}: {e}")
-
-                # Cleanup memory
-                del lazy_frames, combined
-                memory_monitor.perform_aggressive_cleanup()
-                return True
-
-            except Exception as e:
-                logger.exception(f"Failed to combine files: {e}")
-                if tmp_output.exists():
-                    tmp_output.unlink()
-                return False
-
-        # --- main processing ---
-        valid_files, final_output = _validate_and_prepare_files(table_name, csv_paths, output_dir, expected_columns)
+        total_input_bytes = sum(p.stat().st_size for p in valid_files)
+        logger.info(f"Converting '{table_name}': {len(valid_files)} files, "
+                   f"{total_input_bytes:,} bytes")
+        
+        # Log initial memory status
+        status = memory_monitor.get_status_report()
+        logger.info(f"Memory status - Baseline: {status['baseline_mb']:.1f}MB, "
+                   f"Budget: {status['budget_remaining_mb']:.1f}MB")
 
         processed_files = []
         stats = {"files_processed": 0, "files_failed": 0, "total_rows": 0}
         start_time = time.time()
-        total_input_bytes = sum(f.stat().st_size for f in valid_files)
 
-        # IMPROVEMENT 6: Process files individually with aggressive cleanup between files
+        # Process files individually with cleanup between files
         for i, csv_path in enumerate(valid_files, 1):
             try:
+                logger.info(f"Processing file {i}/{len(valid_files)}: {csv_path.name}")
+                
                 # Aggressive cleanup before each file (especially after the first)
                 if i > 1:
                     logger.info("Performing inter-file memory cleanup...")
                     cleanup_stats = memory_monitor.perform_aggressive_cleanup()
-                    
-                    # Wait a moment for cleanup to take effect
                     time.sleep(0.5)
                 
                 # Check memory before each file
@@ -809,22 +535,27 @@ def convert_table_csvs(
                     if memory_monitor.should_prevent_processing():
                         break
 
-                # IMPROVEMENT 7: Use individual file naming for large datasets
+                # Use individual file naming for large datasets
                 if len(valid_files) == 1:
                     temp_output = final_output
                 else:
                     temp_output = output_dir / f"{table_name}_part_{i:03d}.parquet"
 
-                result = _process_single_file_with_memory_check(
+                # Use new Polars-only processing
+                result = process_csv_with_polars_strategies(
                     csv_path, temp_output, expected_columns, delimiter,
-                    config, memory_monitor, i, len(valid_files)
+                    config, memory_monitor
                 )
 
                 processed_files.append(temp_output)
                 stats["files_processed"] += 1
                 stats["total_rows"] += result["rows_processed"]
 
-                # IMPROVEMENT 8: Aggressive cleanup after each large file
+                logger.info(f"✅ File {i}/{len(valid_files)} completed: "
+                           f"{result['rows_processed']:,} rows using {result['strategy_used']}, "
+                           f"Memory: {result['memory_stats']['usage_above_baseline_mb']:.1f}MB above baseline")
+
+                # Post-file cleanup
                 cleanup_stats = memory_monitor.perform_aggressive_cleanup()
                 if cleanup_stats.get("freed_mb", 0) > 100:
                     logger.info(f"Post-file cleanup freed {cleanup_stats['freed_mb']:.1f}MB")
@@ -837,17 +568,52 @@ def convert_table_csvs(
                 memory_monitor.perform_aggressive_cleanup()
                 continue
 
-        # --- combine results ---
         if not processed_files:
             return f"[ERROR] No files successfully processed for '{table_name}'"
 
-        # IMPROVEMENT 9: Only combine if we have multiple part files
+        # Combine files if necessary (same logic as before)
         if len(processed_files) == 1 and processed_files[0] != final_output:
             # Just rename the single file
             processed_files[0].rename(final_output)
             logger.info(f"✅ Single file renamed to {final_output.name}")
         elif len(processed_files) > 1:
-            _combine_parquet_files(processed_files, final_output, config, memory_monitor)
+            logger.info(f"Combining {len(processed_files)} parquet files...")
+
+            # Pre-combine cleanup
+            memory_monitor.perform_aggressive_cleanup()
+            time.sleep(1.0)
+            
+            if memory_monitor.should_prevent_processing():
+                logger.error("Insufficient memory to combine files - keeping separate parts")
+                return f"[PARTIAL] '{table_name}': {stats['total_rows']:,} rows in {len(processed_files)} separate files"
+
+            try:
+                # Use Polars for combining (no PyArrow needed)
+                lazy_frames = [pl.scan_parquet(str(f)) for f in processed_files]
+                combined = pl.concat(lazy_frames, how="vertical")
+                combined.sink_parquet(
+                    str(final_output),
+                    compression=config.compression,
+                    row_group_size=config.row_group_size,
+                    maintain_order=False,
+                    statistics=False
+                )
+                
+                # Cleanup parts after successful combination
+                for part_file in processed_files:
+                    try:
+                        if part_file.exists() and part_file != final_output:
+                            part_file.unlink()
+                    except Exception as e:
+                        logger.warning(f"Could not remove part {part_file}: {e}")
+
+                # Final cleanup of combination objects
+                del lazy_frames, combined
+                memory_monitor.perform_aggressive_cleanup()
+                
+            except Exception as e:
+                logger.exception(f"Failed to combine files for '{table_name}': {e}")
+                return f"[PARTIAL] '{table_name}': {stats['total_rows']:,} rows in {len(processed_files)} separate files"
 
         # Final metrics
         final_bytes = final_output.stat().st_size if final_output.exists() else 0
@@ -862,7 +628,7 @@ def convert_table_csvs(
 
         # Final memory report
         final_status = memory_monitor.get_status_report()
-        logger.info(f"🎉 Completed '{table_name}' in {elapsed_time:.1f}s. "
+        logger.info(f"Completed '{table_name}' in {elapsed_time:.1f}s. "
                    f"Final memory usage: {final_status['usage_above_baseline_mb']:.1f}MB above baseline")
 
         return result_msg
@@ -879,8 +645,7 @@ def convert_csvs_to_parquet(
     delimiter: str = ";"
 ):
     """
-    Main conversion function with improved memory management.
-    IMPROVEMENT 10: Process tables sequentially for very large datasets.
+    Main conversion function with improved memory management using Polars-only approach.
     """
     if config is None:
         config = ConversionConfig()
@@ -891,7 +656,7 @@ def convert_csvs_to_parquet(
         logger.warning("No tables to convert")
         return
 
-    logger.info(f"🚀 Starting conversion of {len(audit_map)} tables")
+    logger.info(f"Starting conversion of {len(audit_map)} tables")
     logger.info(f"Configuration: {config.memory_limit_mb}MB memory limit above baseline")
 
     # Enhanced system info logging
@@ -923,12 +688,12 @@ def convert_csvs_to_parquet(
 
     logger.info(f"Processing {len(table_work)} tables with valid data")
 
-    # IMPROVEMENT 11: For very large datasets, process sequentially instead of in parallel
+    # Determine processing approach based on dataset size
     large_dataset_threshold = 1024 * 1024 * 1024  # 1GB
     has_large_datasets = any(total_bytes > large_dataset_threshold for _, _, _, total_bytes in table_work)
     
     if has_large_datasets:
-        logger.info("🔧 Large datasets detected - using sequential processing for memory efficiency")
+        logger.info("Large datasets detected - using sequential processing for memory efficiency")
         use_parallel = False
     else:
         use_parallel = True
@@ -937,6 +702,7 @@ def convert_csvs_to_parquet(
         Progress, SpinnerColumn, BarColumn, TextColumn,
         TimeElapsedColumn, MofNCompleteColumn, TimeRemainingColumn
     )
+    from ...utils.models import get_table_columns
 
     success_count = 0
     error_count = 0
@@ -944,7 +710,7 @@ def convert_csvs_to_parquet(
 
     if use_parallel:
         # Parallel processing for smaller datasets
-        with ThreadPoolExecutor(max_workers=min(config.workers, 2)) as executor:  # Limit workers for memory
+        with ThreadPoolExecutor(max_workers=min(config.workers, 2)) as executor:
             with Progress(
                 SpinnerColumn(),
                 TextColumn("[bold green]{task.description}"),
@@ -958,7 +724,6 @@ def convert_csvs_to_parquet(
                 tasks = {}
                 
                 for table_name, zip_map, csv_paths, total_bytes in table_work:
-                    from ...utils.models import get_table_columns
                     expected_columns = get_table_columns(table_name)
 
                     task = executor.submit(
@@ -1047,247 +812,12 @@ def convert_csvs_to_parquet(
     final_status = global_monitor.get_status_report()
     total_mb = total_bytes_processed / (1024 * 1024)
     
-    logger.info("🎉 Conversion Summary:")
+    logger.info("Conversion Summary:")
     logger.info(f"   ✅ Successful: {success_count} tables")
     logger.info(f"   ❌ Failed: {error_count} tables")
     logger.info(f"   📊 Total processed: {total_bytes_processed:,} bytes ({total_mb:.1f}MB)")
     logger.info(f"   🧠 Final memory usage: {final_status['usage_above_baseline_mb']:.1f}MB above baseline")
     logger.info(f"   📁 Output directory: {output_dir}")
-
-
-# Additional utility functions for handling very large files
-
-def estimate_memory_requirements(csv_path: Path, delimiter: str = ";") -> Dict[str, float]:
-    """
-    Estimate memory requirements for processing a CSV file.
-    Helps decide processing strategy upfront.
-    """
-    file_size_mb = csv_path.stat().st_size / (1024 * 1024)
-    
-    # Sample first few lines to estimate row size
-    try:
-        sample = pl.read_csv(
-            str(csv_path),
-            separator=delimiter,
-            n_rows=1000,
-            encoding="utf8-lossy",
-            ignore_errors=True,
-            has_header=False
-        )
-        
-        avg_row_size = file_size_mb / len(sample) if len(sample) > 0 else file_size_mb
-        estimated_rows = file_size_mb / avg_row_size if avg_row_size > 0 else 0
-        
-        # Conservative memory estimate (3-5x file size for processing)
-        estimated_memory_mb = file_size_mb * 4
-        
-        del sample
-        gc.collect()
-        
-        return {
-            "file_size_mb": file_size_mb,
-            "estimated_rows": estimated_rows,
-            "estimated_memory_mb": estimated_memory_mb,
-            "avg_row_size_bytes": avg_row_size * 1024 * 1024
-        }
-        
-    except Exception as e:
-        logger.warning(f"Could not estimate memory for {csv_path.name}: {e}")
-        return {
-            "file_size_mb": file_size_mb,
-            "estimated_rows": 0,
-            "estimated_memory_mb": file_size_mb * 5,  # Conservative fallback
-            "avg_row_size_bytes": 0
-        }
-
-def split_large_csv_file(
-    csv_path: Path,
-    output_dir: Path,
-    max_chunk_size_mb: float = 500,
-    delimiter: str = ";"
-) -> List[Path]:
-    """
-    Split a very large CSV file into smaller chunks for processing.
-    Use this when a single file is too large for available memory.
-    """
-    logger.info(f"Splitting large file {csv_path.name} into chunks of max {max_chunk_size_mb}MB")
-    
-    output_dir.mkdir(parents=True, exist_ok=True)
-    chunk_files = []
-    
-    try:
-        # For headerless files, read first row to determine column count
-        first_row_df = pl.read_csv(
-            str(csv_path),
-            separator=delimiter,
-            n_rows=1,
-            encoding="utf8-lossy",
-            has_header=False
-        )
-        num_columns = len(first_row_df.columns)
-        header_row = [f"column_{i+1}" for i in range(num_columns)]
-        logger.info(f"Detected {num_columns} columns in headerless file")
-        
-        # Calculate approximate rows per chunk
-        file_size_mb = csv_path.stat().st_size / (1024 * 1024)
-        rows_per_chunk = max(10000, int((max_chunk_size_mb / file_size_mb) * 1000000))
-        
-        logger.info(f"Splitting into chunks of ~{rows_per_chunk:,} rows each")
-        
-        chunk_num = 1
-        offset = 0
-        
-        while True:
-            try:
-                chunk = pl.read_csv(
-                    str(csv_path),
-                    separator=delimiter,
-                    skip_rows=offset,
-                    n_rows=rows_per_chunk,
-                    encoding="utf8-lossy",
-                    ignore_errors=True,
-                    truncate_ragged_lines=True,
-                    has_header=False,  # We'll add header manually
-                    new_columns=header_row
-                )
-                
-                if len(chunk) == 0:
-                    break
-                    
-                chunk_path = output_dir / f"{csv_path.stem}_chunk_{chunk_num:03d}.csv"
-                chunk.write_csv(str(chunk_path), separator=delimiter)
-                chunk_files.append(chunk_path)
-                
-                logger.info(f"Created chunk {chunk_num}: {len(chunk):,} rows -> {chunk_path.name}")
-                
-                offset += rows_per_chunk
-                chunk_num += 1
-                
-                # Cleanup
-                del chunk
-                gc.collect()
-                
-                # Safety check - don't create too many chunks
-                if chunk_num > 100:
-                    logger.warning("Created 100+ chunks - stopping to prevent excessive fragmentation")
-                    break
-                    
-            except Exception as e:
-                logger.error(f"Error creating chunk {chunk_num}: {e}")
-                break
-        
-        logger.info(f"Split {csv_path.name} into {len(chunk_files)} chunks")
-        return chunk_files
-        
-    except Exception as e:
-        logger.error(f"Failed to split {csv_path.name}: {e}")
-        # Cleanup any partial chunks
-        for chunk_file in chunk_files:
-            if chunk_file.exists():
-                try:
-                    chunk_file.unlink()
-                except:
-                    pass
-        return []
-
-def process_extremely_large_table(
-    table_name: str,
-    csv_paths: List[Path],
-    output_dir: Path,
-    delimiter: str,
-    expected_columns: List[str],
-    config: ConversionConfig,
-    max_file_size_mb: float = 1000
-) -> str:
-    """
-    Special handling for extremely large tables that exceed memory capacity.
-    Streams CSV(s) directly into a single Parquet file with chunked reads,
-    avoiding temporary CSV chunk materialization.
-
-    Signature kept identical.
-    """
-    logger.info(f"🔧 Processing extremely large table '{table_name}' with streaming writer (max_file_size_mb={max_file_size_mb})")
-
-    memory_monitor = MemoryMonitor(config)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    final_output = output_dir / f"{table_name}.parquet"
-    
-    # FIX: Use system temp directory for temp files to avoid WSL path issues
-    import tempfile
-    import os
-    
-    # Create temp file in system temp directory
-    temp_fd, temp_path = tempfile.mkstemp(suffix='.parquet.tmp', prefix=f'{table_name}_')
-    os.close(temp_fd)  # Close the file descriptor
-    tmp_output = Path(temp_path)
-    
-    logger.info(f"Using temporary file: {tmp_output}")
-
-    inputs = [p for p in csv_paths if p.exists() and p.stat().st_size > 0]
-    if not inputs:
-        return f"[ERROR] No processable files for '{table_name}'"
-
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
-    # Derive schema from sample data
-    pa_schema, used_fallback = _derive_schema_from_sample(inputs, delimiter, expected_columns)
-
-    total_rows_written = 0
-
-    try:
-
-        for csv_path in inputs:
-            # Try native streaming first
-            if _try_native_streaming(csv_path, tmp_output, delimiter, expected_columns, config):
-                # Get row count from native streaming
-                try:
-                    meta = pq.ParquetFile(str(tmp_output)).metadata
-                    total_rows_written = sum(meta.row_group(i).num_rows for i in range(meta.num_row_groups))
-                    logger.info(f"✅ Native streaming completed: {total_rows_written:,} rows")
-                except Exception:
-                    total_rows_written = 0
-                break  # Native streaming succeeded, skip other files
-            else:
-                # Fall back to manual chunking
-                rows = _process_with_manual_chunking(
-                    csv_path, tmp_output, pa_schema, delimiter, expected_columns, config, memory_monitor
-                )
-                total_rows_written += rows
-
-        # Move temp file to final location
-        import shutil
-        try:
-            shutil.move(str(tmp_output), str(final_output))
-            logger.info(f"Successfully moved temp file to final output: {final_output}")
-        except Exception as move_err:
-            logger.warning(f"shutil.move failed ({move_err}), falling back to os.replace")
-            try:
-                os.replace(str(tmp_output), str(final_output))
-            except Exception as replace_err:
-                logger.error(f"os.replace also failed ({replace_err})")
-                return f"[ERROR] Failed to move temp file to final location for '{table_name}': {move_err}"
-
-        # read metadata row count if possible, else use total_rows_written
-        try:
-            meta = pq.ParquetFile(str(final_output)).metadata
-            row_count = sum(meta.row_group(i).num_rows for i in range(meta.num_row_groups))
-        except Exception:
-            row_count = total_rows_written
-
-        logger.info(f"✅ Streamed {table_name}: wrote ~{row_count:,} rows to {final_output.name}")
-        return (f"[OK] '{table_name}': {row_count:,} rows streamed, "
-                f"{final_output.stat().st_size:,} bytes, 1 output file")
-
-    except Exception as e:
-        logger.exception(f"Failed streaming extremely large table '{table_name}': {e}")
-        try:
-            if tmp_output.exists():
-                tmp_output.unlink()
-        except Exception:
-            pass
-        return f"[ERROR] Failed extremely large table '{table_name}': {e}"
-
 
 class LargeDatasetConfig(ConversionConfig):
     """
@@ -1296,20 +826,17 @@ class LargeDatasetConfig(ConversionConfig):
     def __init__(self):
         super().__init__()
         
-        # More aggressive memory settings for better performance
-        self.memory_limit_mb = 1500  # Increased to allow larger chunks
-        self.cleanup_threshold_ratio = 0.8  # Less frequent cleanup
-        self.baseline_buffer_mb = 256  # Reduced buffer for more working memory
+        # More conservative memory settings for reliability
+        self.memory_limit_mb = 1200  # Reduced from 1500 for more safety
+        self.cleanup_threshold_ratio = 0.7  # Earlier cleanup trigger
+        self.baseline_buffer_mb = 512  # More system memory buffer
         
-        # Optimize for large files with larger chunks
-        self.row_group_size = 100000  # Larger row groups for better compression
-        self.compression = "snappy"  # Fastest compression
+        # Optimize for large files
+        self.row_group_size = 50000  # Smaller row groups for memory efficiency
+        self.compression = "snappy"  # Fast compression
         
-        # Single-threaded for memory control but larger chunks
+        # Single-threaded for memory control
         self.workers = 1
-
-
-# Smart processing strategy selector
 
 def select_processing_strategy(audit_map: dict, unzip_dir: Path) -> str:
     """
@@ -1334,15 +861,15 @@ def select_processing_strategy(audit_map: dict, unzip_dir: Path) -> str:
     strategy = "standard"
     reasons = []
     
-    if largest_file_mb > 2000:  # 2GB+ files
-        strategy = "file_splitting"
+    if largest_file_mb > 1000:  # 1GB+ files (more conservative threshold)
+        strategy = "large_file_streaming"
         reasons.append(f"Largest file: {largest_file_mb:.1f}MB")
         
-    if total_gb > 50:  # 50GB+ total
+    if total_gb > 20:  # 20GB+ total (more conservative)
         strategy = "sequential_only"
         reasons.append(f"Total dataset: {total_gb:.1f}GB")
         
-    if total_files > 100:
+    if total_files > 50:  # More conservative file count
         strategy = "batch_processing"
         reasons.append(f"Many files: {total_files}")
     
@@ -1352,8 +879,6 @@ def select_processing_strategy(audit_map: dict, unzip_dir: Path) -> str:
     
     return strategy
 
-# IMPROVEMENT 15: Main entry point with strategy selection
-
 def convert_csvs_to_parquet_smart(
     audit_map: dict,
     unzip_dir: Path,
@@ -1362,47 +887,98 @@ def convert_csvs_to_parquet_smart(
 ):
     """
     Smart conversion that selects the best strategy based on dataset characteristics.
+    Now uses pure Polars approach throughout.
     """
     # Analyze dataset and select strategy
     strategy = select_processing_strategy(audit_map, unzip_dir)
     
     # Use appropriate configuration
-    if strategy in ["file_splitting", "sequential_only"]:
+    if strategy in ["large_file_streaming", "sequential_only"]:
         config = LargeDatasetConfig()
         logger.info("Using large dataset configuration")
     else:
         config = ConversionConfig()
         logger.info("Using standard configuration")
     
-    # Execute with selected strategy
-    if strategy == "file_splitting":
-        # Process with file splitting for very large files
-        for table_name, zip_map in audit_map.items():
-            csv_paths = [unzip_dir / fname for files in zip_map.values() for fname in files]
-            valid_paths = [p for p in csv_paths if p.exists()]
-            
-            if not valid_paths:
-                continue
-                
-            from ...utils.models import get_table_columns
-            expected_columns = get_table_columns(table_name)
-            
-            result = process_extremely_large_table(
-                table_name,
-                valid_paths,
-                output_dir,
-                delimiter,
-                expected_columns,
-                config,
-                max_file_size_mb=config.max_file_size_mb
-            )
-            logger.info(result)
-    else:
-        # Use improved standard processing
-        convert_csvs_to_parquet(
-            audit_map,
-            unzip_dir,
-            output_dir,
-            config,
-            delimiter
+    # All strategies now use the same Polars-only implementation
+    # The strategy selection mainly affects configuration parameters
+    convert_csvs_to_parquet(
+        audit_map,
+        unzip_dir,
+        output_dir,
+        config,
+        delimiter
+    )
+
+# Utility functions for pre-flight validation
+def validate_csv_compatibility(csv_path: Path, delimiter: str = ";") -> Dict[str, any]:
+    """
+    Pre-flight validation to ensure CSV can be processed by Polars.
+    """
+    try:
+        # Quick compatibility test
+        test_scan = pl.scan_csv(
+            str(csv_path),
+            separator=delimiter,
+            encoding="utf8-lossy",
+            ignore_errors=True,
+            has_header=False,
+            n_rows=100  # Very small sample
         )
+        
+        # Test basic operations
+        row_count = test_scan.select(pl.len()).collect().item()
+        schema = test_scan.collect_schema()
+        
+        file_size_mb = csv_path.stat().st_size / (1024 * 1024)
+        
+        return {
+            "compatible": True,
+            "file_size_mb": file_size_mb,
+            "sample_rows": row_count,
+            "columns": len(schema),
+            "estimated_total_rows": int((file_size_mb * 1024 * 1024) / (len(str(schema)) * 50)) if len(schema) > 0 else 0
+        }
+        
+    except Exception as e:
+        return {
+            "compatible": False,
+            "error": str(e),
+            "file_size_mb": csv_path.stat().st_size / (1024 * 1024) if csv_path.exists() else 0
+        }
+
+def pre_flight_check(audit_map: dict, unzip_dir: Path) -> Dict[str, any]:
+    """
+    Run pre-flight checks on all CSV files to identify potential issues.
+    """
+    results = {
+        "total_files": 0,
+        "compatible_files": 0,
+        "incompatible_files": 0,
+        "total_size_mb": 0,
+        "largest_file_mb": 0,
+        "issues": []
+    }
+    
+    for table_name, zip_map in audit_map.items():
+        csv_paths = [unzip_dir / fname for files in zip_map.values() for fname in files]
+        valid_paths = [p for p in csv_paths if p.exists()]
+        
+        for csv_path in valid_paths:
+            results["total_files"] += 1
+            validation = validate_csv_compatibility(csv_path)
+            
+            if validation["compatible"]:
+                results["compatible_files"] += 1
+                results["total_size_mb"] += validation["file_size_mb"]
+                results["largest_file_mb"] = max(results["largest_file_mb"], validation["file_size_mb"])
+            else:
+                results["incompatible_files"] += 1
+                results["issues"].append({
+                    "file": str(csv_path),
+                    "table": table_name,
+                    "error": validation["error"],
+                    "size_mb": validation["file_size_mb"]
+                })
+    
+    return results

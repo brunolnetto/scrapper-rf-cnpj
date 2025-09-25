@@ -6,7 +6,7 @@ import sys
 # Find time bottleneck between calls
 from .setup.config import get_config
 from .core.orchestrator import PipelineOrchestrator
-from .core.etl import ReceitaCNPJPipeline
+from .core.pipeline import ReceitaCNPJPipeline
 from .core.strategies import StrategyFactory
 from .core.utils.cli import validate_cli_arguments
 

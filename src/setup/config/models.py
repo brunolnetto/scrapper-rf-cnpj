@@ -41,6 +41,49 @@ class Environment(str, Enum):
     TESTING = "testing"
 
 
+class MemoryMonitorConfig(BaseModel):
+    """Memory monitoring and management configuration."""
+    memory_limit_mb: int = Field(
+        default=1024,
+        ge=256,
+        le=16384,
+        description="Memory limit in MB for operations"
+    )
+    cleanup_threshold_ratio: float = Field(
+        default=0.8,
+        ge=0.1,
+        le=1.0,
+        description="Memory pressure ratio threshold for triggering cleanup (0.0-1.0)"
+    )
+    baseline_buffer_mb: int = Field(
+        default=256,
+        ge=64,
+        le=1024,
+        description="Memory buffer in MB to maintain above baseline for system stability"
+    )
+    
+    @field_validator('memory_limit_mb')
+    @classmethod
+    def validate_memory_limit(cls, v):
+        if not (256 <= v <= 16384):
+            raise ValueError('Memory limit must be between 256MB and 16384MB')
+        return v
+    
+    @field_validator('cleanup_threshold_ratio')
+    @classmethod
+    def validate_cleanup_threshold(cls, v):
+        if not (0.1 <= v <= 1.0):
+            raise ValueError('Cleanup threshold ratio must be between 0.1 and 1.0')
+        return v
+    
+    @field_validator('baseline_buffer_mb')
+    @classmethod
+    def validate_baseline_buffer(cls, v):
+        if not (64 <= v <= 1024):
+            raise ValueError('Baseline buffer must be between 64MB and 1024MB')
+        return v
+
+
 class DatabaseConfig(BaseModel):
     """Database connection configuration with validation."""
     
@@ -75,7 +118,7 @@ class DatabaseConfig(BaseModel):
         return f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.maintenance_db}"
 
 
-class ConversionConfig(BaseModel):
+class ConversionConfig(MemoryMonitorConfig):
     """CSV to Parquet conversion configuration."""
     
     chunk_size: int = Field(
@@ -83,12 +126,6 @@ class ConversionConfig(BaseModel):
         ge=1000, 
         le=1000000, 
         description="Rows per conversion batch"
-    )
-    memory_limit_mb: int = Field(
-        default=1024, 
-        ge=256, 
-        le=16384, 
-        description="Memory limit in MB"
     )
     workers: int = Field(
         default=2, 
@@ -122,18 +159,6 @@ class ConversionConfig(BaseModel):
         ge=1000,
         le=50000,
         description="Estimation factor for memory usage per row (bytes)"
-    )
-    cleanup_threshold_ratio: float = Field(
-        default=0.8,
-        ge=0.1,
-        le=1.0,
-        description="Memory pressure ratio threshold for triggering cleanup (0.0-1.0)"
-    )
-    baseline_buffer_mb: int = Field(
-        default=256,
-        ge=64,
-        le=1024,
-        description="Memory buffer in MB to maintain above baseline for system stability"
     )
     max_file_size_mb: int = Field(
         default=1000,
@@ -350,7 +375,7 @@ class DevelopmentConfig(BaseModel):
         description="Maximum number of files to process per table"
     )
     max_files_per_blob: int = Field(
-        default=3,
+        default=10,
         ge=1,
         le=50,
         description="Maximum number of files to process per blob/batch"

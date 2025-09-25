@@ -35,8 +35,16 @@ async def record_manifest(
 
     await conn.execute(
         """
-        INSERT INTO file_audit_manifest (file_audit_id, file_path, status, checksum, filesize, rows_processed, created_at, notes)
-        VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7)
+        INSERT INTO file_audit_manifest (
+            file_audit_id, 
+            file_path, 
+            status, 
+            checksum, 
+            filesize, 
+            created_at, 
+            notes
+        )
+        VALUES ($1, $2, $3, $4, $5, $5, NOW(), $6s)
         """,
         str(uuid.uuid4()), filename, status_value, checksum, filesize, rows_processed, notes
     )
@@ -171,6 +179,10 @@ async def _process_batch_sequential(
                     await conn.copy_records_to_table(tmp_table, records=sub_batch, columns=headers)
                     sql = base.upsert_from_temp_sql(table, tmp_table, headers, primary_keys)
                     await conn.execute(sql)
+                    
+                    # Debug: Check actual row count in target table after upsert
+                    count_result = await conn.fetchval(f'SELECT COUNT(*) FROM {base.quote_ident(table)}')
+                    
                     await conn.execute(f'TRUNCATE {base.quote_ident(tmp_table)};')
                 rows_processed += len(sub_batch)
                 emit_log("batch_committed", run_id=run_id, batch_idx=batch_idx, rows=len(sub_batch))
@@ -239,6 +251,7 @@ async def _process_batch_parallel(
                                 async with conn.transaction():
                                     sql = base.upsert_from_temp_sql(table, tmp_table, headers, primary_keys)
                                     await conn.execute(sql)
+                                    
                                     await conn.execute(f'TRUNCATE {base.quote_ident(tmp_table)};')
                             
                             emit_log("sub_batch_committed", run_id=run_id, batch_idx=batch_idx, 

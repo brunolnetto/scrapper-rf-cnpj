@@ -399,8 +399,7 @@ class FederalRevenueDiscoveryService:
             # Use Brazil timezone as default, or try to get from config
             timezone_str = 'America/Sao_Paulo'
             try:
-                if hasattr(self.config, 'pipeline') and hasattr(self.config.pipeline.data_source, 'timezone'):
-                    timezone_str = self.config.pipeline.data_source.timezone
+                timezone_str = self.config.pipeline.data_source.timezone    
             except AttributeError:
                 pass  # Use default timezone
                 
@@ -416,8 +415,7 @@ class FederalRevenueDiscoveryService:
     
     def close(self):
         """Close the HTTP session."""
-        if hasattr(self, 'session'):
-            self.session.close()
+        self.session.close()
     
     def __enter__(self):
         """Context manager entry."""

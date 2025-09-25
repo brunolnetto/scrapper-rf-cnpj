@@ -4,19 +4,18 @@ from os import path
 from uuid import uuid4
 
 from sqlalchemy import text
-import pytz
 
 from .misc import invert_dict_list
 from .zip import list_zip_contents
 from ..database.engine import Database
 from ..database.models.audit import TableAuditManifest, AuditStatus
 from ..setup.logging import logger
-from ..core.utils.etl import get_zip_to_tablename
+from ..core.utils.pipeline import get_zip_to_tablename
 from ..core.schemas import FileGroupInfo, AuditMetadata, TableAuditManifestSchema
 
 
 def create_new_audit(
-    table_name: str, filenames: List[str], size_bytes: int, update_at: datetime,
+    table_name: str, filenames: List[str],
     year: int = None, month: int = None
 ) -> TableAuditManifest:
     """
@@ -25,8 +24,6 @@ def create_new_audit(
     Args:
         table_name (str): The name of the table.
         filenames (List[str]): List of filenames.
-        size_bytes (int): The size of the file in bytes.
-        update_at (datetime): The datetime when the source was last updated.
         year (int, optional): Year for temporal tracking. Defaults to current year.
         month (int, optional): Month for temporal tracking. Defaults to current month.
 
@@ -38,15 +35,11 @@ def create_new_audit(
     current_month = month if month is not None else datetime.now().month
 
     return TableAuditManifest(
-        table_manifest_id=str(uuid4()),
+        table_audit_id=str(uuid4()),  # Updated column name
         created_at=datetime.now(),
-        table_name=table_name,
+        entity_name=table_name,  # Updated column name
         source_files=filenames,
-        file_size_bytes=size_bytes,
-        source_updated_at=update_at,
-        downloaded_at=None,
-        processed_at=None,
-        inserted_at=None,
+        status=AuditStatus.PENDING,
         notes=None,
         ingestion_year=current_year,
         ingestion_month=current_month
@@ -73,7 +66,7 @@ def create_audit(
         # Define temporal-aware SQL query
         if etl_year is not None and etl_month is not None:
             # Check for existing processing in the specific ETL year/month context
-            sql_query = text(f"""SELECT COUNT(*) 
+            sql_query = text("""SELECT COUNT(*) 
                 FROM public.table_audit_manifest 
                 WHERE entity_name = :table_name 
                 AND ingestion_year = :etl_year 
@@ -90,7 +83,7 @@ def create_audit(
                 already_processed = existing_count > 0
         else:
             # Legacy behavior: check without temporal filtering
-            sql_query = text(f"""SELECT COUNT(*) 
+            sql_query = text("""SELECT COUNT(*) 
                 FROM public.table_audit_manifest 
                 WHERE entity_name = :table_name;""")
             
@@ -134,7 +127,7 @@ def create_audit(
                 entity_name=file_group_info.table_name,
                 status=AuditStatus.PENDING,
                 source_files=[f.filename for f in file_group_info.files],
-                file_size_bytes=sum(f.file_size or 0 for f in file_group_info.files),
+                # Removed file_size_bytes - now tracked at file level
                 ingestion_year=data_year,
                 ingestion_month=data_month,
             )
@@ -168,9 +161,7 @@ def create_audit(
         # Create and insert the new entry
         return create_new_audit(
             file_group_info.table_name,
-            file_group_info.files,  # Use files instead of elements
-            sum(f.file_size or 0 for f in file_group_info.files),  # Calculate total size
-            max((f.updated_at for f in file_group_info.files if f.updated_at), default=datetime.now()),  # Use latest file update time
+            [f.filename for f in file_group_info.files],  # Extract filenames
             data_year,  # Use ETL year or source year
             data_month  # Use ETL month or source month
         )
