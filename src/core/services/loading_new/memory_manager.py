@@ -4,18 +4,19 @@ Handles memory monitoring, checks, and optimization.
 """
 from typing import Dict, Any, Optional, List
 from pathlib import Path
-from ....setup.logging import logger
 
+from ....setup.logging import logger
+from ..memory.service import MemoryMonitor
 
 class MemoryManager:
     """
     Centralized memory management for data loading operations.
     """
 
-    def __init__(self, memory_monitor: Optional[Any] = None):
+    def __init__(self, memory_monitor: Optional[MemoryMonitor] = None):
         self.memory_monitor = memory_monitor
 
-    def get_status_report(self) -> Optional[Dict[str, Any]]:
+    def get_status_report(self) -> Optional[Dict[str, Dict]]:
         """Get current memory status report."""
         if not self.memory_monitor:
             return None
