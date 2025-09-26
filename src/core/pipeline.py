@@ -53,8 +53,7 @@ class ReceitaCNPJPipeline(Pipeline):
         from .services.loading.service import DataLoadingService
 
         self._data_loader = DataLoadingService(
-            self.database, 
-            self.config.pipeline.data_sink.paths, 
+            self.database,  
             self.loading_strategy, 
             self.config,
             audit_service=self.audit_service

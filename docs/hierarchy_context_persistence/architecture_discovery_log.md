@@ -15,7 +15,7 @@ User reported "Something weird is happening" with batch manifests showing confli
 ### Root Cause Analysis
 Identified **three separate batch tracking systems** operating simultaneously:
 1. **AuditService batches**: Proper hierarchy with context managers
-2. **UnifiedLoader internal batches**: No hierarchy coordination  
+2. **DatabaseLoader internal batches**: No hierarchy coordination  
 3. **Loading strategy batches**: Inconsistent patterns creating conflicts
 
 ### Missing Hierarchy
