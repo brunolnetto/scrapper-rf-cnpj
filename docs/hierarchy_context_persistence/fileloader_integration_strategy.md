@@ -105,7 +105,7 @@ def _load_batch_chunk(self, loader, table_info, batch_chunk, batch_id, subbatch_
         )
         
         # Use existing loader to insert batch_chunk
-        # This needs to interface with your existing UnifiedLoader
+        # This needs to interface with your existing DatabaseLoader
         success, error, rows = loader.load_batch_data(
             table_info, batch_chunk, batch_id=batch_id, subbatch_id=subbatch_id
         )

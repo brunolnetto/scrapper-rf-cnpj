@@ -116,7 +116,7 @@ with audit_service.batch_context("empresa", "Monthly_Load") as batch_id:
         # Proper parent-child relationships
 ```
 
-#### 2. UnifiedLoader Internal Batches (No Hierarchy)
+#### 2. DatabaseLoader Internal Batches (No Hierarchy)
 ```python
 # Problematic - creates standalone entries
 loader.load_file(table_info, file_path, batch_id=None, subbatch_id=None)
@@ -185,7 +185,7 @@ with audit_service.table_context("simples") as table_ctx:                    # T
 
 #### Phase 3: Coordinate Services
 - 🔄 **Update LoadingStrategy**: Use cascaded contexts when available
-- 🔄 **Enhance UnifiedLoader**: Proper batch_id/subbatch_id parameter usage
+- 🔄 **Enhance DatabaseLoader**: Proper batch_id/subbatch_id parameter usage
 - 🔄 **Add HierarchyCoordinator**: Thin orchestration layer (optional)
 
 ## Key Discoveries

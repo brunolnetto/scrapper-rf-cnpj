@@ -2,7 +2,7 @@ from typing import Optional, Any
 from datetime import datetime
 
 from ..setup.logging import logger
-from ..setup.config import ConfigurationService, AppConfig
+from ..setup.config import ConfigurationService
 from ..database.db_admin import (
     create_database_if_not_exists,
     truncate_tables,
@@ -427,7 +427,7 @@ class FullETLStrategy:
 
         return success and audit_success
     
-    def _update_audit_metadata_with_comprehensive_metrics(
+    def _update_audit_metadata_with_table_metrics(
         self, audit_metadata, initial_row_counts, final_row_counts, config_service, pipeline=None
     ):
         """Update audit metadata with comprehensive column metrics and row count changes."""

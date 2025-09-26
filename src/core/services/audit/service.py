@@ -112,10 +112,11 @@ class AuditService:
         return AuditStatus.PENDING
 
     @contextmanager
-    def batch_context(self, target_table: str, batch_name: str, 
-                     year: Optional[int] = None, month: Optional[int] = None,
-                     file_manifest_id: Optional[str] = None, 
-                     table_manifest_id: Optional[str] = None) -> Generator[uuid.UUID, None, None]:
+    def batch_context(
+        self, target_table: str, batch_name: str, 
+        year: Optional[int] = None, month: Optional[int] = None,
+        file_manifest_id: Optional[str] = None
+    ) -> Generator[uuid.UUID, None, None]:
         """
         Enhanced batch context with temporal tracking and structured logging.
         
@@ -158,8 +159,10 @@ class AuditService:
             self._cleanup_batch_context(batch_id)
 
     @contextmanager  
-    def subbatch_context(self, batch_id: uuid.UUID, table_name: str, 
-                        description: Optional[str] = None) -> Generator[uuid.UUID, None, None]:
+    def subbatch_context(
+        self, batch_id: uuid.UUID, table_name: str, 
+        description: Optional[str] = None
+    ) -> Generator[uuid.UUID, None, None]:
         """
         Enhanced subbatch context with structured logging.
         
@@ -192,7 +195,20 @@ class AuditService:
         finally:
             self._cleanup_subbatch_context(subbatch_id)
 
-    def create_audits_from_files(self, files_info: List[FileInfo]) -> List[TableAuditManifest]:
+    def _cleanup_batch_context(self, batch_id: uuid.UUID) -> None:
+        """Clean up batch context after completion."""
+        with self._metrics_lock:
+            self._active_batches.pop(str(batch_id), None)
+
+    def _cleanup_subbatch_context(self, subbatch_id: uuid.UUID) -> None:
+        """Clean up subbatch context after completion."""
+        with self._metrics_lock:
+            self._active_subbatches.pop(str(subbatch_id), None)
+            self._subbatch_to_batch.pop(str(subbatch_id), None)
+
+    def create_audits_from_files(
+        self, files_info: List[FileInfo]
+    ) -> List[TableAuditManifest]:
         """
         Create audit records from a list of FileInfo objects.
         Filters for relevant files and groups them appropriately.
@@ -209,7 +225,9 @@ class AuditService:
         """
         return create_audit_metadata(audits, download_folder)
 
-    def insert_audits(self, audit_metadata: AuditMetadata, create_file_manifests: bool = True) -> None:
+    def insert_audits(
+        self, audit_metadata: AuditMetadata, create_file_manifests: bool = True
+    ) -> None:
         """
         Insert all audit records in audit_metadata into the database.
         Creates manifest entries for both successful and failed insertions.
@@ -270,11 +288,11 @@ class AuditService:
                 return
 
             # Generate manifest ID for audit entry
-            manifest_id = str(uuid.uuid4())
+            file_manifest_id = str(uuid.uuid4())
 
             # Create manifest entry with table name and audit reference
-            self._insert_manifest_entry(
-                manifest_id=manifest_id,
+            self._insert_file_manifest(
+                file_manifest_id=file_manifest_id,
                 table_name=Path(file_path).name if file_path != "unknown" else table_name,  # entity_name should be filename
                 file_path=file_path,
                 status=status,
@@ -308,7 +326,8 @@ class AuditService:
         Create audit records from file groups using the database with ETL temporal context.
         """
         return create_audits(
-            self.database, file_groups, 
+            self.database, 
+            file_groups, 
             etl_year=self.config.year, 
             etl_month=self.config.month
         )
@@ -337,9 +356,10 @@ class AuditService:
 
     def create_file_manifest(
         self, file_path: str, status: AuditStatus, table_manifest_id: str, 
-            checksum: Optional[str] = None, filesize: Optional[int] = None, 
-            rows: Optional[int] = None, table_name: str = 'unknown', 
-            notes: Optional[str] = None) -> str:
+        checksum: Optional[str] = None, filesize: Optional[int] = None, 
+        rows: Optional[int] = None, table_name: str = 'unknown', 
+        notes: Optional[str] = None
+    ) -> str:
         """
         Create manifest entry for processed file with required table audit reference.
         
@@ -401,11 +421,11 @@ class AuditService:
                 notes = "; ".join(notes_parts) if notes_parts else f"Status: {status_name}"
 
             # Generate manifest ID
-            manifest_id = str(uuid.uuid4())
+            file_manifest_id = str(uuid.uuid4())
 
             # Insert manifest entry
-            self._insert_manifest_entry(
-                manifest_id=manifest_id,
+            self._insert_file_manifest(
+                file_manifest_id=file_manifest_id,
                 table_name=file_path_obj.name,  # entity_name should be filename
                 file_path=str(file_path_obj),
                 status=status,
@@ -426,42 +446,21 @@ class AuditService:
                 comprehensive_file_metrics = self.collect_file_audit_metrics(str(file_path_obj), processing_stats)
                 
                 # Update file audit with comprehensive metrics
-                self.update_file_audit_with_metrics(manifest_id, comprehensive_file_metrics)
+                self.update_file_audit_with_metrics(file_manifest_id, comprehensive_file_metrics)
                 
             except Exception as file_metrics_error:
                 logger.warning(f"Failed to collect comprehensive file metrics for {file_path_obj.name}: {file_metrics_error}")
 
             logger.info(f"Manifest entry created for {file_path_obj.name} (status: {status.value})")
-            return manifest_id
+            return file_manifest_id
 
         except Exception as e:
             logger.error(f"Failed to create manifest entry for {file_path}: {e}")
             return ""
-
-    def _calculate_file_checksum(self, file_path: Path, algorithm: str = 'sha256') -> str:
-        """Calculate file checksum for integrity verification."""
-        try:
-            # Skip checksum for very large files to avoid performance issues
-            filesize = file_path.stat().st_size
-            checksum_threshold_mb = int(os.getenv("ETL_CHECKSUM_THRESHOLD_MB", "1000"))  # 1000MB (1GB) default
-            checksum_threshold_bytes = checksum_threshold_mb * 1024 * 1024
-            
-            if filesize > checksum_threshold_bytes:
-                logger.info(f"[PERFORMANCE] Skipping checksum calculation for large file {file_path.name}: {filesize:,} bytes (> {checksum_threshold_mb}MB)")
-                return None
-            
-            hash_func = hashlib.new(algorithm)
-            with open(file_path, 'rb') as f:
-                # Read in chunks to handle large files
-                for chunk in iter(lambda: f.read(8192), b""):
-                    hash_func.update(chunk)
-            return hash_func.hexdigest()
-        except Exception as e:
-            logger.error(f"Failed to calculate checksum for {file_path}: {e}")
-            return None
-
-    def _insert_manifest_entry(
-        self, manifest_id: str, table_name: str, file_path: str, status: AuditStatus,
+    
+    def _insert_file_manifest(
+        self, 
+        file_manifest_id: str, table_name: str, file_path: str, status: AuditStatus,
         checksum: Optional[str], filesize: Optional[int],
         rows_processed: Optional[int], 
         table_manifest_id: str, 
@@ -512,7 +511,7 @@ class AuditService:
 
             with self.database.engine.begin() as conn:
                 conn.execute(text(insert_query), {
-                    'file_audit_id': manifest_id,
+                    'file_audit_id': file_manifest_id,
                     'table_audit_id': table_manifest_id,
                     'entity_name': table_name,
                     'status': norm_status.value,
@@ -526,6 +525,97 @@ class AuditService:
 
         except Exception as e:
             logger.error(f"Failed to insert manifest entry: {e}")
+
+    def update_file_manifest(
+        self, file_manifest_id: str, status: AuditStatus, 
+        rows_processed: Optional[int] = None, 
+        error_msg: Optional[str] = None,
+        notes: Optional[dict] = None
+    ) -> None:
+        """Update an existing file manifest entry with completion details."""
+        try:
+            from sqlalchemy import text
+            import json
+            
+            # Coerce status to enum and build update fields dynamically
+            norm_status = self._coerce_status(status)
+
+            update_fields = ['status = :status', 'completed_at = :completed_at']
+            params = {
+                'file_manifest_id': file_manifest_id,
+                'status': norm_status.value,
+                'completed_at': datetime.now()
+            }
+                
+            if error_msg is not None:
+                update_fields.append('error_message = :error_msg')
+                params['error_msg'] = error_msg
+                
+            if notes is not None:
+                # Write notes into audit_metadata JSON field
+                update_fields.append('notes = :notes')
+                try:
+                    params['notes'] = json.dumps(notes) if isinstance(notes, dict) else json.dumps({'notes': str(notes)})
+                except Exception:
+                    params['notes'] = json.dumps({'notes': str(notes)})
+            
+            # Execute update
+            with self.database.engine.begin() as conn:
+                conn.execute(text(f'''
+                    UPDATE file_audit_manifest 
+                    SET {', '.join(update_fields)}
+                    WHERE file_audit_id = :manifest_id
+                '''), params)
+                
+                # Collect metrics for batch accumulation if this is a completion
+                try:
+                    if norm_status in (AuditStatus.COMPLETED, AuditStatus.FAILED) and rows_processed is not None:
+                        with self.database.engine.connect() as conn:
+                            # Query chain: file_audit → batch_audit → subbatch_audit (latest subbatch)
+                            result = conn.execute(text('''
+                                SELECT s.subbatch_audit_id 
+                                FROM file_audit_manifest f
+                                JOIN batch_audit_manifest b ON f.file_audit_id = b.parent_file_audit_id
+                                JOIN subbatch_audit_manifest s ON b.batch_audit_id = s.parent_batch_audit_id
+                                WHERE f.file_audit_id = :manifest_id
+                                ORDER BY s.started_at DESC
+                                LIMIT 1
+                            '''), {'manifest_id': file_manifest_id})
+                            row = result.fetchone()
+                            if row and row[0]:
+                                subbatch_id = str(row[0])
+                                # Use coerced enum when collecting
+                                self.collect_file_processing_event(subbatch_id, norm_status, int(rows_processed or 0), 0)
+                                logger.debug(f"Collected file metrics: {norm_status}, {rows_processed} rows")
+                except Exception as metrics_error:
+                    logger.debug(f"Could not collect metrics for manifest {file_manifest_id}: {metrics_error}")
+                        
+            logger.debug(f"Updated manifest {file_manifest_id} with status {status}")
+            
+        except Exception as e:
+            logger.error(f"Failed to update file manifest {file_manifest_id}: {e}")
+
+    def _calculate_file_checksum(self, file_path: Path, algorithm: str = 'sha256') -> str:
+        """Calculate file checksum for integrity verification."""
+        try:
+            # Skip checksum for very large files to avoid performance issues
+            filesize = file_path.stat().st_size
+            checksum_threshold_mb = int(os.getenv("ETL_CHECKSUM_THRESHOLD_MB", "1000"))  # 1000MB (1GB) default
+            checksum_threshold_bytes = checksum_threshold_mb * 1024 * 1024
+            
+            if filesize > checksum_threshold_bytes:
+                logger.info(f"[PERFORMANCE] Skipping checksum calculation for large file {file_path.name}: {filesize:,} bytes (> {checksum_threshold_mb}MB)")
+                return None
+            
+            hash_func = hashlib.new(algorithm)
+            with open(file_path, 'rb') as f:
+                # Read in chunks to handle large files
+                for chunk in iter(lambda: f.read(8192), b""):
+                    hash_func.update(chunk)
+            return hash_func.hexdigest()
+        except Exception as e:
+            logger.error(f"Failed to calculate checksum for {file_path}: {e}")
+            return None
 
     def get_file_manifest_history(self, filename: str) -> List[dict]:
         """Get manifest history for a specific file."""
@@ -594,63 +684,6 @@ class AuditService:
             logger.error(f"Error verifying file integrity for {file_path}: {e}")
             return False
 
-    def update_manifest_notes(self, file_path: str, notes: str, append: bool = False) -> None:
-        """Update notes for an existing manifest entry."""
-        try:
-            from sqlalchemy import text
-            from pathlib import Path
-            file_path_obj = Path(file_path)
-            # Get current audit_metadata if appending
-            current_meta = None
-            if append:
-                with self.database.engine.connect() as conn:
-                    query=text('''
-                        SELECT notes 
-                        FROM file_audit_manifest
-                        WHERE file_path = :file_path
-                        ORDER BY updated_at DESC LIMIT 1
-                    ''')
-                    result = conn.execute(
-                        query, 
-                        {'file_path': str(file_path_obj)}
-                    )
-
-                    row = result.fetchone()
-                    if row and row[0]:
-                        try:
-                            current_meta = row[0] if isinstance(row[0], dict) else json.loads(row[0])
-                        except Exception:
-                            current_meta = {'notes': row[0]}
-
-            # Prepare new audit_metadata
-            if append and current_meta and isinstance(current_meta, dict):
-                # merge notes into 'processing_update' or 'notes'
-                existing_notes = current_meta.get('notes')
-                if existing_notes:
-                    merged = f"{existing_notes}; {notes}"
-                else:
-                    merged = notes
-
-                updated_meta = merged
-            else:
-                updated_meta = notes
-
-            # Update the audit_metadata
-            with self.database.engine.begin() as conn:
-                conn.execute(text('''
-                    UPDATE file_audit_manifest
-                    SET notes = :notes, updated_at = :updated_at
-                    WHERE file_path = :file_path
-                '''), {
-                    'file_path': str(file_path_obj),
-                    'notes': json.dumps(updated_meta)
-                })
-
-            logger.info(f"Updated notes for {file_path_obj.name}")
-
-        except Exception as e:
-            logger.error(f"Failed to update manifest notes for {file_path}: {e}")
-
     def update_table_audit_after_conversion(
         self, table_name: str, processed_file_path: str, 
         processing_metadata: dict = None
@@ -718,75 +751,6 @@ class AuditService:
                 
         except Exception as e:
             logger.error(f"Failed to update table audit after conversion for {table_name}: {e}")
-
-    def update_file_manifest(
-        self, manifest_id: str, status: AuditStatus, 
-        rows_processed: Optional[int] = None, 
-        error_msg: Optional[str] = None,
-        notes: Optional[dict] = None
-    ) -> None:
-        """Update an existing file manifest entry with completion details."""
-        try:
-            from sqlalchemy import text
-            import json
-            
-            # Coerce status to enum and build update fields dynamically
-            norm_status = self._coerce_status(status)
-
-            update_fields = ['status = :status', 'completed_at = :completed_at']
-            params = {
-                'manifest_id': manifest_id,
-                'status': norm_status.value,
-                'completed_at': datetime.now()
-            }
-                
-            if error_msg is not None:
-                update_fields.append('error_message = :error_msg')
-                params['error_msg'] = error_msg
-                
-            if notes is not None:
-                # Write notes into audit_metadata JSON field
-                update_fields.append('notes = :notes')
-                try:
-                    params['notes'] = json.dumps(notes) if isinstance(notes, dict) else json.dumps({'notes': str(notes)})
-                except Exception:
-                    params['notes'] = json.dumps({'notes': str(notes)})
-            
-            # Execute update
-            with self.database.engine.begin() as conn:
-                conn.execute(text(f'''
-                    UPDATE file_audit_manifest 
-                    SET {', '.join(update_fields)}
-                    WHERE file_audit_id = :manifest_id
-                '''), params)
-                
-                # Collect metrics for batch accumulation if this is a completion
-                try:
-                    if norm_status in (AuditStatus.COMPLETED, AuditStatus.FAILED) and rows_processed is not None:
-                        with self.database.engine.connect() as conn:
-                            # Query chain: file_audit → batch_audit → subbatch_audit (latest subbatch)
-                            result = conn.execute(text('''
-                                SELECT s.subbatch_audit_id 
-                                FROM file_audit_manifest f
-                                JOIN batch_audit_manifest b ON f.file_audit_id = b.parent_file_audit_id
-                                JOIN subbatch_audit_manifest s ON b.batch_audit_id = s.parent_batch_audit_id
-                                WHERE f.file_audit_id = :manifest_id
-                                ORDER BY s.started_at DESC
-                                LIMIT 1
-                            '''), {'manifest_id': manifest_id})
-                            row = result.fetchone()
-                            if row and row[0]:
-                                subbatch_id = str(row[0])
-                                # Use coerced enum when collecting
-                                self.collect_file_processing_event(subbatch_id, norm_status, int(rows_processed or 0), 0)
-                                logger.debug(f"Collected file metrics: {norm_status}, {rows_processed} rows")
-                except Exception as metrics_error:
-                    logger.debug(f"Could not collect metrics for manifest {manifest_id}: {metrics_error}")
-                        
-            logger.debug(f"Updated manifest {manifest_id} with status {status}")
-            
-        except Exception as e:
-            logger.error(f"Failed to update file manifest {manifest_id}: {e}")
 
     def collect_file_processing_event(self, subbatch_id: str, status: AuditStatus, rows: int = 0, bytes_: int = 0) -> None:
         """
@@ -1049,17 +1013,6 @@ class AuditService:
         except Exception as e:
             logger.error(f"Failed to complete subbatch {subbatch_id}: {e}")
 
-    def _cleanup_batch_context(self, batch_id: uuid.UUID) -> None:
-        """Clean up batch context after completion."""
-        with self._metrics_lock:
-            self._active_batches.pop(str(batch_id), None)
-
-    def _cleanup_subbatch_context(self, subbatch_id: uuid.UUID) -> None:
-        """Clean up subbatch context after completion."""
-        with self._metrics_lock:
-            self._active_subbatches.pop(str(subbatch_id), None)
-            self._subbatch_to_batch.pop(str(subbatch_id), None)
-
     def update_subbatch_metrics(self, subbatch_id: uuid.UUID, rows_processed: int = None, 
                                notes: str = None) -> None:
         """Update metrics for a subbatch (files_processed removed since subbatches always handle 1 file)."""
@@ -1261,94 +1214,6 @@ class AuditService:
             logger.error(f"Failed to collect comprehensive metrics for {table_name}: {e}")
             return {
                 "table_name": table_name,
-                "error": str(e),
-                "collection_timestamp": datetime.now().isoformat()
-            }
-
-    def update_table_audit_with_comprehensive_metrics(
-        self, table_name: str, comprehensive_metrics: Dict[str, Any]
-    ) -> None:
-        """
-        Update table audit record with comprehensive column metrics.
-        
-        Args:
-            table_name: Name of the table
-            comprehensive_metrics: Detailed metrics collected from the data
-        """
-        try:
-            import json
-            
-            # Find the most recent table audit for this table
-            table_audit_id = self._find_table_audit(table_name)
-            if not table_audit_id:
-                logger.warning(f"No table audit found for {table_name} - cannot update with metrics")
-                return
-            
-            # Update the table audit with comprehensive metrics
-            with self.database.engine.begin() as conn:
-                conn.execute(text('''
-                    UPDATE table_audit_manifest 
-                    SET metrics = :metrics,
-                        notes = COALESCE(notes, '{}')::jsonb || (:additional_notes)::jsonb
-                    WHERE table_audit_id = :table_audit_id
-                '''), {
-                    'metrics': json.dumps(comprehensive_metrics),
-                    'additional_notes': json.dumps({
-                        "comprehensive_metrics_updated": True,
-                        "metrics_collection_timestamp": comprehensive_metrics.get("collection_timestamp"),
-                        "data_quality_score": comprehensive_metrics.get("data_quality", {}).get("completeness_percentage", 0)
-                    }),
-                    'table_audit_id': str(table_audit_id)
-                })
-                
-            logger.info(f"Updated table audit for {table_name} with comprehensive metrics")
-            
-        except Exception as e:
-            logger.error(f"Failed to update table audit with comprehensive metrics for {table_name}: {e}")
-
-    def get_table_metrics_summary(self) -> Dict[str, Any]:
-        """
-        Get a summary of metrics across all tables in the audit system.
-        
-        Returns:
-            Dictionary containing summary statistics
-        """
-        try:
-            with self.database.engine.connect() as conn:
-                # Get basic table counts
-                result = conn.execute(text('''
-                    SELECT 
-                        COUNT(*) as total_tables,
-                        COUNT(CASE WHEN status = 'COMPLETED' THEN 1 END) as completed_tables,
-                        COUNT(CASE WHEN metrics IS NOT NULL AND metrics != '{}' THEN 1 END) as tables_with_metrics,
-                        SUM(CASE 
-                            WHEN metrics IS NOT NULL 
-                            AND JSON_EXTRACT_PATH_TEXT(metrics, 'total_rows') IS NOT NULL
-                            THEN CAST(JSON_EXTRACT_PATH_TEXT(metrics, 'total_rows') AS INTEGER)
-                            ELSE 0 
-                        END) as total_rows_across_tables
-                    FROM table_audit_manifest
-                    WHERE ingestion_year = :year AND ingestion_month = :month
-                '''), {'year': self.config.year, 'month': self.config.month})
-                
-                summary_row = result.fetchone()
-                
-                summary = {
-                    "audit_summary": {
-                        "total_tables": summary_row[0] if summary_row else 0,
-                        "completed_tables": summary_row[1] if summary_row else 0,
-                        "tables_with_metrics": summary_row[2] if summary_row else 0,
-                        "total_rows_across_tables": summary_row[3] if summary_row else 0,
-                        "reporting_period": f"{self.config.year}-{self.config.month:02d}"
-                    },
-                    "collection_timestamp": datetime.now().isoformat()
-                }
-                
-                return summary
-                
-        except Exception as e:
-            logger.error(f"Failed to generate metrics summary: {e}")
-            return {
                 "error": str(e),
                 "collection_timestamp": datetime.now().isoformat()
             }
@@ -1620,7 +1485,50 @@ class AuditService:
                 "collection_timestamp": datetime.now().isoformat()
             }
 
-    def update_file_audit_with_metrics(self, file_audit_id: str, file_metrics: Dict[str, Any]) -> None:
+    def update_table_audit_with_comprehensive_metrics(
+        self, table_name: str, comprehensive_metrics: Dict[str, Any]
+    ) -> None:
+        """
+        Update table audit record with comprehensive column metrics.
+        
+        Args:
+            table_name: Name of the table
+            comprehensive_metrics: Detailed metrics collected from the data
+        """
+        try:
+            import json
+            
+            # Find the most recent table audit for this table
+            table_audit_id = self._find_table_audit(table_name)
+            if not table_audit_id:
+                logger.warning(f"No table audit found for {table_name} - cannot update with metrics")
+                return
+            
+            # Update the table audit with comprehensive metrics
+            with self.database.engine.begin() as conn:
+                conn.execute(text('''
+                    UPDATE table_audit_manifest 
+                    SET metrics = :metrics,
+                        notes = COALESCE(notes, '{}')::jsonb || (:additional_notes)::jsonb
+                    WHERE table_audit_id = :table_audit_id
+                '''), {
+                    'metrics': json.dumps(comprehensive_metrics),
+                    'additional_notes': json.dumps({
+                        "comprehensive_metrics_updated": True,
+                        "metrics_collection_timestamp": comprehensive_metrics.get("collection_timestamp"),
+                        "data_quality_score": comprehensive_metrics.get("data_quality", {}).get("completeness_percentage", 0)
+                    }),
+                    'table_audit_id': str(table_audit_id)
+                })
+                
+            logger.info(f"Updated table audit for {table_name} with comprehensive metrics")
+            
+        except Exception as e:
+            logger.error(f"Failed to update table audit with comprehensive metrics for {table_name}: {e}")
+
+    def update_file_audit_with_metrics(
+        self, file_audit_id: str, file_metrics: Dict[str, Any]
+    ) -> None:
         """Update file audit record with comprehensive metrics."""
         try:
             import json
@@ -1646,7 +1554,8 @@ class AuditService:
         except Exception as e:
             logger.error(f"Failed to update file audit {file_audit_id} with metrics: {e}")
 
-    def update_batch_audit_with_metrics(self, batch_audit_id: str, batch_metrics: Dict[str, Any]) -> None:
+    def update_batch_audit_with_metrics(
+        self, batch_audit_id: str, batch_metrics: Dict[str, Any]) -> None:
         """Update batch audit record with comprehensive metrics."""
         try:
             import json
@@ -1674,7 +1583,8 @@ class AuditService:
         except Exception as e:
             logger.error(f"Failed to update batch audit {batch_audit_id} with metrics: {e}")
 
-    def update_subbatch_audit_with_metrics(self, subbatch_audit_id: str, subbatch_metrics: Dict[str, Any]) -> None:
+    def update_subbatch_audit_with_metrics(
+        self, subbatch_audit_id: str, subbatch_metrics: Dict[str, Any]) -> None:
         """Update subbatch audit record with comprehensive metrics."""
         try:
             import json

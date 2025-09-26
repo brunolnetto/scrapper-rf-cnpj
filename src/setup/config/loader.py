@@ -222,14 +222,14 @@ class ConfigLoader:
             workers=int(os.getenv("ETL_LOADING_WORKERS", "4")),
             max_retries=max_retries,
             timeout_seconds=timeout_seconds,
-            use_copy=True,  # Hardcoded - should always be enabled for performance
+            use_copy=True,  # Should always be enabled for performance
             enable_internal_parallelism=True,  # Hardcoded - should always be enabled
             max_batch_size=500000,  # Hardcoded - internal constraint
             min_batch_size=10000,  # Hardcoded - internal constraint
             batch_size_mb=100,  # Hardcoded - redundant with batch_size
             # Async operations and connection pooling
             internal_concurrency=int(os.getenv("ETL_INTERNAL_CONCURRENCY", "3")),
-            async_pool_min_size=1,  # Hardcoded - always start with 1
+            async_pool_min_size=1,
             async_pool_max_size=pool_size
         )
 

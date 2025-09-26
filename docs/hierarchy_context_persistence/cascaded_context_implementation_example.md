@@ -481,7 +481,7 @@ class DataLoadingStrategy:  # Keep ALL existing methods unchanged!
             
             with self.audit_service.subbatch_context(batch_id, file_ctx.table_context.table_name, subbatch_description) as subbatch_id:
                 
-                # Use existing UnifiedLoader with batch context
+                # Use existing DatabaseLoader with batch context
                 subbatch_rows = self._load_subbatch_data(database, file_ctx, batch_id, subbatch_id)
                 total_batch_rows += subbatch_rows
         
@@ -493,14 +493,14 @@ class DataLoadingStrategy:  # Keep ALL existing methods unchanged!
     def _load_file_single_batch(self, database: Database, file_ctx: FileContext) -> int:
         """
         Load small file as single batch using cascaded contexts.
-        Uses existing proven UnifiedLoader for actual data processing.
+        Uses existing proven DatabaseLoader for actual data processing.
         """
         batch_name = f"SingleBatch_{file_ctx.file_path.name}"
         
         with self.audit_service.batch_context(file_ctx, batch_name) as batch_id:
             with self.audit_service.subbatch_context(batch_id, file_ctx.table_context.table_name, "CompleteFile") as subbatch_id:
                 
-                # Use existing UnifiedLoader (no changes needed)
+                # Use existing DatabaseLoader (no changes needed)
                 rows = self._load_subbatch_data(database, file_ctx, batch_id, subbatch_id)
                 
                 # Track subbatch creation
@@ -511,13 +511,13 @@ class DataLoadingStrategy:  # Keep ALL existing methods unchanged!
     def _load_subbatch_data(self, database: Database, file_ctx: FileContext, 
                            batch_id: uuid.UUID, subbatch_id: uuid.UUID) -> int:
         """
-        Load data using existing UnifiedLoader with batch context.
+        Load data using existing DatabaseLoader with batch context.
         This method uses existing proven loading logic.
         """
-        from ....database.dml import UnifiedLoader, table_name_to_table_info
+        from ....database.dml import DatabaseLoader, table_name_to_table_info
         
         table_info = table_name_to_table_info(file_ctx.table_context.table_name)
-        loader = UnifiedLoader(database, self.config)
+        loader = DatabaseLoader(database, self.config)
         
         # Use existing loader with batch context (existing method)
         success, error, rows = loader.load_file(
@@ -526,7 +526,7 @@ class DataLoadingStrategy:  # Keep ALL existing methods unchanged!
         )
         
         if not success:
-            raise Exception(f"UnifiedLoader failed: {error}")
+            raise Exception(f"DatabaseLoader failed: {error}")
         
         return rows
     
@@ -616,7 +616,7 @@ def existing_usage_still_works():
 
 ## Key Benefits Demonstrated
 
-1. **Preserves All Existing Excellence**: Uses existing `UnifiedLoader`, `BatchAccumulator`, development filtering
+1. **Preserves All Existing Excellence**: Uses existing `DatabaseLoader`, `BatchAccumulator`, development filtering
 2. **Natural Hierarchy**: Table → File → Batch → Subbatch flows naturally through cascaded contexts
 3. **Complete Backward Compatibility**: Existing `load_table()` calls work unchanged
 4. **Enhanced Observability**: Complete processing trail with metrics at each level

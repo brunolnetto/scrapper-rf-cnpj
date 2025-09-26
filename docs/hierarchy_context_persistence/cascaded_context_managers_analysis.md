@@ -295,11 +295,11 @@ class DataLoadingStrategy:  # Keep existing methods!
         
         with self.audit_service.batch_context(file_ctx, batch_name) as batch_id:
             with self.audit_service.subbatch_context(batch_id, file_ctx.table_context.table_name, "CompleteFile") as subbatch_id:
-                # Use existing UnifiedLoader
-                from ....database.dml import UnifiedLoader, table_name_to_table_info
+                # Use existing DatabaseLoader
+                from ....database.dml import DatabaseLoader, table_name_to_table_info
                 
                 table_info = table_name_to_table_info(file_ctx.table_context.table_name)
-                loader = UnifiedLoader(database, self.config)
+                loader = DatabaseLoader(database, self.config)
                 
                 success, error, rows = loader.load_file(
                     table_info, file_ctx.file_path,

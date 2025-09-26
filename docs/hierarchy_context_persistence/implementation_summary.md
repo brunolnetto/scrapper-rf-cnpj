@@ -86,10 +86,10 @@ Table Context (load_multiple_tables)
 
 ### Technical Notes
 
-#### UnifiedLoader Integration Required
-The implementation includes a placeholder method `_load_chunk_via_temporary_method()` because we need to integrate with your existing `UnifiedLoader`. The FileLoader provides data chunks, but the UnifiedLoader needs to support loading these chunks.
+#### DatabaseLoader Integration Required
+The implementation includes a placeholder method `_load_chunk_via_temporary_method()` because we need to integrate with your existing `DatabaseLoader`. The FileLoader provides data chunks, but the DatabaseLoader needs to support loading these chunks.
 
-**Next Step:** Update UnifiedLoader to have a `load_batch_data(table_info, batch_chunk, batch_id, subbatch_id)` method.
+**Next Step:** Update DatabaseLoader to have a `load_batch_data(table_info, batch_chunk, batch_id, subbatch_id)` method.
 
 #### Table Context Method
 The code assumes your audit service has a `table_context()` method. If not available, it falls back to `nullcontext()` gracefully.
