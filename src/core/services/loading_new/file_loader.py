@@ -4,10 +4,13 @@ Enhanced file loader with integrated memory monitoring and optimized generators.
 """
 import os
 from typing import Iterable, List, Tuple, Optional, Any
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 from .ingestors import create_batch_generator
+from ..memory.service import MemoryMonitor
 from ....setup.logging import logger
-
+from ....database.engine import Database
 
 class FileLoader:
     """
@@ -17,7 +20,7 @@ class FileLoader:
     def __init__(self, file_path: str, encoding: str = 'utf-8', memory_monitor: Optional[Any] = None):
         self.file_path = file_path
         self.encoding = encoding
-        self.memory_monitor = memory_monitor
+        self.memory_monitor: MemoryMonitor = memory_monitor
         self.format = self._detect_format()
         
         # Log memory status if monitor available
@@ -311,7 +314,9 @@ class FileLoader:
         return (f"MemoryAwareFileLoader(file_path='{self.file_path}', "
                 f"format='{self.format}', encoding='{self.encoding}'{memory_status})")
 
-    def load_records_directly(self, table_info: Any, records: List[Tuple]) -> Tuple[bool, Optional[str], int]:
+    def load_records_directly(
+        self, table_info: Any, records: List[Tuple], database: Database
+    ) -> Tuple[bool, Optional[str], int]:
         """
         Loads a batch of records directly into the target table using an async uploader.
         
@@ -320,16 +325,12 @@ class FileLoader:
         """
         if not records:
             return True, None, 0
-        
-        import os
-        import asyncio
-        from concurrent.futures import ThreadPoolExecutor
 
         # Define an inner async function to perform the actual database operations.
         async def _async_execute():
             # This logic is adapted from the strategy's original helper methods.
             # It assumes the `database` object can provide an async connection pool.
-            if not hasattr(self.database, 'get_async_pool'):
+            if not hasattr(database, 'get_async_pool'):
                 raise NotImplementedError("The database object must have a 'get_async_pool' method.")
             
             # Assuming these are available relative to the UnifiedLoader's file location
@@ -337,7 +338,7 @@ class FileLoader:
             from . import base
             import uuid
              
-            async_pool = await self.database.get_async_pool()
+            async_pool = await database.get_async_pool()
             uploader = FileUploader(memory_monitor=None) # A monitor could be passed if available
 
             async with uploader.managed_connection(async_pool) as conn:

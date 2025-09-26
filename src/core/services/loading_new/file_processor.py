@@ -110,26 +110,26 @@ class FileProcessor:
                 return True, None, 0
 
             # Check if loader supports direct record loading
-            if hasattr(loader, 'load_records_directly'):
-                return loader.load_records_directly(
-                    table_info=table_info,
-                    records=batch_chunk
-                )
-
-            # Fallback: use the existing uploader's copy_records_to_table mechanism
-            return self._load_records_via_uploader(batch_chunk, loader, table_info)
+            return loader.load_records_directly(
+                table_info=table_info,
+                records=batch_chunk
+            )
 
         except Exception as e:
             logger.error(f"[FileProcessor] Failed to load batch chunk: {e}")
             return False, str(e), 0
 
+    # In file_processor.py, fix the integration:
     def _load_records_via_uploader(self, batch_chunk: List[Tuple], loader: Any, table_info: Any) -> Tuple[bool, Optional[str], int]:
-        """
-        Load records directly via uploader mechanism.
-        """
-        # Placeholder for async uploader logic
-        logger.warning("[FileProcessor] Direct uploader not implemented")
-        return False, "Direct uploader not implemented", 0
+        """Use FileUploader for async operations."""
+        from .uploader import FileUploader
+        
+        # Get database from your config or context
+        database = self._get_database_instance()  # You need to implement this
+        uploader = FileUploader(memory_monitor=self.memory_monitor)
+        
+        # Use uploader's async capabilities with proper connection pooling
+        return self._execute_async_upload(uploader, batch_chunk, table_info, database)
 
     def get_file_size(self, file_path: Path) -> int:
         """Get file size in bytes."""
