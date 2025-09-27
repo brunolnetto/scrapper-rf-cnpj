@@ -6,14 +6,15 @@ import pyarrow.parquet as pq
 import csv
 import gc
 from typing import Iterable, List, Tuple, Optional, Any
-from ....setup.logging import logger
 
+from ....setup.logging import logger
+from ..memory.service import MemoryMonitor
 
 def batch_generator_parquet(
     path: str, 
     headers: List[str], 
     chunk_size: int = 20_000,
-    memory_monitor: Optional[Any] = None
+    memory_monitor: Optional[MemoryMonitor] = None
 ) -> Iterable[List[Tuple]]:
     """
     Memory-efficient Parquet batch generator with integrated monitoring.
@@ -95,7 +96,7 @@ def batch_generator_csv(
     headers: List[str], 
     chunk_size: int = 20_000,
     encoding: str = 'utf-8',
-    memory_monitor: Optional[Any] = None
+    memory_monitor: Optional[MemoryMonitor] = None
 ) -> Iterable[List[Tuple]]:
     """
     Memory-efficient CSV batch generator with integrated monitoring.

@@ -22,7 +22,7 @@ class Database:
         """Create all tables for the associated Base in this database."""
         self.base.metadata.create_all(self.engine)
     
-    async def create_asyncpg_pool(
+    async def get_async_pool(
         self
     ) -> asyncpg.Pool:
         """

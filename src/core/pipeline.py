@@ -50,9 +50,9 @@ class ReceitaCNPJPipeline(Pipeline):
     @property
     def data_loader(self):
         """Lazy data loader initialization."""
-        from .services.loading.service import DataLoadingService
+        from .services.loading.service import LoadingService
 
-        self._data_loader = DataLoadingService(
+        self._data_loader = LoadingService(
             self.database,  
             self.loading_strategy, 
             self.config,
