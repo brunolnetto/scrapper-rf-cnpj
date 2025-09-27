@@ -51,8 +51,7 @@ class ConfigLoader:
         config = self._load_typed_config()
         
         # Validate if enabled (temporarily disabled during SOLID migration)
-        if False and self.validate:
-            self._validate_config(config)
+        self._validate_config(config)
         
         self._loaded_config = config
         return config
