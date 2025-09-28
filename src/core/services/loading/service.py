@@ -32,15 +32,16 @@ class FileLoadingService:
     def __init__(
         self,
         database: Database,
-        config: ConfigLoader
+        config: ConfigLoader,
+        audit_service: AuditService
     ):
         self.database = database
         self.config = config
-        self.audit_service = AuditService(database, config)
-        self.memory_monitor = MemoryMonitor(config)
+        self.audit_service = audit_service
+        self.memory_monitor = MemoryMonitor(config.pipeline.memory)
         
         # Initialize service components
-        self.file_handler = FileHandler(config, self.memory_monitor)
+        self.file_handler = FileHandler(config)
         self.database_service = DatabaseService(database, self.memory_monitor)
         self.batch_processor = BatchProcessor(config, self.audit_service)
         
@@ -113,23 +114,13 @@ class FileLoadingService:
         try:
             # FIX: Handle multiple config structures
             parquet_file = None
-            
-            # Try different config path patterns
-            if hasattr(self.config, 'data_sink') and hasattr(self.config.data_sink, 'paths'):
-                try:
-                    parquet_file = self.config.data_sink.paths.get_temporal_conversion_path(
-                        self.config.year, self.config.month
-                    ) / f"{table_name}.parquet"
-                except AttributeError:
-                    pass
                     
-            if not parquet_file and hasattr(self.config, 'pipeline') and hasattr(self.config.pipeline, 'paths'):
-                try:
-                    parquet_file = self.config.pipeline.paths.get_temporal_conversion_path(
-                        self.config.year, self.config.month
-                    ) / f"{table_name}.parquet"
-                except AttributeError:
-                    pass
+            try:
+                parquet_file = self.config.pipeline.data_sink.paths.get_temporal_conversion_path(
+                    self.config.year, self.config.month
+                ) / f"{table_name}.parquet"
+            except AttributeError:
+                pass
             
             if not parquet_file:
                 # Final fallback - construct from year/month if available
@@ -241,6 +232,8 @@ class FileLoadingService:
             try:
                 for batch_chunk in batch_generator:
                     batch_num += 1
+
+                    print('Teste 1')
                     
                     # Memory check before each batch
                     if self.memory_monitor and self.memory_monitor.should_prevent_processing():
@@ -249,7 +242,8 @@ class FileLoadingService:
                         self._update_file_manifest(file_manifest_id, AuditStatus.FAILED, total_processed_rows, error_msg)
                         return False, error_msg, total_processed_rows
                     
-                    # Process batch using DatabaseService with BatchProcessor coordination                    
+                    # Process batch using DatabaseService with BatchProcessor coordination
+                    print('Teste 2')
                     success, error, rows = self.batch_processor.process_batch_with_context(
                         batch_chunk=batch_chunk,
                         loader=self.database_service,
@@ -459,14 +453,16 @@ class FileLoadingService:
                 }
             
             with self.audit_service.database.engine.begin() as conn:
-                conn.execute(text('''
-                    UPDATE table_audit_manifest 
-                    SET completed_at = :completed_at,
-                        notes = :metadata_json
-                    WHERE entity_name = :table_name 
-                    AND ingestion_year = :year 
-                    AND ingestion_month = :month
-                '''), {
+                conn.execute(
+                    text('''
+                        UPDATE table_audit_manifest 
+                        SET completed_at = :completed_at,
+                            notes = :metadata_json
+                        WHERE entity_name = :table_name 
+                        AND ingestion_year = :year 
+                        AND ingestion_month = :month
+                    '''
+                ), {
                     'completed_at': datetime.now(),
                     'metadata_json': json.dumps(completion_metadata),
                     'table_name': table_name,
@@ -488,12 +484,14 @@ class FileLoadingService:
             from sqlalchemy import text
             
             with self.audit_service.database.engine.connect() as conn:
-                result = conn.execute(text('''
-                    SELECT table_audit_id FROM table_audit_manifest 
-                    WHERE entity_name = :entity_name 
-                    ORDER BY created_at DESC 
-                    LIMIT 1
-                '''), {'entity_name': table_name})
+                result = conn.execute(
+                    text('''
+                        SELECT table_audit_id FROM table_audit_manifest 
+                        WHERE entity_name = :entity_name 
+                        ORDER BY created_at DESC 
+                        LIMIT 1
+                    '''), {'entity_name': table_name}
+                )
                 
                 row = result.fetchone()
                 return str(row[0]) if row else None

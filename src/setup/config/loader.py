@@ -10,7 +10,15 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-from .models import AppConfig, DatabaseConfig, PipelineConfig, AuditConfig, DataSourceConfig, DataSinkConfig, PathConfig
+from .models import (
+    AppConfig, 
+    DatabaseConfig, 
+    PipelineConfig, 
+    AuditConfig, 
+    DataSourceConfig, 
+    DataSinkConfig, 
+    PathConfig
+)
 from .validation import ConfigurationValidator
 from ..logging import logger
 
@@ -51,7 +59,8 @@ class ConfigLoader:
         config = self._load_typed_config()
         
         # Validate if enabled (temporarily disabled during SOLID migration)
-        self._validate_config(config)
+        if self.validate:
+            self._validate_config(config)
         
         self._loaded_config = config
         return config
@@ -141,14 +150,12 @@ class ConfigLoader:
         # Create final audit config with database
         audit_config = AuditConfig(
             database=audit_db,
-            manifest_tracking=temp_audit_config.manifest_tracking,
             update_threshold=temp_audit_config.update_threshold,
             update_interval=temp_audit_config.update_interval,
             enable_bulk_updates=temp_audit_config.enable_bulk_updates,
             enable_temporal_context=temp_audit_config.enable_temporal_context,
             default_batch_size=temp_audit_config.default_batch_size,
-            retention_days=temp_audit_config.retention_days,
-            enable_monitoring=temp_audit_config.enable_monitoring
+            retention_days=temp_audit_config.retention_days
         )
         
         # Create main configuration
@@ -175,11 +182,24 @@ class ConfigLoader:
     
     def _load_pipeline_config(self) -> PipelineConfig:
         """Load pipeline configuration with all nested components."""
-        from .models import ConversionConfig, LoadingConfig, DownloadConfig, DevelopmentConfig, Environment
-        
+        from .models import (
+            MemoryMonitorConfig,
+            ConversionConfig, 
+            LoadingConfig, 
+            DownloadConfig, 
+            DevelopmentConfig, 
+            Environment,
+        )
+
+        from ...utils.memory import _get_system_memory_mb
+        sys_mem_mb = _get_system_memory_mb()
+
         # Load environment
         env_str = os.getenv("ENVIRONMENT", "development").lower()
-        environment = Environment(env_str) if env_str in Environment.__members__.values() else Environment.DEVELOPMENT
+        try:
+            environment = Environment[env_str.upper()]
+        except Exception:
+            environment = Environment.DEVELOPMENT
         
         # Load conversion config
         conversion = ConversionConfig(
@@ -195,20 +215,11 @@ class ConfigLoader:
             baseline_buffer_mb=256  # Hardcoded - internal buffer
         )
 
-        # Helper: detect system memory (Linux /proc fallback). Returns MB or None.
-        def _get_system_memory_mb() -> Optional[int]:
-            try:
-                if os.path.exists('/proc/meminfo'):
-                    with open('/proc/meminfo', 'r') as f:
-                        first = f.readline()
-                    # Expect format: MemTotal: 16384256 kB
-                    parts = first.split()
-                    if len(parts) >= 2 and parts[1].isdigit():
-                        kb = int(parts[1])
-                        return kb // 1024
-            except Exception:
-                pass
-            return None
+        memory = MemoryMonitorConfig(
+            memory_limit_mb=max(512, int(sys_mem_mb * 0.5)), # Default to 50% of system memory or at least 512MB
+            cleanup_threshold_ratio=0.8,  # Hardcoded - memory management
+            baseline_buffer_mb=256  # Hardcoded - internal buffer
+        )
         
         # Load loading config (consolidated timeout/retry, removed micro-optimizations)
         timeout_seconds = int(os.getenv("ETL_TIMEOUT_SECONDS", "300"))  # Consolidated timeout
@@ -231,16 +242,13 @@ class ConfigLoader:
             async_pool_min_size=1,
             async_pool_max_size=pool_size
         )
-
-        # Auto-adjust for low-memory production hosts to avoid OOM and validation errors
+        
         try:
-            sys_mem_mb = _get_system_memory_mb()
             if sys_mem_mb is not None and sys_mem_mb < 8192:
                 # Conservative caps for constrained systems
                 logger.warning(f"Low system memory detected: {sys_mem_mb}MB - auto-adjusting ETL settings for safety")
                 # Cap conversion settings
                 conversion.chunk_size = min(conversion.chunk_size, 10000)
-                conversion.memory_limit_mb = min(conversion.memory_limit_mb, max(512, int(sys_mem_mb * 0.5)))
                 conversion.workers = min(conversion.workers, 1)
 
                 # Ensure loading batch sizes do not exceed conversion chunk size
@@ -281,7 +289,7 @@ class ConfigLoader:
         )
         
         # Load main ETL config
-        etl = PipelineConfig(
+        pipeline_config = PipelineConfig(
             environment=environment,
             delete_files=os.getenv("ETL_DELETE_FILES", "true").lower() == "true",
             is_parallel=os.getenv("ETL_IS_PARALLEL", "true").lower() == "true",
@@ -293,7 +301,7 @@ class ConfigLoader:
             development=development
         )
         
-        return etl
+        return pipeline_config
     
     def _load_path_config(self):
         """Load path configuration for DataSinkConfig (clean naming)."""
@@ -313,14 +321,12 @@ class ConfigLoader:
     def _load_audit_config(self) -> AuditConfig:
         """Load audit tracking configuration from environment variables."""
         return AuditConfig(
-            manifest_tracking=os.getenv("ETL_MANIFEST_TRACKING", "false").lower() == "true",
             update_threshold=100,  # Hardcoded - internal optimization detail
             update_interval=30,  # Hardcoded - internal optimization detail
             enable_bulk_updates=True,  # Hardcoded - should always be enabled
             enable_temporal_context=True,  # Hardcoded - should always be enabled
             default_batch_size=20000,  # Hardcoded - internal batch size
             retention_days=30,  # Hardcoded - sensible default retention
-            enable_monitoring=True  # Hardcoded - should always be enabled
         )
     
     def _validate_config(self, config: AppConfig):

@@ -93,11 +93,6 @@ class DataLoadingStrategy(BaseDataLoadingStrategy):
             logger.error(f"[MemoryAwareStrategy] Failed to load table '{table_name}': {e}")
             return False, str(e), 0
 
-    def _create_loader(self, database: Database):
-        """Create appropriate loader instance."""
-        from ....database.dml import UnifiedLoader
-        return UnifiedLoader(database, self.config)
-
     def _apply_development_filtering(self, table_files: Optional[List[str]], table_name: str) -> Optional[List[Path]]:
         """Apply development filtering to files."""
         if not table_files:

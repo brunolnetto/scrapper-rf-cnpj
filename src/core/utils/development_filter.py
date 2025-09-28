@@ -15,11 +15,11 @@ from ...database.models.audit import TableAuditManifest
 class DevelopmentFilter:
     """Development mode filtering with comprehensive controls."""
 
-    def __init__(self, config: Any):
+    def __init__(self, config: DevelopmentConfig):
         # Handle both new SOLID config and legacy config formats
         # SOLID ConfigurationService format via config service
-        self.development = config.pipeline.development
-        self.is_enabled = config.pipeline.development.enabled
+        self.config = config
+        self.is_enabled = config.enabled
 
     def filter_audits_by_size(self, audits: List[TableAuditManifest]) -> List[TableAuditManifest]:
         """Filter audits by file size limit."""
@@ -43,7 +43,7 @@ class DevelopmentFilter:
         if not self.is_enabled:
             return audits
 
-        max_files = self.development.max_files_per_table
+        max_files = self.config.max_files_per_table
         table_groups = {}
         
         # Group audits by table
@@ -75,7 +75,7 @@ class DevelopmentFilter:
         if not self.is_enabled:
             return file_paths
 
-        max_files = self.development.max_files_per_blob
+        max_files = self.config.max_files_per_blob
         if len(file_paths) <= max_files:
             return file_paths
 
@@ -94,7 +94,7 @@ class DevelopmentFilter:
             return True
 
         file_size_mb = file_path.stat().st_size / (1024 * 1024)
-        max_size_mb = self.development.file_size_limit_mb
+        max_size_mb = self.config.file_size_limit_mb
 
         if file_size_mb > max_size_mb:
             logger.debug(
@@ -111,7 +111,7 @@ class DevelopmentFilter:
             return df
 
         original_rows = len(df)
-        row_limit_percent = self.development.row_limit_percent
+        row_limit_percent = self.config.row_limit_percent
         target_rows = max(1, int(original_rows * row_limit_percent))
 
         if target_rows >= original_rows:
@@ -158,10 +158,10 @@ class DevelopmentFilter:
         return {
             "enabled": True,
             "row_sampling": True,
-            "row_limit_percent": self.development.row_limit_percent,
+            "row_limit_percent": self.config.row_limit_percent,
             "file_limiting": True,
-            "max_files_per_table": self.development.max_files_per_table,
-            "file_size_limit_mb": self.development.file_size_limit_mb,
+            "max_files_per_table": self.config.max_files_per_table,
+            "file_size_limit_mb": self.config.file_size_limit_mb,
             "table_name": table_name
         }
 
@@ -183,9 +183,9 @@ class DevelopmentFilter:
             "files_processed": files_processed,
             "rows_processed": rows_processed,
             "configuration": {
-                "row_limit_percent": self.development.row_limit_percent,
-                "max_files_per_table": self.development.max_files_per_table,
-                "file_size_limit_mb": self.development.file_size_limit_mb
+                "row_limit_percent": self.config.row_limit_percent,
+                "max_files_per_table": self.config.max_files_per_table,
+                "file_size_limit_mb": self.config.file_size_limit_mb
             }
         }
 
@@ -260,7 +260,7 @@ class DevelopmentFilter:
         
         # If file_info has file_size attribute, check it
         file_size_mb = file_info.file_size / (1024 * 1024)
-        max_size_mb = self.development.file_size_limit_mb
+        max_size_mb = self.config.file_size_limit_mb
         
         if file_size_mb > max_size_mb:
             logger.debug(

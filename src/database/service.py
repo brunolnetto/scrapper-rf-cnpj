@@ -15,6 +15,8 @@ from concurrent.futures import ThreadPoolExecutor
 from . import utils as base
 from ..setup.logging import logger
 from .models.audit import AuditStatus
+from .engine import Database
+from ..core.services.memory.service import MemoryMonitor
 
 
 class DatabaseService:
@@ -22,7 +24,7 @@ class DatabaseService:
     Handles all database operations: connections, temp tables, and record loading.
     """
     
-    def __init__(self, database: Any, memory_monitor: Optional[Any] = None):
+    def __init__(self, database: Database, memory_monitor: Optional[MemoryMonitor] = None):
         self.database = database
         self.memory_monitor = memory_monitor
         
@@ -64,35 +66,11 @@ class DatabaseService:
     def _sync_wrapper(self, coro):
         """
         Robust sync/async boundary handling.
-        FIX: More reliable async execution from sync context.
+        FIX: Simplified to use asyncio.run for each async call.
         """
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # Create new event loop in thread
-                import threading
-                result = [None]
-                exception = [None]
-                
-                def run_in_thread():
-                    try:
-                        new_loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(new_loop)
-                        result[0] = new_loop.run_until_complete(coro)
-                        new_loop.close()
-                    except Exception as e:
-                        exception[0] = e
-                
-                thread = threading.Thread(target=run_in_thread)
-                thread.start()
-                thread.join(timeout=300)  # 5 minute timeout
-                
-                if exception[0]:
-                    raise exception[0]
-                return result[0]
-            else:
-                return loop.run_until_complete(coro)
-                
+            import asyncio
+            return asyncio.run(coro)
         except Exception as e:
             logger.error(f"Sync wrapper failed: {e}")
             return False, str(e), 0
@@ -427,7 +405,8 @@ class DatabaseService:
         """Get async connection pool from database."""
         if not hasattr(self.database, 'get_async_pool'):
             raise NotImplementedError("Database must have get_async_pool method")
-        return self.database.get_async_pool()
+        import asyncio
+        return asyncio.run(self.database.get_async_pool())
 
     def log_status(self, operation: str):
         """Log current database service status."""

@@ -118,7 +118,7 @@ class DatabaseConfig(BaseModel):
         return f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.maintenance_db}"
 
 
-class ConversionConfig(MemoryMonitorConfig):
+class ConversionConfig(BaseModel):
     """CSV to Parquet conversion configuration."""
     
     chunk_size: int = Field(
@@ -503,22 +503,28 @@ class PipelineConfig(BaseModel):
     """Main pipeline configuration with nested components."""
     
     environment: Environment = Field(default=Environment.DEVELOPMENT, description="Pipeline execution environment (DEVELOPMENT/PRODUCTION)")
+    development: DevelopmentConfig = Field(default_factory=DevelopmentConfig, description="Development mode and testing settings")
+    
     delete_files: bool = Field(default=True, description="Delete temporary files after successful processing")
     is_parallel: bool = Field(default=True, description="Enable parallel processing across multiple cores")
     
     # Temporal configuration (set at runtime)
-    year: Optional[int] = Field(default=None, ge=2020, le=2030, description="Year for data processing")
+    year: Optional[int] = Field(default=None, gt=0, description="Year for data processing")
     month: Optional[int] = Field(default=None, ge=1, le=12, description="Month for data processing")
+
+    # Memory monitoring and management
+    memory: MemoryMonitorConfig = Field(default_factory=MemoryMonitorConfig, description="Memory monitoring and management settings")
     
+    # Data source configuration (urls, formats, encoding)
+    data_source: DataSourceConfig = Field(default_factory=DataSourceConfig, description="Brazilian Federal Revenue data source settings")
+
     # Data sink configuration (output paths and database)
     data_sink: DataSinkConfig = Field(default_factory=DataSinkConfig, description="Data sink configuration for outputs and database")
     
-    # Nested operation configurations
-    data_source: DataSourceConfig = Field(default_factory=DataSourceConfig, description="Brazilian Federal Revenue data source settings")
+    # Pipeline steps configurations
     download: DownloadConfig = Field(default_factory=DownloadConfig, description="File download and verification settings")
     conversion: ConversionConfig = Field(default_factory=ConversionConfig, description="CSV to Parquet conversion settings")
     loading: LoadingConfig = Field(default_factory=LoadingConfig, description="Database loading and batching settings")
-    development: DevelopmentConfig = Field(default_factory=DevelopmentConfig, description="Development mode and testing settings")
     
     # Direct access properties for clean architecture
     @property
@@ -589,19 +595,12 @@ class PipelineConfig(BaseModel):
         return self
 
 
-
 class AuditConfig(BaseModel):
     """Audit and tracking configuration."""
     
     # Audit database connection
     database: DatabaseConfig = Field(default_factory=DatabaseConfig, description="Audit database for ETL tracking and manifests")
-    
-    # Manifest tracking
-    manifest_tracking: bool = Field(
-        default=False, 
-        description="Enable comprehensive audit trail and batch tracking"
-    )
-    
+
     # Batch tracking settings
     update_threshold: int = Field(
         default=100,
@@ -634,10 +633,6 @@ class AuditConfig(BaseModel):
         ge=1,
         le=365,
         description="Number of days to retain batch tracking data"
-    )
-    enable_monitoring: bool = Field(
-        default=True,
-        description="Enable real-time batch monitoring and alerts"
     )
 
 
