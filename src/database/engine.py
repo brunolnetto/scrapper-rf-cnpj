@@ -2,6 +2,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import pool
 import asyncpg
+from sqlalchemy.ext.declarative import DeclarativeMeta
 
 
 from ..setup.logging import logger
@@ -13,7 +14,7 @@ class Database:
     Provides a method to create all tables for its Base.
     """
 
-    def __init__(self, engine, session_maker, base):
+    def __init__(self, engine, session_maker, base: DeclarativeMeta):
         self.engine = engine
         self.session_maker = session_maker
         self.base = base

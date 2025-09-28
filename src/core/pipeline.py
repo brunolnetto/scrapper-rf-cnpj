@@ -12,7 +12,6 @@ from .interfaces import Pipeline
 
 from .schemas import FileInfo, AuditMetadata
 from .services.audit.service import AuditService
-from .services.loading.strategies import DataLoadingStrategy
 
 class ReceitaCNPJPipeline(Pipeline):
     def __init__(self, config_service: ConfigurationService = None) -> None:
@@ -31,8 +30,7 @@ class ReceitaCNPJPipeline(Pipeline):
 
         # Initialize file downloader and uploader (these are fast)
         self.file_downloader = FileDownloadService(config=config_service)
-        self.loading_strategy = DataLoadingStrategy(self.config)
-
+        
     @property
     def database(self):
         """Lazy database initialization."""
@@ -50,13 +48,11 @@ class ReceitaCNPJPipeline(Pipeline):
     @property
     def data_loader(self):
         """Lazy data loader initialization."""
-        from .services.loading.service import LoadingService
+        from .services.loading.service import FileLoadingService
 
-        self._data_loader = LoadingService(
+        self._data_loader = FileLoadingService(
             self.database,  
-            self.loading_strategy, 
             self.config,
-            audit_service=self.audit_service
         )
         return self._data_loader
 
@@ -97,10 +93,7 @@ class ReceitaCNPJPipeline(Pipeline):
         )
         audit_db.create_tables()
         self._audit_service = AuditService(audit_db, self.config)
-        
-        # Connect the audit service to the loading strategy
-        self.loading_strategy.audit_service = self._audit_service
-        
+
         self._initialized = True
 
     def _generate_batch_name(self) -> str:

@@ -103,8 +103,7 @@ def process_csv_with_polars_strategies(
     expected_columns: List[str],
     delimiter: str,
     config: ConversionConfig,
-    memory_monitor: MemoryMonitor,
-    progress_callback: Optional[Callable[[int], None]] = None
+    memory_monitor: MemoryMonitor
 ) -> Dict[str, any]:
     """
     Process CSV using progressive Polars-only strategies.
@@ -150,7 +149,7 @@ def process_csv_with_polars_strategies(
                 
                 result = _execute_polars_strategy(
                     csv_path, output_path, expected_columns, delimiter,
-                    strategy, memory_monitor, progress_callback
+                    strategy, memory_monitor
                 )
                 
                 # Strategy succeeded
@@ -196,8 +195,7 @@ def _execute_polars_strategy(
     expected_columns: List[str],
     delimiter: str,
     strategy: ProcessingStrategy,
-    memory_monitor: MemoryMonitor,
-    progress_callback: Optional[Callable[[int], None]] = None
+    memory_monitor: MemoryMonitor
 ) -> Dict[str, any]:
     """
     Execute a specific Polars processing strategy.
@@ -215,13 +213,13 @@ def _execute_polars_strategy(
         # Direct streaming approach
         return _execute_streaming_strategy(
             csv_path, output_path, expected_columns, delimiter,
-            strategy, inferred_schema, memory_monitor, progress_callback
+            strategy, inferred_schema, memory_monitor
         )
     else:
         # Chunked processing approach
         return _execute_chunked_strategy(
             csv_path, output_path, expected_columns, delimiter,
-            strategy, inferred_schema, memory_monitor, progress_callback
+            strategy, inferred_schema, memory_monitor
         )
 
 def _execute_streaming_strategy(
@@ -231,8 +229,7 @@ def _execute_streaming_strategy(
     delimiter: str,
     strategy: ProcessingStrategy,
     inferred_schema: Optional[Dict],
-    memory_monitor: MemoryMonitor,
-    progress_callback: Optional[Callable[[int], None]] = None
+    memory_monitor: MemoryMonitor
 ) -> Dict[str, any]:
     """
     Execute streaming strategy using Polars native streaming.
@@ -303,9 +300,6 @@ def _execute_streaming_strategy(
         logger.warning(f"Could not determine row count: {e}")
         row_count = 0
 
-    if progress_callback:
-        progress_callback(row_count)
-
     return {
         "rows_processed": row_count,
         "input_bytes": csv_path.stat().st_size,
@@ -321,8 +315,7 @@ def _execute_chunked_strategy(
     delimiter: str,
     strategy: ProcessingStrategy,
     inferred_schema: Optional[Dict],
-    memory_monitor: MemoryMonitor,
-    progress_callback: Optional[Callable[[int], None]] = None
+    memory_monitor: MemoryMonitor
 ) -> Dict[str, any]:
     """
     Execute chunked processing strategy using Polars with file-level chunking.
@@ -446,9 +439,6 @@ def _execute_chunked_strategy(
             raise RuntimeError("Final output file was not created")
         
         output_bytes = output_path.stat().st_size
-        
-        if progress_callback:
-            progress_callback(total_rows)
         
         return {
             "rows_processed": total_rows,
@@ -702,7 +692,7 @@ def convert_csvs_to_parquet(
         Progress, SpinnerColumn, BarColumn, TextColumn,
         TimeElapsedColumn, MofNCompleteColumn, TimeRemainingColumn
     )
-    from ...utils.models import get_table_columns
+    from ....database.utils import get_table_columns
 
     success_count = 0
     error_count = 0
@@ -782,7 +772,7 @@ def convert_csvs_to_parquet(
                     time.sleep(1.0)
                 
                 try:
-                    from ...utils.models import get_table_columns
+                    from ....database.utils import get_table_columns
                     expected_columns = get_table_columns(table_name)
                     
                     result = convert_table_csvs(

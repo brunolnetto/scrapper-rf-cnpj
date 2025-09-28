@@ -24,19 +24,7 @@ from .batch_processor import BatchProcessor
 from .file_handler import FileHandler
 
 
-class DatabaseServiceAdapter:
-    """
-    FIX: Adapter to make DatabaseService compatible with BatchProcessor's loader interface.
-    """
-    def __init__(self, database_service: DatabaseService):
-        self.database_service = database_service
-    
-    def load_records_directly(self, table_info: Any, records: List[Tuple]) -> Tuple[bool, Optional[str], int]:
-        """Adapter method that delegates to DatabaseService."""
-        return self.database_service.load_records_directly(table_info, records)
-
-
-class LoadingService:
+class FileLoadingService:
     """
     Main orchestrator that coordinates file processing, database operations, and audit management.
     """
@@ -54,7 +42,7 @@ class LoadingService:
         # Initialize service components
         self.file_handler = FileHandler(config, self.memory_monitor)
         self.database_service = DatabaseService(database, self.memory_monitor)
-        self.batch_processor = BatchProcessor(self.audit_service, config)
+        self.batch_processor = BatchProcessor(config, self.audit_service)
         
         self._pipeline_batch_id = None
         logger.info("LoadingService initialized with integrated memory monitoring")
@@ -261,13 +249,10 @@ class LoadingService:
                         self._update_file_manifest(file_manifest_id, AuditStatus.FAILED, total_processed_rows, error_msg)
                         return False, error_msg, total_processed_rows
                     
-                    # Process batch using DatabaseService with BatchProcessor coordination
-                    # FIX: Create adapter that makes DatabaseService look like expected loader interface
-                    loader_adapter = DatabaseServiceAdapter(self.database_service)
-                    
+                    # Process batch using DatabaseService with BatchProcessor coordination                    
                     success, error, rows = self.batch_processor.process_batch_with_context(
                         batch_chunk=batch_chunk,
-                        loader=loader_adapter,
+                        loader=self.database_service,
                         table_info=table_info,
                         table_name=table_name,
                         batch_num=batch_num,
