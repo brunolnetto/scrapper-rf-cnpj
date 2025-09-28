@@ -146,9 +146,6 @@ def table_name_to_table_info(table_name: str) -> TableInfo:
     transform_map = table_info_dict.get("transform_map", lambda x: x)
     expression = table_info_dict["expression"]
     
-    # Get the SQLAlchemy model class for this table
-    # Search through all mappers in the registry
-    from ..utils.models import MainBase    
     table_model = get_table_model(table_name, MainBase)
 
     # Create table info object

@@ -18,7 +18,7 @@ class FileHandler:
     
     def __init__(self, config: ConfigLoader):
         self.config = config
-        self.memory_monitor = MemoryMonitor(config)
+        self.memory_monitor = MemoryMonitor(config.pipeline.memory)
     
     def detect_format(self, file_path: str) -> str:
         """Memory-efficient format detection."""

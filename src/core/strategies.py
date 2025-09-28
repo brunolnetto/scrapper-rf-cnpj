@@ -363,11 +363,6 @@ class FullETLStrategy:
                 logger.info(f"[FULL-ETL] ETL job for {year}-{str(month).zfill(2)} completed successfully.")
                 logger.info(f"[FULL-ETL] Data successfully upserted to production database '{prod_db}'.")
                 
-                # Log row count changes and update audit metadata with comprehensive metrics
-                self._update_audit_metadata_with_comprehensive_metrics(
-                    audit_metadata, initial_row_counts, final_row_counts, config_service, pipeline
-                )
-                
                 return audit_metadata
             else:
                 logger.warning("[FULL-ETL] No data processed")

@@ -46,8 +46,8 @@ class Database:
             dsn = f"postgresql://{url.username}@{url.host}:{url.port or 5432}/{url.database}"
         
         # Get pool configuration from loading config
-        min_size = getattr(self.config.pipeline.loading, 'async_pool_min_size', 2)
-        max_size = getattr(self.config.pipeline.loading, 'async_pool_max_size', 10)
+        min_size = 1
+        max_size = 100
         
         logger.info(f"[ConnectionFactory] Creating asyncpg pool (min: {min_size}, max: {max_size})")
         logger.debug(f"[ConnectionFactory] DSN: {dsn.split('@')[0]}@***")
