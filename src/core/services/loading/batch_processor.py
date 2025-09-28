@@ -8,6 +8,7 @@ from contextlib import contextmanager
 import uuid
 from ....setup.logging import logger
 from ....database.models.audit import AuditStatus
+from ....setup.config.loader import ConfigLoader
 
 
 class BatchProcessor:
@@ -15,7 +16,9 @@ class BatchProcessor:
     Handles batch and subbatch processing with proper audit context management.
     """
 
-    def __init__(self, audit_service: Optional[Any] = None, config: Optional[Any] = None):
+    def __init__(
+        self, config: Optional[ConfigLoader] = None, audit_service: Optional[Any] = None
+    ):
         self.audit_service = audit_service
         self.config = config
 

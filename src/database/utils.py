@@ -3,7 +3,6 @@ from typing import List, Tuple
 
 from ..core.constants import TABLES_INFO_DICT
 from ..core.schemas import TableInfo
-from ..core.utils import get_table_columns
 from ..setup.logging import logger
 
 from typing import List, Dict, Set

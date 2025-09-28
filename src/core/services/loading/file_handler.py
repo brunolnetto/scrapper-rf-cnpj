@@ -7,6 +7,8 @@ from typing import Iterable, List, Tuple, Optional, Any, Dict
 from pathlib import Path
 from ....setup.logging import logger
 from .ingestors import create_batch_generator
+from ..memory.service import MemoryMonitor
+from ....setup.config.loader import ConfigLoader
 
 
 class FileHandler:
@@ -14,9 +16,9 @@ class FileHandler:
     Handles all file-related operations: detection, validation, and batch processing.
     """
     
-    def __init__(self, config: Any, memory_monitor: Optional[Any] = None):
+    def __init__(self, config: ConfigLoader):
         self.config = config
-        self.memory_monitor = memory_monitor
+        self.memory_monitor = MemoryMonitor(config)
     
     def detect_format(self, file_path: str) -> str:
         """Memory-efficient format detection."""
