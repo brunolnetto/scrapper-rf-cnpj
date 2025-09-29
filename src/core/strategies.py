@@ -87,8 +87,8 @@ class DownloadAndLoadStrategy:
             download_path = str(config_service.pipeline.get_temporal_download_path(year, month))
             audit_metadata = pipeline.audit_service.create_audit_metadata(downloaded_files, download_path)
             
-            # Insert table audits before loading
-            pipeline.audit_service.insert_audits(audit_metadata)
+            # Insert table audits before loading (do not create file manifests yet)
+            pipeline.audit_service.insert_audits(audit_metadata, create_file_manifests=False)
             
             # Convert
             converted_files = pipeline.convert_to_parquet(audit_metadata)
@@ -199,8 +199,8 @@ class ConvertAndLoadStrategy:
             conversion_path = pipeline.convert_to_parquet(audit_metadata)
             logger.info(f"[CONVERT-LOAD] Files converted to Parquet: {conversion_path}")
             
-            # Insert table audits into the database first
-            pipeline.audit_service.insert_audits(audit_metadata)
+            # Insert table audits into the database first (pre-conversion insert - skip file manifests)
+            pipeline.audit_service.insert_audits(audit_metadata, create_file_manifests=False)
             logger.info("[CONVERT-LOAD] Table audits inserted successfully")
             
             # Load to database
@@ -238,8 +238,8 @@ class LoadOnlyStrategy:
                 logger.warning("[LOAD-ONLY] No existing files found to load")
                 return None
             
-            # Insert table audits into the database first
-            pipeline.audit_service.insert_audits(audit_metadata)
+            # Insert table audits into the database first (pre-load insert - skip file manifests)
+            pipeline.audit_service.insert_audits(audit_metadata, create_file_manifests=False)
             logger.info("[LOAD-ONLY] Table audits inserted successfully")
             
             # Use data loader to load into database

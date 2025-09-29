@@ -390,13 +390,18 @@ class ReceitaCNPJPipeline(Pipeline):
         for table_name in audit_map.keys():
             parquet_file_path = output_dir / f"{table_name}.parquet" 
             if parquet_file_path.exists():
+                # flatten CSV list from audit_map for provenance
+                all_csvs = []
+                for zip_name, files in audit_map.get(table_name, {}).items():
+                    all_csvs.extend(files)
+
                 processing_metadata = {
                     "conversion_method": "convert_csvs_to_parquet_smart",
                     "output_format": "parquet",
                     "output_file_size_bytes": parquet_file_path.stat().st_size  # Moved from table to file level
                 }
                 self.audit_service.update_table_audit_after_conversion(
-                    table_name, str(parquet_file_path), processing_metadata
+                    table_name, str(parquet_file_path), processing_metadata, original_sources=all_csvs
                 )
             else:
                 logger.warning(f"Expected Parquet file not found: {parquet_file_path}")
@@ -560,13 +565,14 @@ class ReceitaCNPJPipeline(Pipeline):
         data_year = self.config.year
         data_month = self.config.month
         
-        # Create a minimal audit list for compatibility
+        # Create a minimal audit list; include the actual CSV filenames so
+        # downstream insertion doesn't create synthetic file manifests.
         audit_list = []
-        for table_name in tablename_to_files.keys():
+        for table_name, files in tablename_to_files.items():
             synthetic_audit = TableAuditManifestSchema(
                 table_audit_id=str(uuid4()),  # Generate a proper UUID string
                 entity_name=table_name,
-                source_files=["synthetic_conversion"],  # Fake filename for compatibility
+                source_files=list(files),  # Use actual CSV filenames
                 status=AuditStatus.PENDING,
                 ingestion_year=data_year,
                 ingestion_month=data_month,

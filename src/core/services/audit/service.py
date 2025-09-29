@@ -42,7 +42,7 @@ class BatchAccumulator:
     start_time: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
 
-    def add_file_event(self, status: AuditStatus, rows: int = 0):
+    def add_file_event(self, status: AuditStatus, rows: int = 0, bytes_: int = 0):
         """Add a file processing event to the accumulator.
 
         Accepts legacy status strings and normalizes them to the
@@ -70,6 +70,10 @@ class BatchAccumulator:
         if norm_status == AuditStatus.COMPLETED:
             self.files_completed += 1
             self.total_rows += int(rows or 0)
+            try:
+                self.total_bytes += int(bytes_ or 0)
+            except Exception:
+                pass
         elif norm_status == AuditStatus.FAILED:
             self.files_failed += 1
         # update last activity timestamp
@@ -269,9 +273,15 @@ class AuditService:
             # Extract file information from audit
             file_path = audit.source_files[0]  # Use first filename
 
+            # Skip synthetic conversion markers that are used to reuse conversion
+            # infrastructure but do not represent real processed files.
+            if isinstance(file_path, str) and file_path == "synthetic_conversion":
+                logger.debug(f"Skipping synthetic conversion manifest for: {file_path}")
+                return
+
             # Skip ZIP files - they shouldn't be in file_ingestion_manifests
             # Only processed CSV/Parquet files should be tracked there
-            if file_path.endswith('.zip'):
+            if isinstance(file_path, str) and file_path.endswith('.zip'):
                 logger.debug(f"Skipping manifest entry for ZIP file: {file_path}")
                 return
 
@@ -527,22 +537,27 @@ class AuditService:
             logger.error(f"Failed to insert manifest entry: {e}")
 
     def update_file_manifest(
-        self, file_manifest_id: str, status: AuditStatus, 
-        rows_processed: Optional[int] = None, 
+        self,
+        file_manifest_id: Optional[str] = None,
+        manifest_id: Optional[str] = None,
+        status: AuditStatus = AuditStatus.PENDING,
+        rows_processed: Optional[int] = None,
         error_msg: Optional[str] = None,
-        notes: Optional[dict] = None
+        notes: Optional[dict] = None,
     ) -> None:
         """Update an existing file manifest entry with completion details."""
         try:
             from sqlalchemy import text
             import json
-            
+            # Normalize manifest id (accept either keyword)
+            manifest = manifest_id or file_manifest_id
+
             # Coerce status to enum and build update fields dynamically
             norm_status = self._coerce_status(status)
 
             update_fields = ['status = :status', 'completed_at = :completed_at']
             params = {
-                'file_manifest_id': file_manifest_id,
+                'manifest_id': manifest,
                 'status': norm_status.value,
                 'completed_at': datetime.now()
             }
@@ -554,10 +569,7 @@ class AuditService:
             if notes is not None:
                 # Write notes into audit_metadata JSON field
                 update_fields.append('notes = :notes')
-                try:
-                    params['notes'] = json.dumps(notes) if isinstance(notes, dict) else json.dumps({'notes': str(notes)})
-                except Exception:
-                    params['notes'] = json.dumps({'notes': str(notes)})
+                params['notes'] = notes
             
             # Execute update
             with self.database.engine.begin() as conn:
@@ -686,7 +698,8 @@ class AuditService:
 
     def update_table_audit_after_conversion(
         self, table_name: str, processed_file_path: str, 
-        processing_metadata: dict = None
+        processing_metadata: dict = None,
+        original_sources: list | None = None,
     ) -> None:
         """
         Update table audit after file conversion to reference processed files instead of source files.
@@ -725,13 +738,20 @@ class AuditService:
                 metadata.update({
                     "conversion_completed": True,
                     "converted_file": processed_filename,
-                    "conversion_timestamp": datetime.now().isoformat()
+                    "conversion_timestamp": datetime.now().isoformat(),
+                    "provenance": "converted_parquet",
                 })
-                
-                # Update the table audit
-                source_files_json = json.dumps([processed_filename])
+
+                # Preserve or set source_files: prefer provided original_sources
+                if original_sources:
+                    source_files_json = json.dumps(list(original_sources))
+                    # also keep original_sources in notes for clarity
+                    metadata.setdefault('original_sources', list(original_sources))
+                else:
+                    source_files_json = json.dumps([processed_filename])
+
                 metadata_json = json.dumps(metadata)
-                
+
                 conn.execute(text('''
                     UPDATE table_audit_manifest 
                     SET source_files = :source_files,

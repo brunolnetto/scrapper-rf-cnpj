@@ -81,6 +81,39 @@ class FileLoadingService:
                 self._connection_pool = await self.database.get_async_pool()
         return self._connection_pool
 
+    # --- Small helpers to keep code concise and consistent ---
+    def _serialize_notes(self, notes: dict) -> str:
+        """Serialize notes dict to JSON string for DB storage.
+
+        Central helper so all notes are consistently serialized and
+        easier to change in one place if needed.
+        """
+        try:
+            return json.dumps(notes)
+        except Exception:
+            # Fallback to a safe representation
+            try:
+                return json.dumps({"error": "notes_serialization_failed"})
+            except Exception:
+                return "{}"
+
+    def _find_existing_file_manifest(self, file_path_obj: Path, table_manifest_id: str) -> Optional[str]:
+        """Return existing file_audit_id for given file_path + table_manifest, or None."""
+        try:
+            from sqlalchemy import text
+            with self.audit_service.database.engine.connect() as conn:
+                result = conn.execute(
+                    text('''
+                        SELECT file_audit_id FROM file_audit_manifest
+                        WHERE file_path = :file_path AND parent_table_audit_id = :table_audit_id
+                        ORDER BY created_at DESC LIMIT 1
+                    '''), {'file_path': str(file_path_obj), 'table_audit_id': table_manifest_id}
+                )
+                row = result.fetchone()
+                return str(row[0]) if row and row[0] else None
+        except Exception:
+            return None
+
 
 
     async def load_table(
@@ -271,14 +304,29 @@ class FileLoadingService:
             
             # Find table audit for proper linking
             table_manifest_id = await asyncio.to_thread(self._find_table_audit_by_table_name, table_name)
-            
+
             # Create file manifest if audit service available
             file_manifest_id = None
             if table_manifest_id and self.audit_service:
                 file_manifest_id = await asyncio.to_thread(
-                    self._create_file_manifest, 
+                    self._create_file_manifest,
                     str(file_path), table_name, table_manifest_id
-            )
+                )
+
+            # Start a top-level batch to group all batches for this file (audit entries are sync)
+            batch_id = None
+            if file_manifest_id and self.audit_service:
+                try:
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+                    batch_name = f"FileLoad_{file_path.name}_{timestamp}"
+                    batch_id = await asyncio.to_thread(
+                        self.audit_service._start_batch,
+                        table_name,
+                        batch_name,
+                        file_manifest_id
+                    )
+                except Exception:
+                    batch_id = None
 
             # Process file with batch context management
             total_processed_rows = 0
@@ -309,6 +357,7 @@ class FileLoadingService:
                         batch_num=batch_num,
                         file_manifest_id=file_manifest_id,
                         table_manifest_id=table_manifest_id,
+                        batch_id=batch_id,
                         recommendations=recommendations
                     )
                     
@@ -327,6 +376,17 @@ class FileLoadingService:
                     self._update_file_manifest,
                     file_manifest_id, AuditStatus.COMPLETED, total_processed_rows
                 )
+
+                # Complete the top-level batch grouping this file
+                if batch_id and self.audit_service:
+                    try:
+                        await asyncio.to_thread(
+                            self.audit_service._complete_batch_with_accumulated_metrics,
+                            batch_id,
+                            AuditStatus.COMPLETED
+                        )
+                    except Exception:
+                        pass
                 
                 logger.info(f"[LoadingService] File processing complete: {total_processed_rows} total rows")
                 return True, None, total_processed_rows
@@ -358,6 +418,7 @@ class FileLoadingService:
         batch_num: int,
         file_manifest_id: Optional[str],
         table_manifest_id: Optional[str],
+        batch_id: Optional[str],
         recommendations: dict
     ) -> Tuple[bool, Optional[str], int]:
         """
@@ -398,7 +459,36 @@ class FileLoadingService:
                             insert_sql = f'INSERT INTO {base.quote_ident(table_info.table_name)} SELECT * FROM {base.quote_ident(tmp_table)}'
                             await conn.execute(insert_sql)
                     
-                    return True, None, len(transformed_batch)
+                    # If we have an audit batch, create a subbatch and record metrics
+                    rows_processed = len(transformed_batch)
+                    if batch_id and self.audit_service:
+                        try:
+                            subbatch_name = f"Subbatch_batch{batch_num}_rows{rows_processed}"
+                            subbatch_id = await asyncio.to_thread(
+                                self.audit_service._start_subbatch,
+                                batch_id,
+                                table_name,
+                                subbatch_name
+                            )
+
+                            # Collect metrics in-memory and persist subbatch completion
+                            await asyncio.to_thread(
+                                self.audit_service.collect_file_processing_event,
+                                subbatch_id,
+                                AuditStatus.COMPLETED,
+                                int(rows_processed),
+                                0
+                            )
+
+                            await asyncio.to_thread(
+                                self.audit_service._complete_subbatch_with_accumulated_metrics,
+                                subbatch_id,
+                                AuditStatus.COMPLETED
+                            )
+                        except Exception as e:
+                            logger.debug(f"Failed to record subbatch metrics: {e}")
+
+                    return True, None, rows_processed
                     
                 finally:
                     # Always cleanup temp table
@@ -408,6 +498,31 @@ class FileLoadingService:
                         pass
                         
         except Exception as e:
+            # If we have batch context, try to mark a failed subbatch for diagnostics
+            try:
+                if batch_id and self.audit_service:
+                    failed_subbatch = await asyncio.to_thread(
+                        self.audit_service._start_subbatch,
+                        batch_id,
+                        table_name,
+                        f"failed_batch_{batch_num}"
+                    )
+                    await asyncio.to_thread(
+                        self.audit_service.collect_file_processing_event,
+                        failed_subbatch,
+                        AuditStatus.FAILED,
+                        0,
+                        0
+                    )
+                    await asyncio.to_thread(
+                        self.audit_service._complete_subbatch_with_accumulated_metrics,
+                        failed_subbatch,
+                        AuditStatus.FAILED,
+                        str(e)
+                    )
+            except Exception:
+                pass
+
             logger.error(f"[LoadingService] Batch processing failed: {e}")
             return False, str(e), 0
 
@@ -631,8 +746,7 @@ class FileLoadingService:
             if file_path_obj.exists():
                 filesize = file_path_obj.stat().st_size
                 checksum = self._calculate_file_checksum(file_path_obj)
-            
-            # Create manifest entry with fallback methods
+
             notes_data = {
                 "file_info": {
                     "size_bytes": filesize,
@@ -643,41 +757,43 @@ class FileLoadingService:
                     "table_name": table_name
                 }
             }
-            
-            # Try multiple audit service interfaces
-            manifest_id = None
-            
+
+            # Dedup: return existing manifest if present
+            existing = self._find_existing_file_manifest(file_path_obj, table_manifest_id)
+            if existing:
+                return existing
+
+            # Create manifest using available audit service API
             if hasattr(self.audit_service, 'create_file_manifest'):
-                manifest_id = self.audit_service.create_file_manifest(
+                return self.audit_service.create_file_manifest(
                     str(file_path_obj),
                     status=AuditStatus.RUNNING,
                     table_manifest_id=table_manifest_id,
                     checksum=checksum,
                     filesize=filesize,
                     table_name=table_name,
-                    notes=json.dumps(notes_data)
+                    notes=self._serialize_notes(notes_data)
                 )
-            elif hasattr(self.audit_service, 'create_manifest'):
-                manifest_id = self.audit_service.create_manifest(
+
+            if hasattr(self.audit_service, 'create_manifest'):
+                return self.audit_service.create_manifest(
                     file_path=str(file_path_obj),
                     status=AuditStatus.RUNNING,
                     checksum=checksum,
                     filesize=filesize,
-                    notes=json.dumps(notes_data)
+                    notes=self._serialize_notes(notes_data)
                 )
-            else:
-                logger.warning(f"[LoadingService] Audit service has no recognized manifest creation method")
-                return None
-            
-            return manifest_id
+
+            logger.warning(f"[LoadingService] Audit service has no recognized manifest creation method")
+            return None
             
         except Exception as e:
             logger.warning(f"Failed to create file manifest for {file_path}: {e}")
             return None
 
-    def _update_file_manifest(self, manifest_id: Optional[str], status: AuditStatus, rows_processed: int, error_msg: Optional[str] = None):
+    def _update_file_manifest(self, file_manifest_id: Optional[str], status: AuditStatus, rows_processed: int, error_msg: Optional[str] = None):
         """Update file manifest entry with robust method handling."""
-        if not manifest_id or not self.audit_service:
+        if not file_manifest_id or not self.audit_service:
             return
         
         try:
@@ -688,42 +804,23 @@ class FileLoadingService:
                     "rows_processed": rows_processed
                 }
             }
-            
             if error_msg:
                 notes_data["processing_update"]["error_message"] = error_msg
-            
-            # Try multiple audit service update interfaces
-            updated = False
-            
-            if hasattr(self.audit_service, 'update_file_manifest'):
-                try:
-                    self.audit_service.update_file_manifest(
-                        manifest_id=manifest_id,
-                        status=status,
-                        rows_processed=rows_processed,
-                        error_msg=error_msg,
-                        notes=json.dumps(notes_data)
-                    )
-                    updated = True
-                except Exception as e:
-                    logger.debug(f"update_file_manifest failed: {e}")
-            
-            if not updated and hasattr(self.audit_service, 'update_manifest'):
-                try:
-                    self.audit_service.update_manifest(
-                        manifest_id=manifest_id,
-                        status=status,
-                        notes=json.dumps(notes_data)
-                    )
-                    updated = True
-                except Exception as e:
-                    logger.debug(f"update_manifest failed: {e}")
-            
-            if not updated:
-                logger.warning(f"[LoadingService] No working audit service update method found for manifest {manifest_id}")
+
+            try:
+                # audit.update_file_manifest accepts either file_manifest_id or manifest_id
+                self.audit_service.update_file_manifest(
+                    file_manifest_id=file_manifest_id,
+                    status=status,
+                    rows_processed=rows_processed,
+                    error_msg=error_msg,
+                    notes=self._serialize_notes(notes_data)
+                )
+            except Exception as e:
+                logger.debug(f"update_file_manifest failed for {file_manifest_id}: {e}")
             
         except Exception as e:
-            logger.warning(f"Failed to update file manifest {manifest_id}: {e}")
+            logger.warning(f"Failed to update file manifest {file_manifest_id}: {e}")
 
     def _update_table_audit_completion(self, table_name: str, table_result: Tuple[bool, Optional[str], int]):
         """Update individual table audit completion with memory info."""
@@ -768,6 +865,21 @@ class FileLoadingService:
                 })
                 
                 logger.info(f"[LoadingService] Updated completion for table '{table_name}'")
+                # Build a proper batch metrics payload and update table metrics
+                try:
+                    # Build minimal batch_stats for collector
+                    batch_stats = {
+                        'start_time': None,
+                        'end_time': None,
+                        'files_processed': 1 if success else 0,
+                        'files_failed': 0,
+                        'total_rows': rows,
+                        'total_bytes': completion_metadata.get('memory_info', {}).get('peak_usage_mb', 0)
+                    }
+                    comprehensive_metrics = self.audit_service.collect_batch_audit_metrics(batch_stats)
+                    self.audit_service.update_table_audit_with_metrics(table_name, comprehensive_metrics)
+                except Exception as e:
+                    logger.debug(f"Failed to update table audit metrics for {table_name}: {e}")
                 
         except Exception as e:
             logger.warning(f"[LoadingService] Failed to update completion for '{table_name}': {e}")
