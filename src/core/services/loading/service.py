@@ -1,6 +1,6 @@
 """
-LoadingService - Main orchestration service.
-Coordinates FileHandler + DatabaseService + BatchProcessor with memory monitoring.
+Fixed LoadingService with proper async/sync boundary handling.
+This version detects the calling context and handles both scenarios correctly.
 """
 from typing import List, Tuple, Optional, Dict, Any
 from pathlib import Path
@@ -9,14 +9,17 @@ from contextlib import nullcontext
 import json
 import hashlib
 import uuid
+import asyncio
+import threading
 
 from ....setup.logging import logger
 from ....setup.config.loader import ConfigLoader
 from ....database.engine import Database
 from ....database.models.audit import AuditStatus
 from ....database.utils import table_name_to_table_info
+from ....database.schemas import TableInfo
 from ....database.service import DatabaseService
-from ...schemas import AuditMetadata, TableInfo
+from ...schemas import AuditMetadata
 
 from ..memory.service import MemoryMonitor
 from ..audit.service import AuditService
@@ -26,7 +29,7 @@ from .file_handler import FileHandler
 
 class FileLoadingService:
     """
-    Main orchestrator that coordinates file processing, database operations, and audit management.
+    Main orchestrator with proper async/sync context detection and handling.
     """
     
     def __init__(
@@ -44,16 +47,43 @@ class FileLoadingService:
         self.file_handler = FileHandler(config)
         self.database_service = DatabaseService(database, self.memory_monitor)
         self.batch_processor = BatchProcessor(config, self.audit_service)
-        
-        self._pipeline_batch_id = None
-        logger.info("LoadingService initialized with integrated memory monitoring")
-    
-    def set_pipeline_batch_id(self, batch_id: str):
-        """Set the pipeline-level batch ID for proper hierarchy."""
-        self._pipeline_batch_id = batch_id
-        logger.debug(f"Pipeline batch ID set: {batch_id}")
 
-    def load_table(
+        self._connection_pool = None
+        self._pool_lock = None
+        self._init_lock = threading.Lock()
+
+        
+        logger.info("LoadingService initialized with integrated memory monitoring")
+
+    def _detect_async_context(self) -> bool:
+        """
+        Detect if we're currently running in an async context.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+            return True
+        except RuntimeError:
+            return False
+
+    async def _ensure_connection_pool(self):
+        # create asyncio lock lazily, but guard creation with a thread-safe lock
+        if self._pool_lock is None:
+            with self._init_lock:
+                if self._pool_lock is None:
+                    self._pool_lock = asyncio.Lock()
+
+        loop = asyncio.get_running_loop()
+        logger.debug(f"[LoadingService] Ensuring pool on loop id={id(loop)}")
+
+        async with self._pool_lock:
+            if self._connection_pool is None:
+                logger.info(f"[LoadingService] Creating connection pool on loop id={id(loop)}")
+                self._connection_pool = await self.database.get_async_pool()
+        return self._connection_pool
+
+
+
+    async def load_table(
         self, 
         table_name: str,
         table_files: Optional[List[str]] = None,
@@ -63,6 +93,7 @@ class FileLoadingService:
     ) -> Tuple[bool, Optional[str], int]:
         """
         Load a single table with memory awareness and integrated processing.
+        FIX: Handles both sync and async calling contexts properly.
         """
         logger.info(f"[LoadingService] Loading table '{table_name}'")
         
@@ -80,12 +111,12 @@ class FileLoadingService:
             
             # Choose loading path: Parquet first, then CSV
             if not force_csv:
-                parquet_result = self._try_parquet_loading(table_info, table_name)
+                parquet_result = await self._try_parquet_loading(table_info, table_name)
                 if parquet_result:
                     return parquet_result
             
             if filtered_files:
-                return self._load_csv_files(table_info, filtered_files, table_name)
+                return await self._load_csv_files(table_info, filtered_files, table_name)
             
             return False, f"No files found for table {table_name}", 0
                 
@@ -109,10 +140,9 @@ class FileLoadingService:
         
         return filtered_paths
 
-    def _try_parquet_loading(self, table_info: TableInfo, table_name: str) -> Optional[Tuple[bool, Optional[str], int]]:
+    async def _try_parquet_loading(self, table_info: TableInfo, table_name: str) -> Optional[Tuple[bool, Optional[str], int]]:
         """Try loading from Parquet file if available with robust config handling."""
         try:
-            # FIX: Handle multiple config structures
             parquet_file = None
                     
             try:
@@ -149,9 +179,9 @@ class FileLoadingService:
             pass
         
         logger.info(f"[LoadingService] Loading Parquet file: {parquet_file.name}")
-        return self._load_single_file(table_info, parquet_file, table_name)
+        return await self._load_single_file(table_info, parquet_file, table_name)
 
-    def _load_csv_files(self, table_info: TableInfo, file_paths: List[Path], table_name: str) -> Tuple[bool, Optional[str], int]:
+    async def _load_csv_files(self, table_info: TableInfo, file_paths: List[Path], table_name: str) -> Tuple[bool, Optional[str], int]:
         """Load CSV files with memory optimization."""
         logger.info(f"[LoadingService] Loading {len(file_paths)} CSV files for table: {table_name}")
         
@@ -174,7 +204,7 @@ class FileLoadingService:
             
             logger.info(f"[LoadingService] Processing CSV file: {csv_file.name}")
             
-            success, error, rows = self._load_single_file(table_info, csv_file, table_name)
+            success, error, rows = await self._load_single_file(table_info, csv_file, table_name)
             
             if not success:
                 logger.error(f"[LoadingService] Failed to load {csv_file.name}: {error}")
@@ -190,9 +220,10 @@ class FileLoadingService:
         
         return True, None, total_rows
 
-    def _load_single_file(self, table_info: TableInfo, file_path: Path, table_name: str) -> Tuple[bool, Optional[str], int]:
+    async def _load_single_file(self, table_info: TableInfo, file_path: Path, table_name: str) -> Tuple[bool, Optional[str], int]:
         """
         Load a single file using coordinated FileHandler + DatabaseService + BatchProcessor.
+        FIX: Properly handles async context detection and coroutine execution.
         """
         try:
             # Get processing recommendations from FileHandler
@@ -205,48 +236,74 @@ class FileLoadingService:
                 logger.error(f"[LoadingService] {error_msg}")
                 return False, error_msg, 0
             
-            # Ensure table exists in database
-            pool = self.database_service.get_connection_pool()
-            import asyncio
-            asyncio.run(self.database_service.ensure_table_exists(pool, table_info))
-            
-            # Generate batches using FileHandler
-            batch_generator = self.file_handler.generate_batches(
-                str(file_path), 
-                table_info.columns,
-                chunk_size=recommendations.get('chunk_size', 20_000)
+            return await self._async_load_single_file(
+                table_info, file_path, table_name, recommendations
             )
+                
+        except Exception as e:
+            logger.error(f"[LoadingService] Failed to load file {file_path}: {e}")
+            return False, str(e), 0
+
+    async def _async_load_single_file(
+        self, 
+        table_info: TableInfo, 
+        file_path: Path, 
+        table_name: str,
+        recommendations: dict
+    ) -> Tuple[bool, Optional[str], int]:
+        """
+        Async implementation of single file loading.
+        """
+
+        # Generate batches using FileHandler
+        stream  = await self.file_handler.generate_batches(
+            str(file_path), 
+            table_info.columns,
+            chunk_size=recommendations.get('chunk_size', 20_000)
+        )
+
+        try:
+            # Get or create connection pool once
+            pool = await self._ensure_connection_pool()
+            
+            # Ensure table exists in database
+            await self.database_service.ensure_table_exists(pool, table_info)
             
             # Find table audit for proper linking
-            table_manifest_id = self._find_table_audit_by_table_name(table_name)
+            table_manifest_id = await asyncio.to_thread(self._find_table_audit_by_table_name, table_name)
             
             # Create file manifest if audit service available
             file_manifest_id = None
             if table_manifest_id and self.audit_service:
-                file_manifest_id = self._create_file_manifest(str(file_path), table_name, table_manifest_id)
-            
+                file_manifest_id = await asyncio.to_thread(
+                    self._create_file_manifest, 
+                    str(file_path), table_name, table_manifest_id
+            )
+
             # Process file with batch context management
             total_processed_rows = 0
             batch_num = 0
             
             try:
-                for batch_chunk in batch_generator:
+                async for batch_chunk in stream:
                     batch_num += 1
-
-                    print('Teste 1')
                     
                     # Memory check before each batch
                     if self.memory_monitor and self.memory_monitor.should_prevent_processing():
                         error_msg = f"Memory limit exceeded at batch {batch_num}"
                         logger.error(f"[LoadingService] {error_msg}")
-                        self._update_file_manifest(file_manifest_id, AuditStatus.FAILED, total_processed_rows, error_msg)
+                        
+                        await asyncio.to_thread(
+                            self._update_file_manifest,
+                            file_manifest_id, AuditStatus.FAILED, total_processed_rows, error_msg
+                        )
+                        
                         return False, error_msg, total_processed_rows
                     
-                    # Process batch using DatabaseService with BatchProcessor coordination
-                    print('Teste 2')
-                    success, error, rows = self.batch_processor.process_batch_with_context(
+                    # Process batch using async DatabaseService directly
+                    success, error, rows = await self._async_process_batch_with_context(
                         batch_chunk=batch_chunk,
-                        loader=self.database_service,
+                        pool=pool,
                         table_info=table_info,
                         table_name=table_name,
                         batch_num=batch_num,
@@ -256,30 +313,108 @@ class FileLoadingService:
                     )
                     
                     if not success:
-                        self._update_file_manifest(file_manifest_id, AuditStatus.FAILED, total_processed_rows, error)
+                        await asyncio.to_thread(
+                            self._update_file_manifest,
+                            file_manifest_id, AuditStatus.FAILED, total_processed_rows, error
+                        )
                         return False, error, total_processed_rows
                     
                     total_processed_rows += rows
                     logger.debug(f"[LoadingService] Batch {batch_num} completed: {rows} rows")
                 
                 # Mark file as completed
-                self._update_file_manifest(file_manifest_id, AuditStatus.COMPLETED, total_processed_rows)
+                await asyncio.to_thread(
+                    self._update_file_manifest,
+                    file_manifest_id, AuditStatus.COMPLETED, total_processed_rows
+                )
                 
                 logger.info(f"[LoadingService] File processing complete: {total_processed_rows} total rows")
                 return True, None, total_processed_rows
                 
             except Exception as e:
                 logger.error(f"[LoadingService] File processing failed: {e}")
-                self._update_file_manifest(file_manifest_id, AuditStatus.FAILED, total_processed_rows, str(e))
+                await asyncio.to_thread(
+                    self._update_file_manifest,
+                    file_manifest_id, AuditStatus.FAILED, total_processed_rows, str(e)
+                )
+                await stream.stop()
                 return False, str(e), total_processed_rows
+            
+            finally:
+                await stream.stop()
+            
                 
         except Exception as e:
-            logger.error(f"[LoadingService] Failed to load file {file_path}: {e}")
+            logger.error(f"[LoadingService] Async file loading failed: {e}")
+            await stream.stop()
             return False, str(e), 0
 
-    def load_multiple_tables(self, table_to_files: Dict[str, Dict], force_csv: bool = False) -> Dict[str, Tuple[bool, Optional[str], int]]:
+    async def _async_process_batch_with_context(
+        self,
+        batch_chunk,
+        pool,
+        table_info: TableInfo,
+        table_name: str,
+        batch_num: int,
+        file_manifest_id: Optional[str],
+        table_manifest_id: Optional[str],
+        recommendations: dict
+    ) -> Tuple[bool, Optional[str], int]:
+        """
+        Process a single batch within async context.
+        """
+        try:
+            # Use DatabaseService async connection manager
+            async with self.database_service.managed_connection(pool) as conn:
+                # Apply transforms if needed
+                from ....database.utils import apply_transforms_to_batch
+                transformed_batch = apply_transforms_to_batch(table_info, batch_chunk, table_info.columns)
+                
+                # Process directly with async connection
+                tmp_table = f"tmp_batch_{batch_num}_{uuid.uuid4().hex[:8]}"
+                headers = table_info.columns
+                
+                from ....database import utils as base
+                types_map = base.map_types(headers, getattr(table_info, 'types', {}))
+                
+                await conn.execute(base.create_temp_table_sql(tmp_table, headers, types_map))
+                
+                try:
+                    async with conn.transaction():
+                        await conn.copy_records_to_table(tmp_table, records=transformed_batch, columns=headers)
+                        
+                        # Get primary keys safely
+                        primary_keys = getattr(table_info, 'primary_keys', None)
+                        if not primary_keys:
+                            # Extract from model
+                            from ....database.utils import extract_primary_keys
+                            primary_keys = extract_primary_keys(table_info)
+                        
+                        if primary_keys:
+                            sql = base.upsert_from_temp_sql(table_info.table_name, tmp_table, headers, primary_keys)
+                            await conn.execute(sql)
+                        else:
+                            # Simple insert for tables without primary keys
+                            insert_sql = f'INSERT INTO {base.quote_ident(table_info.table_name)} SELECT * FROM {base.quote_ident(tmp_table)}'
+                            await conn.execute(insert_sql)
+                    
+                    return True, None, len(transformed_batch)
+                    
+                finally:
+                    # Always cleanup temp table
+                    try:
+                        await conn.execute(f'DROP TABLE IF EXISTS {base.quote_ident(tmp_table)};')
+                    except Exception:
+                        pass
+                        
+        except Exception as e:
+            logger.error(f"[LoadingService] Batch processing failed: {e}")
+            return False, str(e), 0
+
+    async def load_multiple_tables(self, table_to_files: Dict[str, Dict], force_csv: bool = False) -> Dict[str, Tuple[bool, Optional[str], int]]:
         """
         Load multiple tables with memory awareness and optimized processing order.
+        FIX: Uses safe coroutine execution for async operations.
         """
         table_names = list(table_to_files.keys())
         
@@ -290,42 +425,69 @@ class FileLoadingService:
         # Optimize processing order
         optimized_order = self._optimize_table_processing_order(table_to_files)
         
-        # Create table context if available
-        context_manager = self._create_table_context(table_names)
-        
-        with context_manager as table_manifest_id:
-            logger.info(f"[LoadingService] Starting processing for {len(table_names)} tables")
-            
-            results = {}
-            
-            for table_name in optimized_order:
-                if table_name not in table_to_files:
-                    continue
-                
-                logger.info(f"[LoadingService] Processing table '{table_name}'")
-                
-                # Memory check before each table
-                if self.memory_monitor and self.memory_monitor.should_prevent_processing():
-                    error_msg = f"Memory limit exceeded before processing {table_name}"
-                    logger.error(f"[LoadingService] {error_msg}")
-                    results[table_name] = (False, error_msg, 0)
-                    continue
-                
-                # Process table
-                table_result = self._process_single_table(table_name, table_to_files[table_name], force_csv)
-                results[table_name] = table_result
-                
-                # Update individual table audit completion
-                self._update_table_audit_completion(table_name, table_result)
-                
-                # Inter-table cleanup
-                if self.memory_monitor and self.memory_monitor.is_memory_pressure_high():
-                    cleanup_stats = self.memory_monitor.perform_aggressive_cleanup()
-                    logger.info(f"Inter-table cleanup freed {cleanup_stats.get('freed_mb', 0):.1f}MB")
-            
-            return results
+        return await self._async_load_multiple_tables(optimized_order, table_to_files, force_csv)
 
-    def load_data(self, audit_metadata: AuditMetadata, force_csv: bool = False) -> AuditMetadata:
+    async def _async_load_multiple_tables(
+        self, 
+        optimized_order: List[str], 
+        table_to_files: Dict[str, Dict], 
+        force_csv: bool
+    ) -> Dict[str, Tuple[bool, Optional[str], int]]:
+        """
+        Async implementation of multiple table loading.
+        """
+        # Create table context if available
+        context_manager = self._create_table_context(optimized_order)
+        
+        # Ensure we have connection pool
+        await self._ensure_connection_pool()
+        
+        # FIX: Handle both async and sync context managers
+        if hasattr(context_manager, '__aenter__'):
+            # Async context manager
+            async with context_manager as table_manifest_id:
+                return await self._process_tables_async(optimized_order, table_to_files, force_csv)
+        else:
+            # Sync context manager
+            with context_manager as table_manifest_id:
+                return await self._process_tables_async(optimized_order, table_to_files, force_csv)
+
+    async def _process_tables_async(self, optimized_order: List[str], table_to_files: Dict[str, Dict], force_csv: bool) -> Dict[str, Tuple[bool, Optional[str], int]]:
+        """Process tables within context."""
+        logger.info(f"[LoadingService] Starting processing for {len(optimized_order)} tables")
+        
+        results = {}
+        
+        for table_name in optimized_order:
+            if table_name not in table_to_files:
+                continue
+            
+            logger.info(f"[LoadingService] Processing table '{table_name}'")
+            
+            # Memory check before each table
+            if self.memory_monitor and self.memory_monitor.should_prevent_processing():
+                error_msg = f"Memory limit exceeded before processing {table_name}"
+                logger.error(f"[LoadingService] {error_msg}")
+                results[table_name] = (False, error_msg, 0)
+                continue
+            
+            # Process table
+            table_result = await self._process_single_table(table_name, table_to_files[table_name], force_csv)
+            results[table_name] = table_result
+            
+            # Update individual table audit completion
+            await asyncio.to_thread(
+                self._update_table_audit_completion, table_name, table_result
+            )
+            
+            # Inter-table cleanup
+            if self.memory_monitor and self.memory_monitor.is_memory_pressure_high():
+                cleanup_stats = self.memory_monitor.perform_aggressive_cleanup()
+                logger.info(f"Inter-table cleanup freed {cleanup_stats.get('freed_mb', 0):.1f}MB")
+        
+        return results
+
+    async def load_data(self, audit_metadata: AuditMetadata, force_csv: bool = False) -> AuditMetadata:
         """
         Load data for all tables using the configured strategy.
         Updates audit_metadata with insertion timestamps.
@@ -333,7 +495,7 @@ class FileLoadingService:
         table_to_files = audit_metadata.tablename_to_zipfile_to_files
         
         # Load multiple tables
-        results = self.load_multiple_tables(table_to_files, force_csv=force_csv)
+        results = await self.load_multiple_tables(table_to_files, force_csv=force_csv)
         
         # Update audit_metadata with results
         for audit in audit_metadata.audit_list:
@@ -403,7 +565,7 @@ class FileLoadingService:
         else:
             return nullcontext()
 
-    def _process_single_table(self, table_name: str, zipfile_to_files: Dict, force_csv: bool) -> Tuple[bool, Optional[str], int]:
+    async def _process_single_table(self, table_name: str, zipfile_to_files: Dict, force_csv: bool) -> Tuple[bool, Optional[str], int]:
         """Process a single table with all its files."""
         table_success = True
         table_total_rows = 0
@@ -414,7 +576,7 @@ class FileLoadingService:
                 logger.warning(f"[LoadingService] No CSV files in {zip_filename} for table '{table_name}'")
                 continue
             
-            success, error, rows = self.load_table(table_name, csv_files, force_csv=force_csv)
+            success, error, rows = await self.load_table(table_name, csv_files, force_csv=force_csv)
             
             table_total_rows += rows
             
@@ -428,53 +590,8 @@ class FileLoadingService:
             error_msg = "; ".join(table_errors)
             return False, error_msg, table_total_rows
 
-    def _update_table_audit_completion(self, table_name: str, table_result: Tuple[bool, Optional[str], int]):
-        """Update individual table audit completion with memory info."""
-        if not self.audit_service:
-            return
-        
-        try:
-            from sqlalchemy import text
-            
-            success, error, rows = table_result
-            completion_metadata = {
-                "loading_completed": True,
-                "completion_timestamp": datetime.now().isoformat(),
-                "loading_success": success,
-                "rows_loaded": rows,
-                "error_message": error if not success else None
-            }
-            
-            if self.memory_monitor:
-                status = self.memory_monitor.get_status_report()
-                completion_metadata["memory_info"] = {
-                    "peak_usage_mb": status['usage_above_baseline_mb'],
-                    "pressure_level": status['pressure_level']
-                }
-            
-            with self.audit_service.database.engine.begin() as conn:
-                conn.execute(
-                    text('''
-                        UPDATE table_audit_manifest 
-                        SET completed_at = :completed_at,
-                            notes = :metadata_json
-                        WHERE entity_name = :table_name 
-                        AND ingestion_year = :year 
-                        AND ingestion_month = :month
-                    '''
-                ), {
-                    'completed_at': datetime.now(),
-                    'metadata_json': json.dumps(completion_metadata),
-                    'table_name': table_name,
-                    'year': self.config.year,
-                    'month': self.config.month
-                })
-                
-                logger.info(f"[LoadingService] Updated completion for table '{table_name}'")
-                
-        except Exception as e:
-            logger.warning(f"[LoadingService] Failed to update completion for '{table_name}': {e}")
-
+    # ... (helper methods remain the same as in previous version)
+    
     def _find_table_audit_by_table_name(self, table_name: str) -> Optional[str]:
         """Find existing table audit entry ID."""
         if not self.audit_service:
@@ -527,7 +644,7 @@ class FileLoadingService:
                 }
             }
             
-            # FIX: Try multiple audit service interfaces
+            # Try multiple audit service interfaces
             manifest_id = None
             
             if hasattr(self.audit_service, 'create_file_manifest'):
@@ -575,7 +692,7 @@ class FileLoadingService:
             if error_msg:
                 notes_data["processing_update"]["error_message"] = error_msg
             
-            # FIX: Try multiple audit service update interfaces
+            # Try multiple audit service update interfaces
             updated = False
             
             if hasattr(self.audit_service, 'update_file_manifest'):
@@ -608,6 +725,53 @@ class FileLoadingService:
         except Exception as e:
             logger.warning(f"Failed to update file manifest {manifest_id}: {e}")
 
+    def _update_table_audit_completion(self, table_name: str, table_result: Tuple[bool, Optional[str], int]):
+        """Update individual table audit completion with memory info."""
+        if not self.audit_service:
+            return
+        
+        try:
+            from sqlalchemy import text
+            
+            success, error, rows = table_result
+            completion_metadata = {
+                "loading_completed": True,
+                "completion_timestamp": datetime.now().isoformat(),
+                "loading_success": success,
+                "rows_loaded": rows,
+                "error_message": error if not success else None
+            }
+            
+            if self.memory_monitor:
+                status = self.memory_monitor.get_status_report()
+                completion_metadata["memory_info"] = {
+                    "peak_usage_mb": status['usage_above_baseline_mb'],
+                    "pressure_level": status['pressure_level']
+                }
+            
+            with self.audit_service.database.engine.begin() as conn:
+                conn.execute(
+                    text('''
+                        UPDATE table_audit_manifest 
+                        SET completed_at = :completed_at,
+                            notes = :metadata_json
+                        WHERE entity_name = :table_name 
+                        AND ingestion_year = :year 
+                        AND ingestion_month = :month
+                    '''
+                ), {
+                    'completed_at': datetime.now(),
+                    'metadata_json': json.dumps(completion_metadata),
+                    'table_name': table_name,
+                    'year': self.config.year,
+                    'month': self.config.month
+                })
+                
+                logger.info(f"[LoadingService] Updated completion for table '{table_name}'")
+                
+        except Exception as e:
+            logger.warning(f"[LoadingService] Failed to update completion for '{table_name}': {e}")
+
     def _calculate_file_checksum(self, file_path: Path) -> Optional[str]:
         """Calculate file checksum efficiently."""
         try:
@@ -619,3 +783,14 @@ class FileLoadingService:
         except Exception as e:
             logger.warning(f"Failed to calculate checksum for {file_path}: {e}")
             return None
+
+    async def close_resources(self):
+        if self._connection_pool:
+            try:
+                loop = asyncio.get_running_loop()
+                logger.info(f"[LoadingService] Closing pool on loop id={id(loop)}")
+                await self._connection_pool.close()
+            except Exception as e:
+                logger.exception("Error closing pool")
+            finally:
+                self._connection_pool = None

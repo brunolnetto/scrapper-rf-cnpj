@@ -26,18 +26,7 @@ class FileGroupInfo(BaseModel):
     def __repr__(self) -> str:
         return f"FileGroupInfo(table_name='{self.table_name}', files_count={len(self.files)}, year={self.year}, month={self.month})"
 
-class TableInfo(NamedTuple):
-    """
-    Represents information about a table.
-    """
-    label: str
-    zip_group: str
-    table_name: str
-    columns: List[str]
-    encoding: str
-    transform_map: Callable
-    expression: str
-    table_model: object = None
+
 
 class AuditMetadata(BaseModel):
     """Represents the metadata for auditing purposes."""

@@ -1,5 +1,6 @@
 from typing import Optional, Any
 from datetime import datetime
+import asyncio
 
 from ..setup.logging import logger
 from ..setup.config import ConfigurationService
@@ -96,7 +97,13 @@ class DownloadAndLoadStrategy:
                 return None
             
             # Load data using the proper method
-            loading_result = pipeline.data_loader.load_data(audit_metadata)
+            loading_result = asyncio.run(pipeline.data_loader.load_data(audit_metadata))
+
+            # on shutdown (also sync) close resources:
+            asyncio.run(pipeline.data_loader.close_resources())
+
+            logger.info("[DOWNLOAD+LOAD] ETL flow completed successfully")
+            
             return loading_result
             
         except (OSError, IOError, ConnectionError, TimeoutError, ValueError, RuntimeError) as e:
@@ -197,7 +204,11 @@ class ConvertAndLoadStrategy:
             logger.info("[CONVERT-LOAD] Table audits inserted successfully")
             
             # Load to database
-            pipeline.data_loader.load_data(audit_metadata)
+            asyncio.run(pipeline.data_loader.load_data(audit_metadata))
+            
+            # on shutdown (also sync) close resources:
+            asyncio.run(pipeline.data_loader.close_resources())
+            
             logger.info("[CONVERT-LOAD] Successfully converted and loaded files to database")
             
             return audit_metadata
@@ -232,7 +243,11 @@ class LoadOnlyStrategy:
             logger.info("[LOAD-ONLY] Table audits inserted successfully")
             
             # Use data loader to load into database
-            pipeline.data_loader.load_data(audit_metadata)
+            asyncio.run(pipeline.data_loader.load_data(audit_metadata))
+            
+            # on shutdown (also sync) close resources:
+            asyncio.run(pipeline.data_loader.close_resources())
+
             logger.info("[LOAD-ONLY] Successfully loaded existing files to database")
             return audit_metadata
                 
@@ -344,8 +359,11 @@ class FullETLStrategy:
             
             # Step 4: Load data (file manifests can now link to existing table audits)
             logger.info("[FULL-ETL] Step 4: Loading data to database...")
-            pipeline.data_loader.load_data(audit_metadata)
-            
+            asyncio.run(pipeline.data_loader.load_data(audit_metadata))
+
+            # on shutdown (also sync) close resources:
+            asyncio.run(pipeline.data_loader.close_resources())
+
             # Step 5: Cleanup downloaded files if configured
             if config_service.pipeline.delete_files:
                 from ..utils.misc import remove_folder

@@ -5,11 +5,57 @@ Combines FileLoader + FileProcessor functionality with bug fixes.
 import os
 from typing import Iterable, List, Tuple, Optional, Any, Dict
 from pathlib import Path
+import asyncio
+import concurrent.futures
+import threading
+import uuid
+
 from ....setup.logging import logger
 from .ingestors import create_batch_generator
 from ..memory.service import MemoryMonitor
 from ....setup.config.loader import ConfigLoader
 
+class AsyncBatchStream:
+    """
+    Returned by FileHandler.generate_batches().
+    Is an async iterable (supports `async for`) and exposes .stop(timeout) to cancel producer.
+    """
+    def __init__(self, file_handler, run_id):
+        self._fh = file_handler
+        self._run_id = run_id
+
+    def __aiter__(self):
+        # return the async generator that yields items from the queue
+        return self._iter_impl()
+
+    async def _iter_impl(self):
+        control = self._fh._producer_controls.get(self._run_id)
+        if not control:
+            raise RuntimeError("Stream control not found (already stopped or invalid run_id)")
+
+        q = control["queue"]
+        sentinel = control["sentinel"]
+
+        try:
+            while True:
+                item = await q.get()
+                # Propagate producer exception if any
+                if isinstance(item, Exception):
+                    raise item
+                if item is sentinel:
+                    break
+                yield item
+        finally:
+            # best-effort: ensure producer is stopped and joined
+            try:
+                await self.stop(timeout=5.0)
+            except Exception:
+                # swallow — caller may already be in shutdown path
+                pass
+
+    async def stop(self, timeout: float = 5.0) -> bool:
+        """Ask the background producer to stop; wait up to `timeout` seconds for join."""
+        return await self._fh.stop(self._run_id, timeout=timeout)
 
 class FileHandler:
     """
@@ -19,6 +65,9 @@ class FileHandler:
     def __init__(self, config: ConfigLoader):
         self.config = config
         self.memory_monitor = MemoryMonitor(config.pipeline.memory)
+
+        self._producer_controls = {}
+        self._producer_controls_lock = threading.Lock()
     
     def detect_format(self, file_path: str) -> str:
         """Memory-efficient format detection."""
@@ -129,46 +178,145 @@ class FileHandler:
         except Exception:
             return None
     
-    def generate_batches(self, file_path: str, headers: List[str], chunk_size: int = 20_000) -> Iterable[List[Tuple]]:
+    
+    async def generate_batches(self, file_path: str, headers: List[str], chunk_size: int = 20_000):
         """
-        Generate memory-aware batches from file.
-        
-        Args:
-            file_path: Path to the file
-            headers: List of expected column headers
-            chunk_size: Number of rows per batch (adjusted based on memory)
-            
-        Yields:
-            List of tuples representing rows in the batch
+        Async wrapper that runs the synchronous create_batch_generator inside a background non-daemon thread,
+        streaming batches into an asyncio.Queue. Returns an AsyncBatchStream instance which is both an
+        async iterable and has a .stop(timeout) coroutine method.
         """
-        # Detect format
-        file_format = self.detect_format(file_path)
-        
-        # Adjust chunk size based on memory constraints
+        # decide file_format & adjusted_chunk_size using thread-safe calls
+        file_format = await asyncio.to_thread(self.detect_format, file_path)
+
         adjusted_chunk_size = chunk_size
         if self.memory_monitor:
             available_memory = self.memory_monitor.get_available_memory_budget()
-            if available_memory < 500:  # Less than 500MB
-                adjusted_chunk_size = min(chunk_size, 15_000)
-                logger.warning(f"[FileHandler] Reduced chunk size to {adjusted_chunk_size} due to memory constraints")
-            elif available_memory < 200:  # Less than 200MB
+            if available_memory < 200:
                 adjusted_chunk_size = min(chunk_size, 8_000)
                 logger.warning(f"[FileHandler] Severely reduced chunk size to {adjusted_chunk_size}")
-        
+            elif available_memory < 500:
+                adjusted_chunk_size = min(chunk_size, 15_000)
+                logger.warning(f"[FileHandler] Reduced chunk size to {adjusted_chunk_size} due to memory constraints")
+
         logger.info(f"[FileHandler] Using chunk size: {adjusted_chunk_size} for {file_format} file")
-        
-        # Get encoding for CSV files
-        encoding = getattr(self.config.pipeline.data_source, 'encoding', 'utf-8')
-        
-        # Use memory-aware generator from ingestors
-        return create_batch_generator(
-            path=file_path,
-            headers=headers,
-            chunk_size=adjusted_chunk_size,
-            encoding=encoding,
-            memory_monitor=self.memory_monitor,
-            file_format=file_format
-        )
+
+        # Control structures per run
+        run_id = uuid.uuid4().hex
+        q: asyncio.Queue = asyncio.Queue(maxsize=2)
+        sentinel = object()
+        stop_event = threading.Event()
+        control = {
+            "queue": q,
+            "sentinel": sentinel,
+            "stop_event": stop_event,
+            "thread": None,
+        }
+        # register control
+        self._producer_controls[run_id] = control
+
+        loop = asyncio.get_running_loop()
+
+        def producer():
+            """Producer runs in a separate thread. Creates the generator here (heavy work off-loop)."""
+            gen = None
+            try:
+                # Create the synchronous generator in this thread (safe if heavy)
+                gen = create_batch_generator(
+                    path=file_path,
+                    headers=headers,
+                    chunk_size=adjusted_chunk_size,
+                    encoding=getattr(self.config.pipeline.data_source, 'encoding', 'utf-8'),
+                    memory_monitor=self.memory_monitor,
+                    file_format=file_format
+                )
+
+                for batch in gen:
+                    # Respect stop request from consumer
+                    if stop_event.is_set():
+                        try:
+                            if hasattr(gen, "close"):
+                                gen.close()
+                        except Exception:
+                            logger.debug("[FileHandler] Failed to close generator during stop")
+                        break
+
+                    # Put batch into queue (blocks if queue is full)
+                    fut = asyncio.run_coroutine_threadsafe(q.put(batch), loop)
+                    fut.result()  # propagate errors
+
+                # Normal completion: signal sentinel
+                asyncio.run_coroutine_threadsafe(q.put(sentinel), loop).result()
+
+            except Exception as exc:
+                # Propagate exception into consumer
+                try:
+                    asyncio.run_coroutine_threadsafe(q.put(exc), loop).result()
+                except Exception:
+                    logger.exception("[FileHandler] Producer thread failed and couldn't notify consumer")
+            finally:
+                # best-effort cleanup
+                try:
+                    if gen is not None and hasattr(gen, "close"):
+                        gen.close()
+                except Exception:
+                    pass
+
+        # start non-daemon thread so join() works reliably
+        t = threading.Thread(target=producer, daemon=False)
+        control["thread"] = t
+        t.start()
+
+        # Return the async stream object (caller will `async for` on it)
+        return AsyncBatchStream(self, run_id)
+
+
+    async def stop(self, run_id: str, timeout: float = 5.0) -> bool:
+        """
+        Public API to stop a running producer identified by run_id.
+        Sets the stop_event and waits up to `timeout` seconds for the producer thread to join.
+        Returns True if joined, False otherwise.
+        """
+        control = self._producer_controls.get(run_id)
+        if not control:
+            return True  # already stopped/unknown -> treat as successful
+
+        stop_event: threading.Event = control["stop_event"]
+        t: threading.Thread = control["thread"]
+        q: asyncio.Queue = control["queue"]
+        sentinel = control["sentinel"]
+
+        # Ask producer to stop
+        stop_event.set()
+
+        # If producer is blocked trying to put into queue (full), unblock it by consuming one item.
+        # We must not block the event loop here; use to_thread to try a quick get/remove if queue full.
+        try:
+            # If queue appears full, try to pop one item to free space so writer can finish and detect stop_event.
+            if q.full():
+                try:
+                    await asyncio.wait_for(q.get(), timeout=0.1)
+                except asyncio.TimeoutError:
+                    pass
+        except Exception:
+            pass
+
+        # Join thread without blocking the event loop
+        try:
+            await asyncio.to_thread(t.join, timeout)
+            joined = not t.is_alive()
+        except Exception:
+            joined = False
+
+        # cleanup control
+        try:
+            # drain the queue to avoid piling up memory (best-effort)
+            while not q.empty():
+                _ = q.get_nowait()
+        except Exception:
+            pass
+
+        self._producer_controls.pop(run_id, None)
+        return joined
     
     def estimate_memory_requirements(self, file_path: str, headers: List[str], chunk_size: int = 20_000) -> dict:
         """
