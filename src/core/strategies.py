@@ -350,7 +350,9 @@ class FullETLStrategy:
             # Step 2: Insert table audits BEFORE loading (critical for file manifest linking)
             logger.info("[FULL-ETL] Step 2: Inserting table audits before loading...")
             
-            pipeline.audit_service.insert_audits(audit_metadata)
+            # Insert table audits but skip creating file-level manifests here
+            # File manifests will be created during actual file processing to avoid duplicates
+            pipeline.audit_service.insert_audits(audit_metadata, create_file_manifests=False)
             logger.info("[FULL-ETL] Table audits inserted successfully - file manifests can now link properly")
         
             # Step 3: Convert to Parquet
@@ -489,7 +491,7 @@ class FullETLStrategy:
                 
                 # Update the database audit record with comprehensive metrics
                 if comprehensive_metrics and not comprehensive_metrics.get('error'):
-                    audit_service.update_table_audit_with_comprehensive_metrics(
+                    audit_service.update_table_audit_with_metrics(
                         table_name, comprehensive_metrics
                     )
                     
