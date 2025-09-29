@@ -202,7 +202,7 @@ class FileHandler:
 
         # Control structures per run
         run_id = uuid.uuid4().hex
-        q: asyncio.Queue = asyncio.Queue(maxsize=2)
+        q: asyncio.Queue = asyncio.Queue(maxsize=8)
         sentinel = object()
         stop_event = threading.Event()
         control = {
@@ -261,8 +261,10 @@ class FileHandler:
                 except Exception:
                     pass
 
-        # start non-daemon thread so join() works reliably
-        t = threading.Thread(target=producer, daemon=False)
+        # start daemon thread so it won't block process exit if something goes wrong
+        # with the join during shutdown. Producer threads are short-lived for each
+        # stream and we rely on the stop() path to request a graceful stop.
+        t = threading.Thread(target=producer, daemon=True)
         control["thread"] = t
         t.start()
 
@@ -300,10 +302,17 @@ class FileHandler:
         except Exception:
             pass
 
-        # Join thread without blocking the event loop
+        # Try to let the producer thread finish, but avoid blocking the event loop
+        # by polling the thread's liveness and yielding to the event loop with short sleeps.
         try:
-            await asyncio.to_thread(t.join, timeout)
+            import time as _time
+            deadline = _time.time() + timeout
+            while t.is_alive() and _time.time() < deadline:
+                # Yield to the event loop to allow queued coroutine tasks to run
+                await asyncio.sleep(0.05)
             joined = not t.is_alive()
+            if not joined:
+                logger.debug(f"[FileHandler] Producer thread did not join within timeout for run_id={run_id}")
         except Exception:
             joined = False
 

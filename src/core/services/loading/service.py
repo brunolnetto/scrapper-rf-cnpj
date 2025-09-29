@@ -556,16 +556,37 @@ class FileLoadingService:
         
         # Ensure we have connection pool
         await self._ensure_connection_pool()
-        
-        # FIX: Handle both async and sync context managers
-        if hasattr(context_manager, '__aenter__'):
-            # Async context manager
-            async with context_manager as table_manifest_id:
-                return await self._process_tables_async(optimized_order, table_to_files, force_csv)
-        else:
-            # Sync context manager
-            with context_manager as table_manifest_id:
-                return await self._process_tables_async(optimized_order, table_to_files, force_csv)
+
+        # IMPORTANT: Enter the audit table context briefly to set started_at/status
+        # and commit those changes immediately. Do NOT keep the DB transaction open
+        # for the duration of the table processing as that will hold locks and
+        # block subsequent audit updates (metrics writes). We handle both async
+        # and sync context managers here by entering and then exiting immediately.
+        try:
+            if hasattr(context_manager, '__aenter__'):
+                # Async context manager: enter and exit immediately
+                try:
+                    mapping = await context_manager.__aenter__()
+                finally:
+                    # Ensure we always exit even if enter raised
+                    try:
+                        await context_manager.__aexit__(None, None, None)
+                    except Exception:
+                        logger.debug("Failed to exit async table_context cleanly")
+            else:
+                # Sync context manager: enter and exit immediately
+                try:
+                    mapping = context_manager.__enter__()
+                finally:
+                    try:
+                        context_manager.__exit__(None, None, None)
+                    except Exception:
+                        logger.debug("Failed to exit sync table_context cleanly")
+        except Exception as e:
+            logger.debug(f"Failed to initialize table context: {e}")
+
+        # Proceed with processing now that started_at has been set and committed
+        return await self._process_tables_async(optimized_order, table_to_files, force_csv)
 
     async def _process_tables_async(self, optimized_order: List[str], table_to_files: Dict[str, Dict], force_csv: bool) -> Dict[str, Tuple[bool, Optional[str], int]]:
         """Process tables within context."""
@@ -863,26 +884,42 @@ class FileLoadingService:
                     'year': self.config.year,
                     'month': self.config.month
                 })
-                
+
                 logger.info(f"[LoadingService] Updated completion for table '{table_name}'")
-                # Build a proper batch metrics payload and update table metrics
-                try:
-                    # Build minimal batch_stats for collector
-                    batch_stats = {
-                        'start_time': None,
-                        'end_time': None,
-                        'files_processed': 1 if success else 0,
-                        'files_failed': 0,
-                        'total_rows': rows,
-                        'total_bytes': completion_metadata.get('memory_info', {}).get('peak_usage_mb', 0)
-                    }
-                    comprehensive_metrics = self.audit_service.collect_batch_audit_metrics(batch_stats)
-                    self.audit_service.update_table_audit_with_metrics(table_name, comprehensive_metrics)
-                except Exception as e:
-                    logger.debug(f"Failed to update table audit metrics for {table_name}: {e}")
+                # NOTE: Do not perform further audit DB writes inside this transaction.
+                # We'll build and persist metrics after the transaction commits to avoid
+                # lock contention with the work done here.
                 
         except Exception as e:
             logger.warning(f"[LoadingService] Failed to update completion for '{table_name}': {e}")
+
+        # Outside the DB transaction: build metrics and persist them. Doing this
+        # after the commit avoids holding DB locks while the metrics updater may
+        # perform its own writes.
+        try:
+            batch_stats = {
+                'start_time': None,
+                'end_time': None,
+                'files_processed': 1 if success else 0,
+                'files_failed': 0,
+                'total_rows': rows,
+                'total_bytes': completion_metadata.get('memory_info', {}).get('peak_usage_mb', 0)
+            }
+
+            comprehensive_metrics = None
+            try:
+                comprehensive_metrics = self.audit_service.collect_batch_audit_metrics(batch_stats)
+            except Exception as e:
+                logger.debug(f"Failed to collect batch audit metrics for {table_name}: {e}")
+
+            if comprehensive_metrics is not None:
+                try:
+                    self.audit_service.update_table_audit_with_metrics(table_name, comprehensive_metrics)
+                    logger.info(f"[LoadingService] Persisted metrics for table '{table_name}'")
+                except Exception as e:
+                    logger.debug(f"Failed to update table audit metrics for {table_name}: {e}")
+        except Exception as e:
+            logger.debug(f"Metrics post-processing failed for {table_name}: {e}")
 
     def _calculate_file_checksum(self, file_path: Path) -> Optional[str]:
         """Calculate file checksum efficiently."""
@@ -900,8 +937,26 @@ class FileLoadingService:
         if self._connection_pool:
             try:
                 loop = asyncio.get_running_loop()
-                logger.info(f"[LoadingService] Closing pool on loop id={id(loop)}")
-                await self._connection_pool.close()
+                logger.info(f"[LoadingService] Closing pool on loop id={id(loop)} (pool={self._connection_pool})")
+                # Wrap close in a short timeout to avoid indefinite hangs
+                try:
+                    await asyncio.wait_for(self._connection_pool.close(), timeout=10.0)
+                    logger.info("[LoadingService] AsyncPG pool closed cleanly")
+                except asyncio.TimeoutError:
+                    logger.warning("[LoadingService] Timeout while closing asyncpg pool; attempting fallback termination")
+                    try:
+                        if hasattr(self._connection_pool, 'terminate'):
+                            # asyncpg.Pool may expose terminate in some versions
+                            self._connection_pool.terminate()
+                            logger.info("[LoadingService] Called pool.terminate() as fallback")
+                        else:
+                            # Last-resort: run close in thread to avoid blocking event loop
+                            await asyncio.to_thread(self._connection_pool.close)
+                            logger.info("[LoadingService] Fallback pool.close() executed in thread")
+                    except Exception as term_exc:
+                        logger.exception(f"[LoadingService] Fallback pool termination failed: {term_exc}")
+                except Exception as e:
+                    logger.exception("[LoadingService] Error while closing asyncpg pool")
             except Exception as e:
                 logger.exception("Error closing pool")
             finally:
