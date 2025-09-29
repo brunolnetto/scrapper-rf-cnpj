@@ -20,7 +20,7 @@ class Pipeline(Protocol):
 class OrchestrationStrategy(Protocol):
     """Strategy interface for different orchestration patterns."""
     
-    def execute(self, pipeline: Pipeline, config_service, **kwargs) -> Optional[Any]:
+    async def execute(self, pipeline: Pipeline, config_service, **kwargs) -> Optional[Any]:
         """Execute the pipeline using this orchestration strategy."""
         ...
     

@@ -1,15 +1,14 @@
 from sqlalchemy import inspect
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Set
+from sqlalchemy.ext.declarative import DeclarativeMeta
 
 from ..core.constants import TABLES_INFO_DICT
-from ..core.schemas import TableInfo
 from ..setup.logging import logger
 
-from typing import List, Dict, Set
-from sqlalchemy.ext.declarative import DeclarativeMeta
-from .models.business import MainBase
 
-# ingestion/base.py
+from .models.business import MainBase
+from .schemas import TableInfo, create_table_info_from_dict
+
 import re
 import asyncpg
 from typing import List, Dict
@@ -133,32 +132,28 @@ def get_table_model(table_name: str, base=None):
 
     return None
 
-
 def table_name_to_table_info(table_name: str) -> TableInfo:
-    """Convert table name to TableInfo object."""
-    table_info_dict = TABLES_INFO_DICT[table_name]
+    """
+    Enhanced replacement for the original table_name_to_table_info function.
+    Use this in your LoadingService instead of the old function.
+    """
+    try:
+        # Import the original constants
+        from ..core.constants import TABLES_INFO_DICT
+        
+        if table_name not in TABLES_INFO_DICT:
+            raise ValueError(f"Table '{table_name}' not found in configuration")
+        
+        config_dict = TABLES_INFO_DICT[table_name]
+        table_info = create_table_info_from_dict(table_name, config_dict)
+        
+        logger.debug(f"Created enhanced TableInfo: {table_info}")
+        return table_info
+        
+    except Exception as e:
+        logger.error(f"Failed to create enhanced TableInfo for {table_name}: {e}")
+        raise
 
-    # Get table info
-    label = table_info_dict["label"]
-    zip_group = table_info_dict["group"]
-    columns = get_table_columns(table_name)  # Derive from SQLAlchemy model
-    encoding = table_info_dict["encoding"]
-    transform_map = table_info_dict.get("transform_map", lambda x: x)
-    expression = table_info_dict["expression"]
-    
-    table_model = get_table_model(table_name, MainBase)
-
-    # Create table info object
-    return TableInfo(
-        label, 
-        zip_group, 
-        table_name, 
-        columns, 
-        encoding, 
-        transform_map, 
-        expression, 
-        table_model
-    )
 
 def inspect_primary_keys(table_class) -> list:
     inspector = inspect(table_class)
@@ -339,3 +334,172 @@ def get_column_types_mapping(table_info: TableInfo) -> dict[str, str]:
         logger.warning(f"Could not get column types for {table_info.table_name}: {e}")
         # Fallback to all TEXT
         return {col: 'TEXT' for col in table_info.columns}
+
+def enhance_table_info_with_metadata(table_info):
+    """
+    Enhance TableInfo object with primary keys and types if missing.
+    This ensures the fixed LoadingService has all necessary metadata.
+    """
+    # Add primary_keys if missing
+    if not hasattr(table_info, 'primary_keys') or not table_info.primary_keys:
+        try:
+            primary_keys = extract_primary_keys(table_info)
+            table_info.primary_keys = primary_keys
+            logger.debug(f"Enhanced {table_info.table_name} with primary keys: {primary_keys}")
+        except Exception as e:
+            logger.warning(f"Could not extract primary keys for {table_info.table_name}: {e}")
+            table_info.primary_keys = []
+    
+    # Add types if missing
+    if not hasattr(table_info, 'types') or not table_info.types:
+        try:
+            types_mapping = get_column_types_mapping(table_info)
+            table_info.types = types_mapping
+            logger.debug(f"Enhanced {table_info.table_name} with types mapping")
+        except Exception as e:
+            logger.warning(f"Could not get column types for {table_info.table_name}: {e}")
+            # Fallback to TEXT for all columns
+            table_info.types = {col: 'TEXT' for col in table_info.columns}
+    
+    return table_info
+
+
+def create_table_info(table_name: str):
+    """
+    Create TableInfo with all necessary metadata populated.
+    Use this instead of table_name_to_table_info for better reliability.
+    """
+    
+    # Get base table info
+    table_info = table_name_to_table_info(table_name)
+    
+    # Enhance with metadata
+    table_info = enhance_table_info_with_metadata(table_info)
+    
+    return table_info
+
+
+# Additional utility functions to support the enhanced functionality
+
+def safe_get_primary_keys(table_info) -> List[str]:
+    """
+    Safely get primary keys from table info with multiple fallback strategies.
+    """
+    # Strategy 1: Direct attribute
+    if hasattr(table_info, 'primary_keys') and table_info.primary_keys:
+        return table_info.primary_keys
+    
+    # Strategy 2: Extract from SQLAlchemy model
+    try:
+        from ..database.utils import extract_primary_keys
+        return extract_primary_keys(table_info)
+    except Exception as e:
+        logger.debug(f"extract_primary_keys failed: {e}")
+    
+    # Strategy 3: Common primary key patterns
+    common_pk_patterns = ['id', f'{table_info.table_name}_id', 'pk', 'key']
+    for pattern in common_pk_patterns:
+        if pattern in table_info.columns:
+            logger.info(f"Using inferred primary key '{pattern}' for {table_info.table_name}")
+            return [pattern]
+    
+    # Strategy 4: Use first column as fallback (for tables that must have PKs)
+    if table_info.columns:
+        logger.warning(f"Using first column '{table_info.columns[0]}' as primary key for {table_info.table_name}")
+        return [table_info.columns[0]]
+    
+    return []
+
+
+def safe_get_column_types(table_info) -> Dict[str, str]:
+    """
+    Safely get column types with fallbacks.
+    """
+    # Strategy 1: Direct attribute
+    if hasattr(table_info, 'types') and table_info.types:
+        return table_info.types
+    
+    # Strategy 2: Extract from SQLAlchemy model
+    try:
+        from .utils import get_column_types_mapping
+        return get_column_types_mapping(table_info)
+    except Exception as e:
+        logger.debug(f"get_column_types_mapping failed: {e}")
+    
+    # Strategy 3: Infer from column names
+    type_patterns = {
+        'id': 'BIGINT',
+        '_id': 'BIGINT', 
+        'count': 'BIGINT',
+        'number': 'BIGINT',
+        'amount': 'DOUBLE PRECISION',
+        'value': 'DOUBLE PRECISION',
+        'date': 'DATE',
+        'created_at': 'TIMESTAMP WITH TIME ZONE',
+        'updated_at': 'TIMESTAMP WITH TIME ZONE'
+    }
+    
+    inferred_types = {}
+    for col in table_info.columns:
+        col_lower = col.lower()
+        inferred_type = 'TEXT'  # Default
+        
+        for pattern, pg_type in type_patterns.items():
+            if pattern in col_lower:
+                inferred_type = pg_type
+                break
+        
+        inferred_types[col] = inferred_type
+    
+    return inferred_types
+
+
+def validate_table_info(table_info) -> bool:
+    """
+    Validate that table_info has all required attributes.
+    """
+    required_attrs = ['table_name', 'columns']
+    
+    for attr in required_attrs:
+        if not hasattr(table_info, attr):
+            logger.error(f"TableInfo missing required attribute: {attr}")
+            return False
+        
+        if not getattr(table_info, attr):
+            logger.error(f"TableInfo attribute {attr} is empty")
+            return False
+    
+    # Ensure enhanced attributes exist
+    if not hasattr(table_info, 'primary_keys'):
+        table_info.primary_keys = safe_get_primary_keys(table_info)
+    
+    if not hasattr(table_info, 'types'):
+        table_info.types = safe_get_column_types(table_info)
+    
+    return True
+
+
+# Integration function for the LoadingService
+def prepare_table_info_for_loading(table_name: str):
+    """
+    Prepare fully validated and enhanced TableInfo for loading operations.
+    This is the recommended function to use in LoadingService.
+    """
+    try:
+        # Create enhanced table info
+        table_info = create_enhanced_table_info(table_name)
+        
+        # Validate it has everything needed
+        if not validate_table_info(table_info):
+            raise ValueError(f"TableInfo validation failed for {table_name}")
+        
+        logger.debug(f"Prepared table info for {table_name}: "
+                    f"columns={len(table_info.columns)}, "
+                    f"primary_keys={table_info.primary_keys}, "
+                    f"types_defined={len(table_info.types)}")
+        
+        return table_info
+        
+    except Exception as e:
+        logger.error(f"Failed to prepare table info for {table_name}: {e}")
+        raise

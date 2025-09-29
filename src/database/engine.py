@@ -2,6 +2,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import pool
 import asyncpg
+import asyncio
 from sqlalchemy.ext.declarative import DeclarativeMeta
 
 
@@ -49,7 +50,8 @@ class Database:
         min_size = 1
         max_size = 100
         
-        logger.info(f"[ConnectionFactory] Creating asyncpg pool (min: {min_size}, max: {max_size})")
+        loop = asyncio.get_running_loop()
+        logger.info(f"[ConnectionFactory] Creating asyncpg pool on loop id={id(loop)} (min: {min_size}, max: {max_size})")
         logger.debug(f"[ConnectionFactory] DSN: {dsn.split('@')[0]}@***")
 
         try:

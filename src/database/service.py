@@ -1,6 +1,5 @@
 """
-DatabaseService - Consolidated database operations.
-Combines FileUploader functionality with direct record loading capabilities.
+Fixed DatabaseService - Consolidated database operations with improved async management.
 """
 import asyncio
 import asyncpg
@@ -22,22 +21,32 @@ from ..core.services.memory.service import MemoryMonitor
 class DatabaseService:
     """
     Handles all database operations: connections, temp tables, and record loading.
+    Fixed to prevent 'operation in progress' errors and connection conflicts.
     """
     
     def __init__(self, database: Database, memory_monitor: Optional[MemoryMonitor] = None):
         self.database = database
         self.memory_monitor = memory_monitor
         
-        # Thread-safe tracking
-        self._temp_table_lock = asyncio.Lock() if asyncio else None
+        # FIX: Simplified tracking without complex locking
         self.temp_tables_created = set()
-        self._connection_lock = asyncio.Lock() if asyncio else None
         self.active_connections = set()
+        
+        # FIX: Connection pool management
+        self._pool_lock = asyncio.Lock()
+        self._pool = None
+    
+    async def get_or_create_pool(self):
+        """Get or create connection pool safely."""
+        async with self._pool_lock:
+            if self._pool is None:
+                self._pool = await self.database.get_async_pool()
+            return self._pool
     
     def load_records_directly(self, table_info: Any, records: List[Tuple]) -> Tuple[bool, Optional[str], int]:
         """
         Synchronous wrapper for async database operations.
-        FIX: Provide sync interface that BatchProcessor expects while handling table_info attributes safely.
+        FIX: Simplified sync wrapper that doesn't interfere with existing event loops.
         """
         if not records:
             return True, None, 0
@@ -57,43 +66,32 @@ class DatabaseService:
                 'types': types
             })()
             
-            return self._sync_wrapper(self._async_load_records_directly(safe_table_info, records))
+            # FIX: Better sync/async boundary handling
+            try:
+                loop = asyncio.get_running_loop()
+                # We're in an async context - this shouldn't happen with our new design
+                logger.warning("[DatabaseService] load_records_directly called from async context - this indicates a design issue")
+                return False, "Cannot call sync method from async context", 0
+            except RuntimeError:
+                # No running loop - safe to create new one
+                return asyncio.run(self._async_load_records_directly(safe_table_info, records))
             
         except Exception as e:
             logger.error(f"Sync load_records_directly failed: {e}")
             return False, str(e), 0
 
-    def _sync_wrapper(self, coro):
-        """
-        Robust sync/async boundary handling.
-        FIX: Simplified to use asyncio.run for each async call.
-        """
-        try:
-            import asyncio
-            return asyncio.run(coro)
-        except Exception as e:
-            logger.error(f"Sync wrapper failed: {e}")
-            return False, str(e), 0
-
     async def _async_load_records_directly(self, table_info, records: List[Tuple]) -> Tuple[bool, Optional[str], int]:
         """
         Internal async implementation with robust error handling.
+        FIX: Use managed pool and connection to prevent conflicts.
         """
-        # FIX: Handle database interface more flexibly
         try:
-            if hasattr(self.database, 'get_async_pool'):
-                pool = await self.database.get_async_pool()
-            elif hasattr(self.database, 'pool'):
-                pool = self.database.pool
-            elif isinstance(self.database, asyncpg.Pool):
-                pool = self.database
-            else:
-                raise NotImplementedError(f"Database type {type(self.database)} not supported for async operations")
-
+            pool = await self.get_or_create_pool()
+            
             async with self.managed_connection(pool) as conn:
                 tmp_table = f"tmp_direct_{os.getpid()}_{uuid.uuid4().hex[:8]}"
                 headers = table_info.columns
-                types_map = base.map_types(headers, table_info.types)
+                types_map = base.map_types(headers, getattr(table_info, 'types', {}))
                 
                 try:
                     await conn.execute(base.create_temp_table_sql(tmp_table, headers, types_map))
@@ -101,8 +99,9 @@ class DatabaseService:
                     async with conn.transaction():
                         await conn.copy_records_to_table(tmp_table, records=records, columns=headers)
                         
-                        if table_info.primary_keys:
-                            sql = base.upsert_from_temp_sql(table_info.table_name, tmp_table, headers, table_info.primary_keys)
+                        primary_keys = getattr(table_info, 'primary_keys', [])
+                        if primary_keys:
+                            sql = base.upsert_from_temp_sql(table_info.table_name, tmp_table, headers, primary_keys)
                             await conn.execute(sql)
                         else:
                             # Handle tables without primary keys with a simple INSERT
@@ -115,6 +114,7 @@ class DatabaseService:
                     # Always ensure the temporary database table is dropped
                     try:
                         await conn.execute(f'DROP TABLE IF EXISTS {base.quote_ident(tmp_table)};')
+                        self.temp_tables_created.discard(tmp_table)
                     except Exception:
                         pass
                         
@@ -123,49 +123,50 @@ class DatabaseService:
             return False, str(e), 0
 
     async def cleanup_temp_tables(self, conn: asyncpg.Connection):
-        """Thread-safe temp table cleanup."""
-        if self._temp_table_lock:
-            async with self._temp_table_lock:
-                for temp_table in list(self.temp_tables_created):
-                    try:
-                        await conn.execute(f'DROP TABLE IF EXISTS {base.quote_ident(temp_table)};')
-                        self.temp_tables_created.discard(temp_table)
-                    except Exception as e:
-                        logger.warning(f"Failed to cleanup temp table {temp_table}: {e}")
-        else:
-            # Fallback without locking
-            for temp_table in list(self.temp_tables_created):
-                try:
-                    await conn.execute(f'DROP TABLE IF EXISTS {base.quote_ident(temp_table)};')
-                    self.temp_tables_created.discard(temp_table)
-                except Exception as e:
-                    logger.warning(f"Failed to cleanup temp table {temp_table}: {e}")
+        """Cleanup temp tables without complex locking."""
+        tables_to_cleanup = list(self.temp_tables_created)
+        for temp_table in tables_to_cleanup:
+            try:
+                await conn.execute(f'DROP TABLE IF EXISTS {base.quote_ident(temp_table)};')
+                self.temp_tables_created.discard(temp_table)
+            except Exception as e:
+                logger.warning(f"Failed to cleanup temp table {temp_table}: {e}")
 
     @asynccontextmanager
     async def managed_connection(self, pool: asyncpg.Pool):
-        """Thread-safe connection lifecycle management."""
+        """
+        Simplified connection lifecycle management.
+        FIX: Removed complex locking that could cause deadlocks.
+        """
         conn = None
         try:
             conn = await pool.acquire()
-            if self._connection_lock:
-                async with self._connection_lock:
-                    self.active_connections.add(id(conn))
-            else:
-                self.active_connections.add(id(conn))
+            conn_id = id(conn)
+            self.active_connections.add(conn_id)
+            
+            # FIX: Set a reasonable timeout for operations
+            await conn.execute("SET statement_timeout = '300s';")  # 5 minutes
+            
             yield conn
+            
+        except Exception as e:
+            logger.error(f"[DatabaseService] Connection error: {e}")
+            raise
+            
         finally:
             if conn:
                 try:
+                    # Always try to cleanup temp tables for this connection
                     await self.cleanup_temp_tables(conn)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Cleanup failed during connection close: {e}")
                 finally:
-                    if self._connection_lock:
-                        async with self._connection_lock:
-                            self.active_connections.discard(id(conn))
-                    else:
-                        self.active_connections.discard(id(conn))
-                    await pool.release(conn)
+                    conn_id = id(conn)
+                    self.active_connections.discard(conn_id)
+                    try:
+                        await pool.release(conn)
+                    except Exception as e:
+                        logger.error(f"Failed to release connection: {e}")
 
     async def upsert_batches(
         self,
@@ -180,6 +181,7 @@ class DatabaseService:
     ) -> int:
         """
         Memory-aware batch upsert with integrated monitoring.
+        FIX: Simplified to avoid connection conflicts.
         """
         rows_total = 0
         batch_idx = 0
@@ -194,17 +196,12 @@ class DatabaseService:
                 logger.info(f"[DatabaseService] Processing batch {batch_idx}: {len(batch)} rows")
                 
                 try:
-                    if enable_internal_parallelism:
-                        rows_processed = await self._process_batch_bounded_concurrency(
-                            pool, batch, sub_batch_size, table_info,
-                            batch_idx, max_retries, internal_concurrency
+                    # FIX: Always use sequential processing to avoid connection conflicts
+                    async with self.managed_connection(pool) as conn:
+                        rows_processed = await self._process_batch_sequential_optimized(
+                            conn, batch, sub_batch_size, table_info,
+                            batch_idx, max_retries
                         )
-                    else:
-                        async with self.managed_connection(pool) as conn:
-                            rows_processed = await self._process_batch_sequential_optimized(
-                                conn, batch, sub_batch_size, table_info,
-                                batch_idx, max_retries
-                            )
                     
                     rows_total += rows_processed
                     batch_idx += 1
@@ -244,17 +241,16 @@ class DatabaseService:
         batch_idx: int,
         max_retries: int
     ) -> int:
-        """Optimized sequential processing with single temp table reuse."""
+        """
+        Optimized sequential processing with single temp table reuse.
+        FIX: Improved error handling and connection state management.
+        """
         rows_processed = 0
         
         # Use single temp table per connection and reuse via TRUNCATE
-        tmp_table = f"tmp_{os.getpid()}_{batch_idx}"
+        tmp_table = f"tmp_{os.getpid()}_{batch_idx}_{uuid.uuid4().hex[:8]}"
         
-        if self._temp_table_lock:
-            async with self._temp_table_lock:
-                self.temp_tables_created.add(tmp_table)
-        else:
-            self.temp_tables_created.add(tmp_table)
+        self.temp_tables_created.add(tmp_table)
         
         try:
             headers = table_info.columns
@@ -267,10 +263,23 @@ class DatabaseService:
                 
                 for attempt in range(max_retries):
                     try:
+                        # FIX: Check connection state before operations
+                        if conn.is_closed():
+                            raise asyncpg.ConnectionDoesNotExistError("Connection was closed")
+                        
                         async with conn.transaction():
                             await conn.copy_records_to_table(tmp_table, records=sub_batch, columns=headers)
                             
                             primary_keys = getattr(table_info, 'primary_keys', [])
+                            if not primary_keys:
+                                # Try to extract from model
+                                from . import utils as db_utils
+                                try:
+                                    primary_keys = db_utils.extract_primary_keys(table_info)
+                                except Exception as e:
+                                    logger.debug(f"Could not extract primary keys: {e}")
+                                    primary_keys = []
+                            
                             if primary_keys:
                                 sql = base.upsert_from_temp_sql(table_info.table_name, tmp_table, headers, primary_keys)
                                 await conn.execute(sql)
@@ -279,15 +288,24 @@ class DatabaseService:
                                 insert_sql = f'INSERT INTO {base.quote_ident(table_info.table_name)} SELECT * FROM {base.quote_ident(tmp_table)}'
                                 await conn.execute(insert_sql)
                             
+                            # Clear temp table for next sub-batch
                             await conn.execute(f'TRUNCATE {base.quote_ident(tmp_table)};')
                         
                         rows_processed += len(sub_batch)
                         break
                         
-                    except (asyncpg.PostgresError, OSError) as e:
-                        logger.warning(f"[DatabaseService] Sub-batch retry {attempt + 1}: {e}")
+                    except (asyncpg.PostgresError, asyncpg.ConnectionDoesNotExistError, OSError) as e:
+                        logger.warning(f"[DatabaseService] Sub-batch retry {attempt + 1}/{max_retries}: {e}")
                         if attempt + 1 >= max_retries:
                             raise
+                        
+                        # FIX: Check if we need to recreate temp table after error
+                        if "does not exist" in str(e).lower():
+                            try:
+                                await conn.execute(base.create_temp_table_sql(tmp_table, headers, types_map))
+                            except Exception:
+                                pass  # Will fail on next attempt if still broken
+                        
                         await asyncio.sleep(2 ** attempt + random.uniform(0, 0.5))
                 
                 # Cleanup sub-batch reference immediately
@@ -296,117 +314,64 @@ class DatabaseService:
         finally:
             # Always cleanup temp table
             try:
-                await conn.execute(f'DROP TABLE IF EXISTS {base.quote_ident(tmp_table)};')
-                if self._temp_table_lock:
-                    async with self._temp_table_lock:
-                        self.temp_tables_created.discard(tmp_table)
-                else:
-                    self.temp_tables_created.discard(tmp_table)
-            except Exception:
-                pass
+                if not conn.is_closed():
+                    await conn.execute(f'DROP TABLE IF EXISTS {base.quote_ident(tmp_table)};')
+                self.temp_tables_created.discard(tmp_table)
+            except Exception as e:
+                logger.debug(f"Temp table cleanup failed: {e}")
         
         return rows_processed
 
-    async def _process_batch_bounded_concurrency(
-        self,
-        pool: asyncpg.Pool,
-        batch: List[Tuple],
-        sub_batch_size: int,
-        table_info: Any,
-        batch_idx: int,
-        max_retries: int,
-        internal_concurrency: int
-    ) -> int:
-        """Fixed bounded concurrency without asyncio.gather memory spike."""
-        
-        # Reduce concurrency if memory pressure is high
-        if self.memory_monitor and self.memory_monitor.is_memory_pressure_high():
-            internal_concurrency = max(1, internal_concurrency // 2)
-        
-        # Use bounded worker pattern instead of gather
-        semaphore = asyncio.Semaphore(internal_concurrency)
-        upsert_lock = asyncio.Lock()
-        
-        async def process_sub_batch_worker(start_idx: int, sub_batch: List[Tuple]) -> int:
-            async with semaphore:
-                async with self.managed_connection(pool) as conn:
-                    tmp_table = f"tmp_{os.getpid()}_{batch_idx}_{start_idx}"
-                    headers = table_info.columns
-                    types_map = base.map_types(headers, getattr(table_info, 'types', {}))
-                    
-                    try:
-                        await conn.execute(base.create_temp_table_sql(tmp_table, headers, types_map))
-                        
-                        for attempt in range(max_retries):
-                            try:
-                                # Prepare data
-                                async with conn.transaction():
-                                    await conn.copy_records_to_table(tmp_table, records=sub_batch, columns=headers)
-                                
-                                # Serialize upsert operations
-                                async with upsert_lock:
-                                    async with conn.transaction():
-                                        primary_keys = getattr(table_info, 'primary_keys', [])
-                                        if primary_keys:
-                                            sql = base.upsert_from_temp_sql(table_info.table_name, tmp_table, headers, primary_keys)
-                                            await conn.execute(sql)
-                                        else:
-                                            insert_sql = f'INSERT INTO {base.quote_ident(table_info.table_name)} SELECT * FROM {base.quote_ident(tmp_table)}'
-                                            await conn.execute(insert_sql)
-                                
-                                return len(sub_batch)
-                                
-                            except (asyncpg.PostgresError, OSError) as e:
-                                if attempt + 1 >= max_retries:
-                                    raise
-                                await asyncio.sleep(2 ** attempt + random.uniform(0, 0.5))
-                    
-                    finally:
-                        # Cleanup temp table and sub-batch
-                        try:
-                            await conn.execute(f'DROP TABLE IF EXISTS {base.quote_ident(tmp_table)};')
-                        except Exception:
-                            pass
-                        del sub_batch
-        
-        # Process with bounded concurrency - avoid building large sub_batches list
-        total_rows = 0
-        tasks = []
-        
-        for i in range(0, len(batch), sub_batch_size):
-            sub_batch = batch[i:i+sub_batch_size]
-            task = asyncio.create_task(process_sub_batch_worker(i, sub_batch))
-            tasks.append(task)
-        
-        # Process completed tasks as they finish to free memory earlier
-        for completed_task in asyncio.as_completed(tasks):
-            try:
-                rows = await completed_task
-                total_rows += rows
-            except Exception as e:
-                logger.error(f"[DatabaseService] Sub-batch task failed: {e}")
-                raise
-        
-        return total_rows
-
     async def ensure_table_exists(self, pool: asyncpg.Pool, table_info: Any):
-        """Ensure target table exists with proper schema."""
+        """
+        Ensure target table exists with proper schema.
+        FIX: Simplified with better error handling.
+        """
         async with self.managed_connection(pool) as conn:
-            headers = table_info.columns
-            primary_keys = getattr(table_info, 'primary_keys', [])
-            types_map = base.map_types(headers, getattr(table_info, 'types', {}))
-            
-            sql = base.ensure_table_sql(table_info.table_name, headers, types_map, primary_keys)
-            await conn.execute(sql)
-            
-            logger.debug(f"[DatabaseService] Ensured table exists: {table_info.table_name}")
+            try:
+                headers = table_info.columns
+                primary_keys = getattr(table_info, 'primary_keys', [])
+                
+                # Try to extract primary keys if not provided
+                if not primary_keys:
+                    from . import utils as db_utils
+                    try:
+                        primary_keys = db_utils.extract_primary_keys(table_info)
+                    except Exception as e:
+                        logger.debug(f"Could not extract primary keys for {table_info.table_name}: {e}")
+                        primary_keys = []
+                
+                # Get column types
+                types_map = getattr(table_info, 'types', {})
+                if not types_map:
+                    from . import utils as db_utils
+                    try:
+                        types_map = db_utils.get_column_types_mapping(table_info)
+                    except Exception:
+                        types_map = base.map_types(headers, {})
+                
+                sql = base.ensure_table_sql(table_info.table_name, headers, types_map, primary_keys)
+                await conn.execute(sql)
+                
+                logger.debug(f"[DatabaseService] Ensured table exists: {table_info.table_name}")
+                
+            except Exception as e:
+                logger.error(f"[DatabaseService] Failed to ensure table {table_info.table_name}: {e}")
+                raise
 
     def get_connection_pool(self):
-        """Get async connection pool from database."""
-        if not hasattr(self.database, 'get_async_pool'):
-            raise NotImplementedError("Database must have get_async_pool method")
-        import asyncio
-        return asyncio.run(self.database.get_async_pool())
+        """
+        Get async connection pool from database.
+        FIX: Simplified synchronous access to async pool.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+            # We're in async context, should not happen with new design
+            logger.warning("[DatabaseService] get_connection_pool called from async context")
+            return None
+        except RuntimeError:
+            # No running loop - safe to create
+            return asyncio.run(self.get_or_create_pool())
 
     def log_status(self, operation: str):
         """Log current database service status."""
@@ -420,3 +385,11 @@ class DatabaseService:
                 logger.info(f"[DatabaseService] Memory status - "
                            f"Usage: {status.get('usage_above_baseline_mb', 0):.1f}MB, "
                            f"Budget: {status.get('budget_remaining_mb', 0):.1f}MB")
+
+    async def close_pool(self):
+        """Close the connection pool properly."""
+        if self._pool:
+            async with self._pool_lock:
+                if self._pool:
+                    await self._pool.close()
+                    self._pool = None
