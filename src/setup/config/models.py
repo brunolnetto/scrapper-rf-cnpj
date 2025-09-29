@@ -27,9 +27,15 @@ Clean Architecture Principles:
 - No legacy compatibility - clean, modern architecture only
 """
 
-from pydantic import BaseModel, Field, field_validator, model_validator, PrivateAttr
+from pydantic import (
+    BaseModel, 
+    Field, 
+    field_validator, 
+    model_validator, 
+    PrivateAttr
+)
 from enum import Enum
-from typing import Optional, Dict, Any
+from typing import Literal, Optional, Dict, Any
 from pathlib import Path
 import os
 
@@ -39,49 +45,6 @@ class Environment(str, Enum):
     DEVELOPMENT = "development"
     PRODUCTION = "production"
     TESTING = "testing"
-
-
-class MemoryMonitorConfig(BaseModel):
-    """Memory monitoring and management configuration."""
-    memory_limit_mb: int = Field(
-        default=1024,
-        ge=256,
-        le=16384,
-        description="Memory limit in MB for operations"
-    )
-    cleanup_threshold_ratio: float = Field(
-        default=0.8,
-        ge=0.1,
-        le=1.0,
-        description="Memory pressure ratio threshold for triggering cleanup (0.0-1.0)"
-    )
-    baseline_buffer_mb: int = Field(
-        default=256,
-        ge=64,
-        le=1024,
-        description="Memory buffer in MB to maintain above baseline for system stability"
-    )
-    
-    @field_validator('memory_limit_mb')
-    @classmethod
-    def validate_memory_limit(cls, v):
-        if not (256 <= v <= 16384):
-            raise ValueError('Memory limit must be between 256MB and 16384MB')
-        return v
-    
-    @field_validator('cleanup_threshold_ratio')
-    @classmethod
-    def validate_cleanup_threshold(cls, v):
-        if not (0.1 <= v <= 1.0):
-            raise ValueError('Cleanup threshold ratio must be between 0.1 and 1.0')
-        return v
-    
-    @field_validator('baseline_buffer_mb')
-    @classmethod
-    def validate_baseline_buffer(cls, v):
-        if not (64 <= v <= 1024):
-            raise ValueError('Baseline buffer must be between 64MB and 1024MB')
-        return v
 
 
 class DatabaseConfig(BaseModel):
@@ -117,6 +80,112 @@ class DatabaseConfig(BaseModel):
         """Get connection string for maintenance database."""
         return f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.maintenance_db}"
 
+
+def read_cgroup_memory_limit_bytes() -> Optional[int]:
+    """
+    Return memory limit in bytes if running in a cgroup with an enforceable limit,
+    or None if no limit detected. Tries common cgroup v2 and v1 paths.
+    """
+    # cgroup v2 unified: memory.max (value = "max" or a number)
+    try_paths = [
+        "/sys/fs/cgroup/memory.max",                 # sometimes on v2
+        "/sys/fs/cgroup/memory/memory.limit_in_bytes"  # cgroup v1
+    ]
+    for p in try_paths:
+        try:
+            if os.path.exists(p):
+                val = open(p, "r").read().strip()
+                if val in ("max", ""):
+                    return None
+                return int(val)
+        except Exception:
+            pass
+    # Could add more exhaustive lookup using /proc/self/cgroup, but this covers common setups.
+    return None
+
+
+class MemoryMonitorConfig(BaseModel):
+    """
+    Memory monitoring and management configuration.
+    - memory_limit_mb: legacy absolute budget above baseline (MB).
+    - memory_limit_mode: "absolute" uses memory_limit_mb; "fraction" uses memory_limit_fraction * system_total.
+    - memory_limit_fraction: fraction of system or cgroup memory (0.0 < f <= 1.0) used when memory_limit_mode == "fraction".
+    """
+    memory_limit_mb: int = Field(
+        default=3072,
+        ge=256,
+        le=16384,
+        description="Legacy absolute budget (MB) above baseline if memory_limit_mode == 'absolute'"
+    )
+
+    memory_limit_mode: Literal["absolute", "fraction"] = Field(
+        default="fraction",
+        description="Use an absolute MB budget or a fraction of system/cgroup memory"
+    )
+
+    memory_limit_fraction: float = Field(
+        default=0.5,
+        ge=0.05,
+        le=1.0,
+        description="If mode == 'fraction', use this fraction of total memory as effective budget"
+    )
+
+    cleanup_threshold_ratio: float = Field(
+        default=0.6,
+        ge=0.1,
+        le=1.0,
+        description="EWMA pressure level at which cleanup is recommended (0.0-1.0)"
+    )
+
+    baseline_buffer_mb: int = Field(
+        default=512,
+        ge=64,
+        le=4096,
+        description="Minimum system buffer to keep available (MB). Monitor may scale this down on small hosts."
+    )
+
+    # Operational knobs
+    baseline_samples: int = Field(default=7, ge=3, le=31,
+                                 description="Number of samples used to compute baseline")
+    warmup_seconds: float = Field(default=1.0, ge=0.0, le=30.0,
+                                  description="Seconds to wait before baseline sampling")
+    cleanup_rate_limit_seconds: float = Field(default=1.0, ge=0.1, le=60.0,
+                                              description="Minimum seconds between aggressive cleanup calls")
+    smoothing_alpha: float = Field(default=0.25, ge=0.01, le=1.0,
+                                   description="EWMA alpha for pressure smoothing (lower = slower reaction)")
+    record_history_len: int = Field(default=128, ge=0, le=10000,
+                                    description="Keep a short ring buffer of recent status reports for diagnostics")
+
+    # Optional toggle to let monitor try to call malloc_trim on glibc based systems
+    enable_malloc_trim: bool = Field(default=True)
+
+    @field_validator('memory_limit_mb')
+    @classmethod
+    def validate_memory_limit(cls, v):
+        if not (256 <= v <= 16384):
+            raise ValueError('Memory limit must be between 256MB and 16384MB')
+        return v
+
+    @field_validator('cleanup_threshold_ratio')
+    @classmethod
+    def validate_cleanup_threshold(cls, v):
+        if not (0.1 <= v <= 1.0):
+            raise ValueError('Cleanup threshold ratio must be between 0.1 and 1.0')
+        return v
+
+    @field_validator('baseline_buffer_mb')
+    @classmethod
+    def validate_baseline_buffer(cls, v):
+        if not (64 <= v <= 4096):
+            raise ValueError('Baseline buffer must be between 64MB and 4096MB')
+        return v
+
+    @field_validator('memory_limit_fraction')
+    @classmethod
+    def validate_fraction(cls, v):
+        if not (0.05 <= v <= 1.0):
+            raise ValueError('memory_limit_fraction must be between 0.05 and 1.0')
+        return v
 
 class ConversionConfig(BaseModel):
     """CSV to Parquet conversion configuration."""

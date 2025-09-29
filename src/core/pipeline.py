@@ -340,7 +340,8 @@ class ReceitaCNPJPipeline(Pipeline):
 
     def convert_to_parquet(self, audit_metadata: AuditMetadata) -> Path:
         from ..utils.misc import makedir
-        from .services.conversion.service import FileConversionService
+        from .services.conversion.service_new import FileConversionService
+        from .services.conversion.service import convert_csvs_to_parquet_smart
 
         num_workers = self.config.pipeline.conversion.workers
         output_dir = self.config.pipeline.get_temporal_conversion_path(self.config.year, self.config.month)
@@ -371,16 +372,20 @@ class ReceitaCNPJPipeline(Pipeline):
 
         extract_path = self.config.pipeline.get_temporal_extraction_path(self.config.year, self.config.month)
 
-        conversion_service = FileConversionService(self.config)
-
-        # Analyze dataset and get optimal config
-        optimal_config = conversion_service.get_optimal_config(audit_map, extract_path)
-        self.config.pipeline.conversion = optimal_config
-
-        conversion_service.convert_audit_map(
-            audit_map, extract_path, output_dir, 
-            self.config.pipeline.data_source.delimiter, 
-            use_parallel=self.config.pipeline.is_parallel
+        # conversion_service = FileConversionService(self.config)
+        # # Analyze dataset and get optimal config
+        # optimal_config = conversion_service.get_optimal_config(audit_map, extract_path)
+        # self.config.pipeline.conversion = optimal_config
+        # conversion_service.convert_audit_map(
+        #     audit_map, extract_path, output_dir, self.config.pipeline.data_source.delimiter
+        # )
+        
+        # Fix: Legacy code
+        convert_csvs_to_parquet_smart(
+            audit_map,
+            extract_path, 
+            output_dir, 
+            self.config.pipeline.data_source.delimiter
         )
 
         logger.info(f"Parquet conversion completed. Files saved to: {output_dir}")

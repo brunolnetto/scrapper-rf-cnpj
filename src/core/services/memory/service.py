@@ -1,227 +1,270 @@
-from pathlib import Path
-import os
-import gc
-import time
-from typing import Dict, Optional
 from dataclasses import dataclass
+import time
 import threading
-
-import polars as pl
-
-from ....setup.config.models import MemoryMonitorConfig
-from ....setup.logging import logger
+import gc
+import os
+from typing import Optional, Dict, Callable, List, Any
 
 import psutil
 
+# Assume MemoryMonitorConfig is your pydantic model. Example added fields expected:
+# - memory_limit_mb (int)
+# - cleanup_threshold_ratio (float)
+# - baseline_buffer_mb (int)
+# - memory_limit_mode: "absolute" | "fraction"  (optional)
+# - memory_limit_fraction: float (if using fraction)
+# - baseline_samples: int
+# - warmup_seconds: float
+# - cleanup_rate_limit_seconds: float
+# - smoothing_alpha: float
+
 @dataclass
 class MemorySnapshot:
-    """Snapshot of memory usage at a point in time."""
-    timestamp: float
-    process_rss_mb: float
-    process_vms_mb: float
-    system_available_mb: float
-    system_used_percent: float
+    timestamp: Optional[float] = None
+    process_rss_mb: float = 0.0
+    process_vms_mb: float = 0.0
+    system_total_mb: float = 0.0
+    system_available_mb: float = 0.0
+    system_used_percent: float = 0.0
 
     def __post_init__(self):
-        if self.timestamp == 0:
+        if self.timestamp is None:
             self.timestamp = time.time()
 
-class MemoryMonitor:
-    """
-    Enhanced memory monitoring with better cleanup between operations.
-    """
 
-    def __init__(self, config: MemoryMonitorConfig):
+class MemoryMonitor:
+    def __init__(
+        self,
+        config,
+        on_cleanup: Optional[Callable[[], None]] = None,
+    ):
         self.config = config
-        self.baseline_snapshot: Optional[MemorySnapshot] = None
-        self.process = None
+        self.on_cleanup = on_cleanup  # callback to clear caches / drop references
         self.lock = threading.Lock()
-        self.last_cleanup_time = 0
-        
+        self.last_cleanup_time = 0.0
+        self.ewma_pressure = 0.0  # smoothed pressure
+        self.process = None
+
+        # defaults if not present in config
+        self.config.baseline_samples = getattr(self.config, "baseline_samples", 7)
+        self.config.warmup_seconds = getattr(self.config, "warmup_seconds", 1.0)
+        self.config.cleanup_rate_limit_seconds = getattr(self.config, "cleanup_rate_limit_seconds", 1.0)
+        self.config.smoothing_alpha = getattr(self.config, "smoothing_alpha", 0.25)
+        self.config.memory_limit_mode = getattr(self.config, "memory_limit_mode", "absolute")
+        self.config.memory_limit_fraction = getattr(self.config, "memory_limit_fraction", 0.5)
+
         try:
             self.process = psutil.Process()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            logger.warning("Cannot monitor process memory - using fallback mode")
-        
-        # Establish baseline immediately
+        except Exception:
+            self.process = None
+
+        self.baseline_snapshot: Optional[MemorySnapshot] = None
         self._establish_baseline()
 
+    def _get_sys(self) -> Any:
+        return psutil.virtual_memory()
+
     def _get_current_memory_info(self) -> MemorySnapshot:
-        """Get current comprehensive memory information."""
         if self.process:
             try:
                 proc_info = self.process.memory_info()
-                sys_info = psutil.virtual_memory()
-                
+                sys_info = self._get_sys()
                 return MemorySnapshot(
                     timestamp=time.time(),
-                    process_rss_mb=proc_info.rss / (1024 * 1024),
-                    process_vms_mb=proc_info.vms / (1024 * 1024),
-                    system_available_mb=sys_info.available / (1024 * 1024),
-                    system_used_percent=sys_info.percent
+                    process_rss_mb=proc_info.rss / (1024*1024),
+                    process_vms_mb=proc_info.vms / (1024*1024),
+                    system_total_mb=sys_info.total / (1024*1024),
+                    system_available_mb=sys_info.available / (1024*1024),
+                    system_used_percent=sys_info.percent,
                 )
-            except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError):
+            except Exception:
                 pass
-        
-        # Fallback when psutil is unavailable
+
+        sys_info = self._get_sys()
         return MemorySnapshot(
             timestamp=time.time(),
             process_rss_mb=0.0,
             process_vms_mb=0.0,
-            system_available_mb=float('inf'),
-            system_used_percent=0.0
+            system_total_mb=sys_info.total / (1024*1024),
+            system_available_mb=sys_info.available / (1024*1024),
+            system_used_percent=sys_info.percent,
         )
 
     def _establish_baseline(self) -> None:
-        """Establish baseline memory usage before processing starts."""
+        """Trimmed median baseline over a short warmup window — more robust to noise."""
         with self.lock:
-            # Take multiple samples to get stable baseline
-            samples = []
-            for _ in range(3):
+            samples: List[MemorySnapshot] = []
+            # small warmup
+            if getattr(self.config, "warmup_seconds", 0) > 0:
+                time.sleep(self.config.warmup_seconds)
+
+            for _ in range(self.config.baseline_samples):
                 samples.append(self._get_current_memory_info())
-                time.sleep(0.1)
-            
-            # Use median values for stability
-            rss_values = [s.process_rss_mb for s in samples]
-            vms_values = [s.process_vms_mb for s in samples]
-            
-            rss_values.sort()
-            vms_values.sort()
-            median_idx = len(rss_values) // 2
-            
+                time.sleep(0.05)
+
+            # Use median for process RSS/VMS and median available/used
+            rss = sorted(s.process_rss_mb for s in samples)
+            vms = sorted(s.process_vms_mb for s in samples)
+            avail = sorted(s.system_available_mb for s in samples)
+            used_pct = sorted(s.system_used_percent for s in samples)
+            idx = len(rss) // 2
+
             self.baseline_snapshot = MemorySnapshot(
                 timestamp=time.time(),
-                process_rss_mb=rss_values[median_idx],
-                process_vms_mb=vms_values[median_idx],
-                system_available_mb=samples[-1].system_available_mb,
-                system_used_percent=samples[-1].system_used_percent
+                process_rss_mb=rss[idx],
+                process_vms_mb=vms[idx],
+                system_total_mb=samples[idx].system_total_mb,
+                system_available_mb=avail[idx],
+                system_used_percent=used_pct[idx],
             )
-            
-        logger.info(f"Memory baseline established: "
-                   f"Process={self.baseline_snapshot.process_rss_mb:.1f}MB, "
-                   f"System available={self.baseline_snapshot.system_available_mb:.1f}MB")
+
+    def _effective_memory_limit_mb(self, sys_total_mb: float) -> float:
+        """Return the effective memory cap (absolute MB) used to compute process_pressure."""
+        if self.config.memory_limit_mode == "fraction":
+            return max(1.0, sys_total_mb * float(self.config.memory_limit_fraction))
+        # absolute semantics: configured is budget above baseline (legacy behavior)
+        return float(self.config.memory_limit_mb)
+
+    def _update_ewma(self, pressure: float) -> float:
+        alpha = float(getattr(self.config, "smoothing_alpha", 0.25))
+        self.ewma_pressure = alpha * pressure + (1 - alpha) * self.ewma_pressure
+        return self.ewma_pressure
 
     def get_memory_usage_above_baseline(self) -> float:
-        """Get current memory usage above the established baseline in MB."""
         if not self.baseline_snapshot:
             return 0.0
-            
-        current = self._get_current_memory_info()
-        return max(0.0, current.process_rss_mb - self.baseline_snapshot.process_rss_mb)
-
-    def get_available_memory_budget(self) -> float:
-        """Get remaining memory budget in MB considering baseline."""
-        usage_above_baseline = self.get_memory_usage_above_baseline()
-        return max(0.0, self.config.memory_limit_mb - usage_above_baseline)
+        cur = self._get_current_memory_info()
+        return max(0.0, cur.process_rss_mb - self.baseline_snapshot.process_rss_mb)
 
     def get_memory_pressure_level(self) -> float:
-        """Get memory pressure as a ratio (0.0 = no pressure, 1.0 = at limit)."""
-        usage_above_baseline = self.get_memory_usage_above_baseline()
-        if self.config.memory_limit_mb <= 0:
-            return 0.0
-        return min(1.0, usage_above_baseline / self.config.memory_limit_mb)
+        """Combine process and system pressures into a single [0..1] metric and smooth it."""
+        cur = self._get_current_memory_info()
+        usage_above = max(0.0, cur.process_rss_mb - (self.baseline_snapshot.process_rss_mb if self.baseline_snapshot else 0.0))
+        effective_limit = self._effective_memory_limit_mb(cur.system_total_mb)
+
+        # process pressure
+        process_pressure = 0.0
+        if effective_limit > 0:
+            process_pressure = min(1.0, usage_above / effective_limit)
+
+        # system pressure: 0 if available comfortably above buffer, 1 if at or below buffer
+        buffer_mb = float(self.config.baseline_buffer_mb)
+        system_pressure = 0.0
+        if cur.system_available_mb <= buffer_mb:
+            system_pressure = 1.0
+        else:
+            # scale between buffer and (buffer + effective_limit) to avoid false positives on small systems
+            denom = max(1.0, effective_limit)
+            system_pressure = max(0.0, 1.0 - ((cur.system_available_mb - buffer_mb) / denom))
+            system_pressure = min(1.0, system_pressure)
+
+        combined = max(process_pressure, system_pressure)
+        return self._update_ewma(combined)
 
     def is_memory_pressure_high(self) -> bool:
-        """Check if memory pressure is above cleanup threshold."""
-        return self.get_memory_pressure_level() >= self.config.cleanup_threshold_ratio
+        pressure = self.get_memory_pressure_level()
+        return pressure >= float(self.config.cleanup_threshold_ratio)
 
     def is_memory_limit_exceeded(self) -> bool:
-        """Check if memory usage exceeds the configured limit above baseline."""
-        usage_above_baseline = self.get_memory_usage_above_baseline()
-        return usage_above_baseline > self.config.memory_limit_mb
+        usage = self.get_memory_usage_above_baseline()
+        cur = self._get_current_memory_info()
+        eff = self._effective_memory_limit_mb(cur.system_total_mb)
+        return usage > eff
 
     def should_prevent_processing(self) -> bool:
-        """
-        Determine if processing should be prevented due to memory constraints.
-        This considers both process memory and system-wide memory availability.
-        """
-        if self.is_memory_limit_exceeded():
+        cur = self._get_current_memory_info()
+        # absolute safety: if system availability is below buffer, prevent
+        if cur.system_available_mb < float(self.config.baseline_buffer_mb):
             return True
-            
-        # Also check system memory availability
-        current = self._get_current_memory_info()
-        if current.system_available_mb < self.config.baseline_buffer_mb:
-            logger.warning(f"Low system memory: {current.system_available_mb:.1f}MB available")
+        # if smoothed pressure exceeds 0.95, definitely block
+        if self.get_memory_pressure_level() >= 0.95:
             return True
- 
-        if current.system_used_percent > 90:
-            logger.warning(f"High system memory usage: {current.system_used_percent:.1f}%")
-            return True
-            
-        return False
+        # otherwise defer to is_memory_limit_exceeded
+        return self.is_memory_limit_exceeded()
 
     def perform_aggressive_cleanup(self) -> Dict[str, float]:
-        """
-        Perform more aggressive cleanup between large files.
-        """
         with self.lock:
             now = time.time()
-            if now - self.last_cleanup_time < 0.5:  # Reduced rate limit
+            if now - self.last_cleanup_time < float(self.config.cleanup_rate_limit_seconds):
                 return {"skipped": True}
-                
             self.last_cleanup_time = now
-            
-        before_snapshot = self._get_current_memory_info()
-        
-        # Multi-stage aggressive cleanup
-        cleanup_stats = {
-            "before_mb": before_snapshot.process_rss_mb,
-            "cleanup_type": "aggressive_inter_file"
-        }
-        
-        # Stage 1: Multiple garbage collections
-        for i in range(5):
-            gc.collect()
-            
-        # Stage 2: Clear generation-specific collections
-        for gen in range(3):
+
+        before = self._get_current_memory_info()
+        freed = 0.0
+
+        # Stage 0: user-provided cleanup hook (preferred)
+        if callable(self.on_cleanup):
             try:
-                gc.collect(gen)
-            except:
+                self.on_cleanup()
+            except Exception:
                 pass
-                
-        # Stage 3: Force Polars cleanup if available
+
+        # Stage 1: multiple GC passes but measure after each; stop early if no change
+        prev_rss = before.process_rss_mb
+        for i in range(3):
+            gc.collect()
+            time.sleep(0.03)
+            cur = self._get_current_memory_info()
+            if cur.process_rss_mb >= prev_rss - 0.5:  # less than 0.5MB change -> stop
+                break
+            prev_rss = cur.process_rss_mb
+
+        # Stage 2: optional OS-level trim (glibc) — best-effort
         try:
-            # Clear any cached state in Polars
-            pl.clear_schema_cache()
-        except:
+            libc = None
+            if os.name == "posix":
+                import ctypes
+                libc = ctypes.CDLL("libc.so.6")
+                try:
+                    libc.malloc_trim(0)
+                except Exception:
+                    pass
+        except Exception:
             pass
-            
-        # Stage 4: OS-level hints
+
+        # Stage 3: sync (best-effort)
         try:
-            os.sync()  # Flush OS buffers
-        except:
+            if hasattr(os, "sync"):
+                os.sync()
+        except Exception:
             pass
-        
-        # Brief pause for cleanup to take effect
-        time.sleep(0.1)
-        
-        after_snapshot = self._get_current_memory_info()
-        cleanup_stats["after_mb"] = after_snapshot.process_rss_mb
-        cleanup_stats["freed_mb"] = max(0, before_snapshot.process_rss_mb - after_snapshot.process_rss_mb)
-        
-        if cleanup_stats["freed_mb"] > 0:
-            logger.info(f"Aggressive cleanup freed {cleanup_stats['freed_mb']:.1f}MB")
-        
-        return cleanup_stats
+
+        after = self._get_current_memory_info()
+        freed = max(0.0, before.process_rss_mb - after.process_rss_mb)
+        result = {
+            "before_mb": before.process_rss_mb,
+            "after_mb": after.process_rss_mb,
+            "freed_mb": freed,
+            "skipped": False,
+        }
+        return result
 
     def get_status_report(self) -> Dict[str, any]:
-        """Get comprehensive memory status report."""
-        current = self._get_current_memory_info()
-        usage_above_baseline = self.get_memory_usage_above_baseline()
-        budget_remaining = self.get_available_memory_budget()
+        cur = self._get_current_memory_info()
+        usage_above = self.get_memory_usage_above_baseline()
         pressure = self.get_memory_pressure_level()
-        
+        eff_limit = self._effective_memory_limit_mb(cur.system_total_mb)
+
+        # Backwards-compatible budget_remaining_mb:
+        budget_remaining_mb = max(0.0, eff_limit - usage_above)
+
+        # Helpful additional fields for callers:
+        budget_remaining_percent = (budget_remaining_mb / max(1.0, eff_limit)) if eff_limit > 0 else 0.0
+        configured_limit_mb = float(self.config.memory_limit_mb) if hasattr(self.config, "memory_limit_mb") else eff_limit
+
         return {
-            "timestamp": current.timestamp,
-            "baseline_mb": self.baseline_snapshot.process_rss_mb if self.baseline_snapshot else 0,
-            "current_process_mb": current.process_rss_mb,
-            "usage_above_baseline_mb": usage_above_baseline,
-            "configured_limit_mb": self.config.memory_limit_mb,
-            "budget_remaining_mb": budget_remaining,
+            "timestamp": cur.timestamp,
+            "baseline_mb": self.baseline_snapshot.process_rss_mb if self.baseline_snapshot else 0.0,
+            "current_process_mb": cur.process_rss_mb,
+            "usage_above_baseline_mb": usage_above,
+            "effective_limit_mb": eff_limit,
+            "configured_limit_mb": configured_limit_mb,
+            "budget_remaining_mb": budget_remaining_mb,         # <--- legacy key callers expect
+            "budget_remaining_percent": budget_remaining_percent,
             "pressure_level": pressure,
-            "system_available_mb": current.system_available_mb,
-            "system_used_percent": current.system_used_percent,
-            "should_cleanup": self.is_memory_pressure_high(),
-            "should_block": self.should_prevent_processing()
+            "system_available_mb": cur.system_available_mb,
+            "system_total_mb": cur.system_total_mb,
+            "system_used_percent": cur.system_used_percent,
+            "should_cleanup": pressure >= float(self.config.cleanup_threshold_ratio),
+            "should_block": self.should_prevent_processing(),
         }
