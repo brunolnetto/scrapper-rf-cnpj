@@ -273,16 +273,20 @@ class AuditService:
             # Extract file information from audit
             file_path = audit.source_files[0]  # Use first filename
 
-            # Skip synthetic conversion markers that are used to reuse conversion
-            # infrastructure but do not represent real processed files.
-            if isinstance(file_path, str) and file_path == "synthetic_conversion":
+            # Only create file manifests for real processed files (csv/parquet) or explicit paths.
+            # This avoids creating entries for zip identifiers, synthetic markers, or table identifiers.
+            if not isinstance(file_path, str):
+                logger.debug(f"Skipping non-string source_files entry for audit: {file_path}")
+                return
+
+            lower_fp = file_path.lower()
+            if lower_fp == "synthetic_conversion":
                 logger.debug(f"Skipping synthetic conversion manifest for: {file_path}")
                 return
 
-            # Skip ZIP files - they shouldn't be in file_ingestion_manifests
-            # Only processed CSV/Parquet files should be tracked there
-            if isinstance(file_path, str) and file_path.endswith('.zip'):
-                logger.debug(f"Skipping manifest entry for ZIP file: {file_path}")
+            # Skip archive-level artifacts and abstract identifiers
+            if lower_fp.endswith('.zip') or '$' in file_path or '/' not in file_path and not (lower_fp.endswith('.csv') or lower_fp.endswith('.parquet')):
+                logger.debug(f"Skipping manifest entry for non-data source: {file_path}")
                 return
 
             # Extract table name
@@ -363,6 +367,76 @@ class AuditService:
         except Exception as e:
             logger.error(f"Failed to find table audit for {table_name}: {e}")
             return None
+
+    @contextmanager
+    def table_context(self, table_names: List[str]):
+        """
+        Context manager that marks table-level audits as started and sets
+        their status to RUNNING. If a table audit does not exist for the
+        given table (in the current ingestion period), a new entry is
+        inserted with started_at populated.
+
+        Yields:
+            dict: mapping of table_name -> table_audit_id
+        """
+        mapping: Dict[str, Optional[str]] = {}
+        try:
+            with self.database.engine.begin() as conn:
+                for table_name in table_names:
+                    try:
+                        # Try to find an existing table audit
+                        result = conn.execute(text('''
+                            SELECT table_audit_id, started_at
+                            FROM table_audit_manifest
+                            WHERE entity_name = :table_name
+                            ORDER BY created_at DESC
+                            LIMIT 1
+                        '''), {'table_name': table_name})
+                        row = result.fetchone()
+
+                        if row and row[0]:
+                            table_audit_id = str(row[0])
+                            started_at = row[1]
+                            # Only set started_at if it's missing
+                            if not started_at:
+                                conn.execute(text('''
+                                    UPDATE table_audit_manifest
+                                    SET started_at = :started_at,
+                                        status = :status
+                                    WHERE table_audit_id = :table_audit_id
+                                '''), {
+                                    'started_at': datetime.now(),
+                                    'status': AuditStatus.RUNNING.value,
+                                    'table_audit_id': table_audit_id
+                                })
+                        else:
+                            # Insert a new table audit manifest for this table
+                            table_audit_id = str(uuid.uuid4())
+                            conn.execute(text('''
+                                INSERT INTO table_audit_manifest
+                                (table_audit_id, entity_name, status, created_at, started_at, ingestion_year, ingestion_month)
+                                VALUES (:table_audit_id, :entity_name, :status, :created_at, :started_at, :year, :month)
+                            '''), {
+                                'table_audit_id': table_audit_id,
+                                'entity_name': table_name,
+                                'status': AuditStatus.RUNNING.value,
+                                'created_at': datetime.now(),
+                                'started_at': datetime.now(),
+                                'year': self.config.year,
+                                'month': self.config.month
+                            })
+
+                        mapping[table_name] = table_audit_id
+
+                    except Exception as e:
+                        logger.debug(f"Failed to mark table audit started for {table_name}: {e}")
+                        mapping[table_name] = None
+
+            yield mapping
+
+        finally:
+            # No automatic completion behavior here; completion is handled elsewhere
+            return
 
     def create_file_manifest(
         self, file_path: str, status: AuditStatus, table_manifest_id: str, 
@@ -486,6 +560,7 @@ class AuditService:
                 entity_name, 
                 status, 
                 created_at,
+                started_at,
                 file_path,
                 checksum,
                 filesize, 
@@ -497,6 +572,7 @@ class AuditService:
                 :entity_name, 
                 :status,  
                 :created_at,
+                :started_at,
                 :file_path,
                 :checksum,
                 :filesize, 
@@ -526,6 +602,7 @@ class AuditService:
                     'entity_name': table_name,
                     'status': norm_status.value,
                     'created_at': datetime.now(),
+                    'started_at': datetime.now(),
                     'file_path': file_path,
                     'checksum': checksum,
                     'filesize': filesize,
@@ -1365,8 +1442,12 @@ class AuditService:
         """
         try:
             import time
-            start_time = batch_stats.get("start_time", time.time())
-            end_time = batch_stats.get("end_time", time.time())
+            # Allow callers to pass None explicitly; treat None as missing and
+            # fall back to current time to avoid TypeErrors when subtracting.
+            st = batch_stats.get("start_time", None)
+            et = batch_stats.get("end_time", None)
+            start_time = st if (isinstance(st, (int, float)) and st is not None) else time.time()
+            end_time = et if (isinstance(et, (int, float)) and et is not None) else time.time()
             duration = max(end_time - start_time, 0)
             
             batch_metrics = {
@@ -1437,8 +1518,10 @@ class AuditService:
         """
         try:
             import time
-            start_time = subbatch_stats.get("start_time", time.time())
-            end_time = subbatch_stats.get("end_time", time.time())
+            st = subbatch_stats.get("start_time", None)
+            et = subbatch_stats.get("end_time", None)
+            start_time = st if (isinstance(st, (int, float)) and st is not None) else time.time()
+            end_time = et if (isinstance(et, (int, float)) and et is not None) else time.time()
             duration = max(end_time - start_time, 0)
             
             subbatch_metrics = {
@@ -1505,8 +1588,8 @@ class AuditService:
                 "collection_timestamp": datetime.now().isoformat()
             }
 
-    def update_table_audit_with_comprehensive_metrics(
-        self, table_name: str, comprehensive_metrics: Dict[str, Any]
+    def update_table_audit_with_metrics(
+        self, table_name: str, metrics: Dict[str, Any]
     ) -> None:
         """
         Update table audit record with comprehensive column metrics.
@@ -1532,11 +1615,11 @@ class AuditService:
                         notes = COALESCE(notes, '{}')::jsonb || (:additional_notes)::jsonb
                     WHERE table_audit_id = :table_audit_id
                 '''), {
-                    'metrics': json.dumps(comprehensive_metrics),
+                    'metrics': json.dumps(metrics),
                     'additional_notes': json.dumps({
                         "comprehensive_metrics_updated": True,
-                        "metrics_collection_timestamp": comprehensive_metrics.get("collection_timestamp"),
-                        "data_quality_score": comprehensive_metrics.get("data_quality", {}).get("completeness_percentage", 0)
+                        "metrics_collection_timestamp": metrics.get("collection_timestamp"),
+                        "data_quality_score": metrics.get("data_quality", {}).get("completeness_percentage", 0)
                     }),
                     'table_audit_id': str(table_audit_id)
                 })
