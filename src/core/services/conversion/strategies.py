@@ -5,44 +5,10 @@ import gc
 import time
 
 from ....setup.logging import logger
-from ....setup.config.models import ConversionConfig
 from ..memory.service import MemoryMonitor
 from .models import ProcessingStrategy
+from .utils import infer_schema
 
-
-def infer_schema(csv_path: Path, delimiter: str, sample_size: int = 10000) -> Dict:
-    """
-    Infer optimal schema with reduced sample size for safety.
-    """
-    logger.debug(f"Inferring schema for {csv_path.name}...")
-    
-    try:
-        # Smaller sample for safety - reduced from 50000 to 10000
-        sample_df = pl.read_csv(
-            str(csv_path),
-            separator=delimiter,
-            n_rows=sample_size,
-            encoding="utf8-lossy",
-            ignore_errors=True,
-            truncate_ragged_lines=True,
-            null_values=["", "NULL", "null", "N/A", "n/a"],
-            infer_schema_length=min(sample_size, 5000),  # Further reduced
-            try_parse_dates=False,  # Disable for safety and speed
-            has_header=False
-        )
-        
-        schema = sample_df.schema
-        logger.debug(f"Inferred schema for {csv_path.name}: {len(schema)} columns")
-        
-        # Clean up sample immediately
-        del sample_df
-        gc.collect()
-        
-        return dict(schema)
-        
-    except Exception as e:
-        logger.debug(f"Schema inference failed for {csv_path.name}: {e}. Using string fallback.")
-        return None
 
 def get_processing_strategies(file_size_mb: float, memory_pressure: float) -> List[ProcessingStrategy]:
     """
@@ -184,26 +150,16 @@ def _execute_chunked_strategy(
         logger.info(f"Combining {len(chunk_files)} chunks into final output")
         
         if len(chunk_files) == 1:
-            # Just move the single chunk
-            chunk_files[0].rename(output_path)
+            pl.scan_parquet(str(chunk_files[0])).sink_parquet(str(output_path), ...)
         else:
-            # Combine multiple chunks using Polars
             lazy_frames = [pl.scan_parquet(str(f)) for f in chunk_files]
-            combined = pl.concat(lazy_frames, how="vertical")
-            combined.sink_parquet(
+            pl.concat(lazy_frames, how="vertical").sink_parquet(  # Strict concat; handle schema mismatches upstream
                 str(output_path),
                 compression=strategy.compression,
                 row_group_size=strategy.row_group_size,
                 maintain_order=False,
                 statistics=False
             )
-            
-            # Cleanup intermediate files
-            for chunk_file in chunk_files:
-                try:
-                    chunk_file.unlink()
-                except:
-                    pass
         
         # Final verification
         if not output_path.exists():
@@ -317,7 +273,7 @@ def _execute_streaming_strategy(
         "memory_stats": memory_monitor.get_status_report()
     }
 
-def _execute_polars_strategy(
+def _execute_strategy(
     csv_path: Path,
     output_path: Path,
     expected_columns: List[str],
@@ -350,12 +306,11 @@ def _execute_polars_strategy(
             strategy, inferred_schema, memory_monitor
         )
 
-def process_csv_with_polars_strategies(
+def process_csv_with_strategies(
     csv_path: Path,
     output_path: Path,
     expected_columns: List[str],
     delimiter: str,
-    config: ConversionConfig,
     memory_monitor: MemoryMonitor
 ) -> Dict[str, any]:
     """
@@ -372,9 +327,11 @@ def process_csv_with_polars_strategies(
     # Pre-processing memory check
     if memory_monitor.should_prevent_processing():
         status = memory_monitor.get_status_report()
-        raise RuntimeError(f"Insufficient memory to process file. "
-                         f"Usage: {status['usage_above_baseline_mb']:.1f}MB above baseline, "
-                         f"Limit: {status['configured_limit_mb']}MB")
+        raise RuntimeError(
+            f"Insufficient memory to process file. "
+            f"Usage: {status['usage_above_baseline_mb']:.1f}MB above baseline, "
+            f"Limit: {status['configured_limit_mb']}MB"
+        )
 
     # Get processing strategies based on current conditions
     memory_pressure = memory_monitor.get_memory_pressure_level()
@@ -400,7 +357,7 @@ def process_csv_with_polars_strategies(
                     logger.warning(f"Memory pressure too high for strategy {strategy.name}")
                     continue
                 
-                result = _execute_polars_strategy(
+                result = _execute_strategy(
                     csv_path, output_path, expected_columns, delimiter,
                     strategy, memory_monitor
                 )

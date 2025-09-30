@@ -29,7 +29,7 @@ class MemorySnapshot:
 
     def __post_init__(self):
         if self.timestamp is None:
-            self.timestamp = time.time()
+            self.timestamp = time.perf_counter()
 
 
 class MemoryMonitor:
@@ -70,7 +70,7 @@ class MemoryMonitor:
                 proc_info = self.process.memory_info()
                 sys_info = self._get_sys()
                 return MemorySnapshot(
-                    timestamp=time.time(),
+                    timestamp=time.perf_counter(),
                     process_rss_mb=proc_info.rss / (1024*1024),
                     process_vms_mb=proc_info.vms / (1024*1024),
                     system_total_mb=sys_info.total / (1024*1024),
@@ -82,7 +82,7 @@ class MemoryMonitor:
 
         sys_info = self._get_sys()
         return MemorySnapshot(
-            timestamp=time.time(),
+            timestamp=time.perf_counter(),
             process_rss_mb=0.0,
             process_vms_mb=0.0,
             system_total_mb=sys_info.total / (1024*1024),
@@ -110,7 +110,7 @@ class MemoryMonitor:
             idx = len(rss) // 2
 
             self.baseline_snapshot = MemorySnapshot(
-                timestamp=time.time(),
+                timestamp=time.perf_counter(),
                 process_rss_mb=rss[idx],
                 process_vms_mb=vms[idx],
                 system_total_mb=samples[idx].system_total_mb,
@@ -184,7 +184,7 @@ class MemoryMonitor:
 
     def perform_aggressive_cleanup(self) -> Dict[str, float]:
         with self.lock:
-            now = time.time()
+            now = time.perf_counter()
             if now - self.last_cleanup_time < float(self.config.cleanup_rate_limit_seconds):
                 return {"skipped": True}
             self.last_cleanup_time = now
@@ -238,6 +238,26 @@ class MemoryMonitor:
             "skipped": False,
         }
         return result
+    
+    def get_available_memory_budget(self) -> float:
+        """
+        Backwards-compatible method expected by legacy callers.
+        Returns the MB of budget remaining for the process above baseline.
+        (Equivalent to get_status_report()['budget_remaining_mb'] but computed directly.)
+        """
+        # Defensive: if baseline not established, return 0 meaning 'no budget known'
+        if not self.baseline_snapshot:
+            return 0.0
+
+        cur = self._get_current_memory_info()
+        usage_above = max(0.0, cur.process_rss_mb - self.baseline_snapshot.process_rss_mb)
+        eff_limit = self._effective_memory_limit_mb(cur.system_total_mb)
+
+        budget = eff_limit - usage_above
+        # don't hide reality — callers should see negative budgets too if exceeded.
+        # If you want to keep a minimum safety floor (legacy behavior), use:
+        # return max(0.0, budget)  # or max(100.0, budget) if you prefer legacy clamp
+        return budget
 
     def get_status_report(self) -> Dict[str, any]:
         cur = self._get_current_memory_info()
@@ -246,7 +266,7 @@ class MemoryMonitor:
         eff_limit = self._effective_memory_limit_mb(cur.system_total_mb)
 
         # Backwards-compatible budget_remaining_mb:
-        budget_remaining_mb = max(0.0, eff_limit - usage_above)
+        budget_remaining_mb = max(100.0, eff_limit - usage_above)
 
         # Helpful additional fields for callers:
         budget_remaining_percent = (budget_remaining_mb / max(1.0, eff_limit)) if eff_limit > 0 else 0.0

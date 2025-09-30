@@ -17,7 +17,7 @@ class PipelineOrchestrator:
         Args:
             **kwargs: Parameters to pass to the strategy
         """
-        start_time = time.time()
+        start_time = time.perf_counter()
         
         logger.info(f"Orchestrator start: {datetime.now():%Y-%m-%d %H:%M:%S}")
         logger.info(f"Pipeline: {self.pipeline.get_name()}")
@@ -64,6 +64,6 @@ class PipelineOrchestrator:
             raise
         finally:
             # Calculate and log execution time
-            execution_time = time.time() - start_time
+            execution_time = time.perf_counter() - start_time
             logger.info(f"[METRICS] Total execution time: {execution_time:.2f} seconds")
 

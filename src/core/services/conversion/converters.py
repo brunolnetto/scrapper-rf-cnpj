@@ -11,14 +11,254 @@ Trade-offs: This approach prefers more intermediate parquet files (disk I/O) to 
 """
 
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict
 import polars as pl
 import gc
 import time
 import math
 
 from ....setup.logging import logger
-from .strategies import process_csv_with_polars_strategies
+from .strategies import process_csv_with_strategies
+from .utils import compute_chunk_size_for_file, infer_schema
+
+
+def estimate_rows_per_partition(max_memory_mb: int, num_columns: int) -> int:
+    """Estimate how many rows fit in memory budget."""
+    # Conservative estimate: 100 bytes per column
+    bytes_per_row = num_columns * 100
+    # Use 80% of budget for safety
+    available_bytes = max_memory_mb * 1024 * 1024 * 0.8
+    return int(available_bytes / bytes_per_row)
+
+def analyze_csv_characteristics(csv_path: Path, delimiter: str) -> Dict:
+    """Fast analysis of CSV file characteristics."""
+    file_size_mb = csv_path.stat().st_size / (1024 * 1024)
+    
+    # Sample to get row characteristics
+    try:
+        sample = pl.read_csv(
+            str(csv_path),
+            separator=delimiter,
+            n_rows=1000,
+            encoding="utf8-lossy",
+            ignore_errors=True,
+            has_header=False
+        )
+        
+        num_columns = len(sample.columns)
+        avg_row_size = csv_path.stat().st_size / max(1, len(sample) * (file_size_mb / 0.001))
+        estimated_rows = int(csv_path.stat().st_size / max(1, avg_row_size))
+        
+        del sample
+        gc.collect()
+        
+        return {
+            "path": csv_path,
+            "size_mb": file_size_mb,
+            "num_columns": num_columns,
+            "estimated_rows": estimated_rows,
+            "avg_row_bytes": avg_row_size
+        }
+    except Exception as e:
+        return {
+            "path": csv_path,
+            "size_mb": file_size_mb,
+            "num_columns": 0,
+            "estimated_rows": 0,
+            "avg_row_bytes": 0,
+            "error": str(e)
+        }
+
+
+def create_partition_plan(
+    file_characteristics: List[Dict],
+    memory_budget_mb: int,
+    safety_factor: float = 0.7
+) -> List[List[Dict]]:
+    """
+    Create optimal partition plan that guarantees memory safety.
+    
+    Returns: List of partitions, where each partition is a list of 
+    (file, start_row, end_row) tuples that fit in memory.
+    """
+    # Calculate usable memory per partition
+    usable_memory_mb = memory_budget_mb * safety_factor
+    
+    partitions = []
+    current_partition = []
+    current_partition_size_mb = 0
+    
+    # Sort files by size (process smaller files first for better packing)
+    sorted_files = sorted(file_characteristics, key=lambda x: x["size_mb"])
+    
+    for file_info in sorted_files:
+        file_size_mb = file_info["size_mb"]
+        
+        # If file is larger than budget, split it
+        if file_size_mb > usable_memory_mb:
+            # Calculate how many chunks needed
+            num_chunks = int(file_size_mb / (usable_memory_mb * 0.9)) + 1
+            rows_per_chunk = file_info["estimated_rows"] // num_chunks
+            
+            for i in range(num_chunks):
+                start_row = i * rows_per_chunk
+                end_row = min((i + 1) * rows_per_chunk, file_info["estimated_rows"])
+                chunk_size_mb = (end_row - start_row) * file_info["avg_row_bytes"] / (1024 * 1024)
+                
+                # Create partition for this chunk
+                partitions.append([{
+                    "path": file_info["path"],
+                    "start_row": start_row,
+                    "end_row": end_row,
+                    "size_mb": chunk_size_mb
+                }])
+        else:
+            # Try to pack file into current partition
+            if current_partition_size_mb + file_size_mb <= usable_memory_mb:
+                current_partition.append({
+                    "path": file_info["path"],
+                    "start_row": 0,
+                    "end_row": file_info["estimated_rows"],
+                    "size_mb": file_size_mb
+                })
+                current_partition_size_mb += file_size_mb
+            else:
+                # Current partition is full, start new one
+                if current_partition:
+                    partitions.append(current_partition)
+                current_partition = [{
+                    "path": file_info["path"],
+                    "start_row": 0,
+                    "end_row": file_info["estimated_rows"],
+                    "size_mb": file_size_mb
+                }]
+                current_partition_size_mb = file_size_mb
+    
+    # Add last partition
+    if current_partition:
+        partitions.append(current_partition)
+    
+    return partitions
+
+
+def execute_partition_plan(
+    partition_plan: List[List[Dict]],
+    output_path: Path,
+    expected_columns: List[str],
+    delimiter: str,
+    memory_monitor = None
+) -> Dict:
+    """Execute the partition plan with guaranteed memory safety."""
+    temp_dir = output_path.parent / f".plan_parts_{output_path.stem}"
+    temp_dir.mkdir(exist_ok=True)
+    
+    partition_outputs = []
+    total_rows = 0
+    
+    try:
+        # Process each partition
+        for part_idx, partition in enumerate(partition_plan):
+            part_output = temp_dir / f"part_{part_idx:04d}.parquet"
+            part_dfs = []
+            
+            # Load all chunks in this partition
+            for chunk_info in partition:
+                csv_path = chunk_info["path"]
+                start_row = chunk_info["start_row"]
+                end_row = chunk_info["end_row"]
+                num_rows = end_row - start_row if end_row > 0 else None
+                
+                # Read chunk
+                df = pl.read_csv(
+                    str(csv_path),
+                    separator=delimiter,
+                    encoding="utf8-lossy",
+                    ignore_errors=True,
+                    skip_rows=start_row,
+                    n_rows=num_rows,
+                    has_header=False,
+                    low_memory=True,
+                    rechunk=False
+                )
+                
+                # Rename columns
+                if expected_columns and len(df.columns) == len(expected_columns):
+                    df = df.rename({df.columns[i]: expected_columns[i] 
+                                   for i in range(len(expected_columns))})
+                
+                part_dfs.append(df)
+            
+            # Combine chunks in this partition
+            if len(part_dfs) == 1:
+                lazy_combined = pl.scan_parquet(str(part_dfs[0]))
+            else:
+                lazy_frames = [pl.scan_parquet(str(f)) for f in part_dfs]
+                lazy_combined = pl.concat(lazy_frames, how="vertical_relaxed")  # Keep relaxed for schema safety, but limit inputs
+
+            lazy_combined.sink_parquet(
+                str(part_output),
+                compression="snappy",
+                row_group_size=50000,
+                maintain_order=False,
+                statistics=False
+            )
+            
+            total_rows += len(combined)
+            
+            # Write partition
+            combined.write_parquet(
+                str(part_output),
+                compression="snappy",
+                row_group_size=50000,
+                statistics=False
+            )
+            
+            partition_outputs.append(part_output)
+            
+            # Cleanup partition memory
+            del part_dfs, combined
+            gc.collect()
+            
+            if memory_monitor:
+                memory_monitor.perform_aggressive_cleanup()
+        
+        # Final merge of all partitions
+        if len(partition_outputs) == 1:
+            partition_outputs[0].rename(output_path)
+        else:
+            lazy_frames = [pl.scan_parquet(str(f)) for f in partition_outputs]
+            combined = pl.concat(lazy_frames, how="vertical")
+            combined.sink_parquet(
+                str(output_path),
+                compression="snappy",
+                row_group_size=50000,
+                maintain_order=False,
+                statistics=False
+            )
+            
+            # Cleanup
+            for pf in partition_outputs:
+                pf.unlink()
+        
+        return {
+            "rows_processed": total_rows,
+            "output_bytes": output_path.stat().st_size,
+            "partitions_used": len(partition_outputs),
+            "strategy": "two_pass_planned"
+        }
+        
+    finally:
+        # Cleanup temp directory
+        try:
+            for pf in partition_outputs:
+                if pf.exists():
+                    pf.unlink()
+            if temp_dir.exists():
+                temp_dir.rmdir()
+        except:
+            pass
+
+
 
 def convert_with_two_pass_integration(
     csv_paths: List[Path],
@@ -29,7 +269,7 @@ def convert_with_two_pass_integration(
     memory_monitor,
     config
 ) -> Dict:
-    unified_schema = infer_unified_schema(csv_paths, delimiter)
+    unified_schema = infer_schema(csv_paths, delimiter)
     if not unified_schema and expected_columns:
         unified_schema = {f"column_{i+1}": pl.Utf8 for i in range(len(expected_columns))}
     
@@ -72,7 +312,7 @@ def convert_with_two_pass_integration(
     for info in sorted(file_info, key=lambda x: x["size_mb"]):
         if info["size_mb"] > usable_budget * 0.9:
             chunks_needed = max(1, int(math.ceil(info["size_mb"] / (usable_budget * 0.8))))
-            rows_per_chunk = max(10000, info["estimated_rows"] // chunks_needed)
+            rows_per_chunk = compute_chunk_size_for_file(info["path"], usable_budget)
             for i in range(chunks_needed):
                 start_row = i * rows_per_chunk
                 remaining_rows = info["estimated_rows"] - start_row
@@ -279,14 +519,13 @@ def convert_table_csvs_multifile(
         
         logger.info(f"Memory budget: {available_budget_mb:.1f}MB available")
         
-        start_time = time.time()
+        start_time = time.perf_counter()
         
         # Strategy selection with safer thresholds
         if len(valid_files) == 1:
             logger.info("Using single-file strategies")
-            result = process_csv_with_polars_strategies(
-                valid_files[0], final_output, expected_columns, delimiter,
-                config, memory_monitor
+            result = process_csv_with_strategies(
+                valid_files[0], final_output, expected_columns, delimiter,memory_monitor
             )
         elif largest_file_mb > 500:  # Files over ~500MB use two-pass (conservative)
             logger.info(f"Using two-pass strategy (large file: {largest_file_mb:.1f}MB)")
@@ -307,7 +546,7 @@ def convert_table_csvs_multifile(
                 available_budget_mb, memory_monitor, config
             )
         
-        elapsed_time = time.time() - start_time
+        elapsed_time = time.perf_counter() - start_time
         processing_rate = total_mb / elapsed_time if elapsed_time > 0 else 0
         compression_ratio = total_input_bytes / result['output_bytes'] if result['output_bytes'] > 0 else 0
         
@@ -343,7 +582,7 @@ def convert_with_stream_merge_integration(
     output and keeps peak memory low.
     """
     
-    schema_override = infer_unified_schema(csv_paths, delimiter)
+    schema_override = infer_schema(csv_paths, delimiter)
     if not schema_override and expected_columns:
         schema_override = {f"column_{i+1}": pl.Utf8 for i in range(len(expected_columns))}
     
@@ -422,12 +661,14 @@ def convert_with_stream_merge_integration(
                 logger.warning("High memory pressure detected before concat: writing batches as separate parts")
                 for batch in batches:
                     part_file = temp_dir / f"stream_part_{part_idx:06d}.parquet"
+                    
                     batch.write_parquet(
                         str(part_file),
                         compression=config.compression if hasattr(config, 'compression') else "snappy",
                         row_group_size=50000,
                         statistics=False
                     )
+                    
                     logger.info(f"Wrote stream part {part_file.name}, rows={len(batch)}") 
                     total_rows += len(batch)
                     part_idx += 1
@@ -468,6 +709,18 @@ def convert_with_stream_merge_integration(
                     continue
                 
                 combined = pl.concat(batches, how="vertical_relaxed")
+                
+                if memory_monitor.should_prevent_processing() or len(batches) > 10:  # Cap batch size
+                    logger.warning("High memory or large batch; writing parts separately")
+                    for batch in batches:
+                        part_file = temp_dir / f"stream_part_{part_idx:06d}.parquet"
+                        batch.write_parquet(str(part_file), compression="snappy", row_group_size=50000, statistics=False)
+                        total_rows += len(batch)
+                        part_idx += 1
+                        del batch
+                        gc.collect()
+                    continue  # Skip concat
+                
                 rows = len(combined)
                 total_rows += rows
                 
@@ -564,34 +817,5 @@ def convert_with_stream_merge_integration(
         except Exception:
             pass
 
-
-def infer_unified_schema(csv_paths: List[Path], delimiter: str, sample_size: int = 1000) -> Optional[Dict]:
-    try:
-        sample = pl.read_csv(
-            str(csv_paths[0]),
-            separator=delimiter,
-            n_rows=sample_size,
-            encoding="utf8-lossy",
-            ignore_errors=True,
-            has_header=False,
-            infer_schema_length=0
-        )
-        
-        num_cols = len(sample.columns)
-        schema = {f"column_{i+1}": pl.Utf8 for i in range(num_cols)}
-        
-        del sample
-        gc.collect()
-        
-        logger.debug(f"Created unified string schema with {num_cols} columns")
-        return schema
-    except Exception as e:
-        logger.warning(f"Schema inference failed: {e}")
-        try:
-            del sample
-        except:
-            pass
-        gc.collect()
-        return None
 
 

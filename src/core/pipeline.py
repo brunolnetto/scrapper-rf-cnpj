@@ -340,7 +340,6 @@ class ReceitaCNPJPipeline(Pipeline):
 
     def convert_to_parquet(self, audit_metadata: AuditMetadata) -> Path:
         from ..utils.misc import makedir
-        from .services.conversion.service_new import FileConversionService
         from .services.conversion.service import convert_csvs_to_parquet_smart
 
         num_workers = self.config.pipeline.conversion.workers
