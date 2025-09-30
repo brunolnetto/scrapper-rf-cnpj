@@ -105,12 +105,6 @@ class ConfigurationValidator:
             loading = self.config.pipeline.loading
             conversion = self.config.pipeline.conversion
             
-            # Loading batch size vs conversion chunk size
-            if loading.batch_size > conversion.chunk_size:
-                self.warnings.append(
-                    f"Loading.batch_size ({loading.batch_size}) > conversion.chunk_size ({conversion.chunk_size}); consider aligning these values"
-                )
-            
             # Sub-batch size vs batch size
             if loading.sub_batch_size > loading.batch_size:
                 self.errors.append(

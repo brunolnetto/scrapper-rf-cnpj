@@ -81,29 +81,6 @@ class DatabaseConfig(BaseModel):
         return f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.maintenance_db}"
 
 
-def read_cgroup_memory_limit_bytes() -> Optional[int]:
-    """
-    Return memory limit in bytes if running in a cgroup with an enforceable limit,
-    or None if no limit detected. Tries common cgroup v2 and v1 paths.
-    """
-    # cgroup v2 unified: memory.max (value = "max" or a number)
-    try_paths = [
-        "/sys/fs/cgroup/memory.max",                 # sometimes on v2
-        "/sys/fs/cgroup/memory/memory.limit_in_bytes"  # cgroup v1
-    ]
-    for p in try_paths:
-        try:
-            if os.path.exists(p):
-                val = open(p, "r").read().strip()
-                if val in ("max", ""):
-                    return None
-                return int(val)
-        except Exception:
-            pass
-    # Could add more exhaustive lookup using /proc/self/cgroup, but this covers common setups.
-    return None
-
-
 class MemoryMonitorConfig(BaseModel):
     """
     Memory monitoring and management configuration.
@@ -187,7 +164,7 @@ class MemoryMonitorConfig(BaseModel):
             raise ValueError('memory_limit_fraction must be between 0.05 and 1.0')
         return v
 
-class ConversionConfig(BaseModel):
+class ConversionConfig(MemoryMonitorConfig):
     """CSV to Parquet conversion configuration."""
     
     chunk_size: int = Field(
@@ -647,13 +624,7 @@ class PipelineConfig(BaseModel):
         loading = self.loading
         
         if conversion and loading:
-            # Ensure loading batch size doesn't exceed conversion chunk size
-            if loading.batch_size > conversion.chunk_size:
-                raise ValueError(
-                    f"Loading batch size ({loading.batch_size}) cannot exceed "
-                    f"conversion chunk size ({conversion.chunk_size})"
-                )
-            
+           
             # Ensure sub-batch size is reasonable relative to batch size
             if loading.sub_batch_size > loading.batch_size:
                 raise ValueError(
