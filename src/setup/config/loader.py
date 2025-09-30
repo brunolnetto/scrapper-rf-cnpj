@@ -251,11 +251,6 @@ class ConfigLoader:
                 conversion.chunk_size = min(conversion.chunk_size, 10000)
                 conversion.workers = min(conversion.workers, 1)
 
-                # Ensure loading batch sizes do not exceed conversion chunk size
-                if loading.batch_size > conversion.chunk_size:
-                    logger.warning(f"Adjusting loading.batch_size from {loading.batch_size} to conversion.chunk_size {conversion.chunk_size}")
-                    loading.batch_size = conversion.chunk_size
-
                 # Ensure sub-batch size is not larger than batch
                 if loading.sub_batch_size > loading.batch_size:
                     logger.warning(f"Adjusting loading.sub_batch_size from {loading.sub_batch_size} to loading.batch_size {loading.batch_size}")

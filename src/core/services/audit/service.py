@@ -39,8 +39,8 @@ class BatchAccumulator:
     files_failed: int = 0
     total_rows: int = 0
     total_bytes: int = 0
-    start_time: float = field(default_factory=time.time)
-    last_activity: float = field(default_factory=time.time)
+    start_time: float = field(default_factory=time.perf_counter)
+    last_activity: float = field(default_factory=time.perf_counter)
 
     def add_file_event(self, status: AuditStatus, rows: int = 0, bytes_: int = 0):
         """Add a file processing event to the accumulator.
@@ -77,7 +77,7 @@ class BatchAccumulator:
         elif norm_status == AuditStatus.FAILED:
             self.files_failed += 1
         # update last activity timestamp
-        self.last_activity = time.time()
+        self.last_activity = time.perf_counter()
 
 
 class AuditService:
@@ -1446,8 +1446,8 @@ class AuditService:
             # fall back to current time to avoid TypeErrors when subtracting.
             st = batch_stats.get("start_time", None)
             et = batch_stats.get("end_time", None)
-            start_time = st if (isinstance(st, (int, float)) and st is not None) else time.time()
-            end_time = et if (isinstance(et, (int, float)) and et is not None) else time.time()
+            start_time = st if (isinstance(st, (int, float)) and st is not None) else time.perf_counter()
+            end_time = et if (isinstance(et, (int, float)) and et is not None) else time.perf_counter()
             duration = max(end_time - start_time, 0)
             
             batch_metrics = {
@@ -1520,8 +1520,8 @@ class AuditService:
             import time
             st = subbatch_stats.get("start_time", None)
             et = subbatch_stats.get("end_time", None)
-            start_time = st if (isinstance(st, (int, float)) and st is not None) else time.time()
-            end_time = et if (isinstance(et, (int, float)) and et is not None) else time.time()
+            start_time = st if (isinstance(st, (int, float)) and st is not None) else time.perf_counter()
+            end_time = et if (isinstance(et, (int, float)) and et is not None) else time.perf_counter()
             duration = max(end_time - start_time, 0)
             
             subbatch_metrics = {

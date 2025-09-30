@@ -306,8 +306,8 @@ class FileHandler:
         # by polling the thread's liveness and yielding to the event loop with short sleeps.
         try:
             import time as _time
-            deadline = _time.time() + timeout
-            while t.is_alive() and _time.time() < deadline:
+            deadline = _time.perf_counter() + timeout
+            while t.is_alive() and _time.perf_counter() < deadline:
                 # Yield to the event loop to allow queued coroutine tasks to run
                 await asyncio.sleep(0.05)
             joined = not t.is_alive()

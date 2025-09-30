@@ -55,6 +55,7 @@ ConfigurationService = AppConfig
 __all__ = [
     "Environment",
     "DatabaseConfig", 
+    "MemoryMonitorConfig", 
     "ConversionConfig",
     "LoadingConfig",
     "DownloadConfig",
