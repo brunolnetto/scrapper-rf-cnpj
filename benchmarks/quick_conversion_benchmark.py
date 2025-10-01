@@ -28,7 +28,7 @@ def quick_conversion_test():
             "--memory-limit", "4GB"
         ]
         
-        print("🔄 Running quick conversion benchmark...")
+        print("Running quick conversion benchmark...")
         print("   - Tests: Existing Polars vs DuckDB conversion")
         print("   - Pattern: *ESTABELE* files")
         print("   - Max files: 1")
