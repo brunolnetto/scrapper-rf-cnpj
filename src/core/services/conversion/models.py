@@ -38,7 +38,7 @@ class LargeDatasetConfig(ConversionConfig):
         self.workers = 1
 
 # Configuration helper for very constrained environments
-class UltraConservativeConfig(ConversionConfig, MemoryMonitorConfig):
+class UltraConservativeConfig(ConversionConfig):
     """
     For extremely memory-constrained environments (e.g., 2GB container).
     """
@@ -120,3 +120,42 @@ class ChunkIterator:
         except Exception as e:
             self._exhausted = True
             raise StopIteration
+
+@dataclass
+class ProcessingLimits:
+    """Centralized processing limits and thresholds."""
+    
+    # Memory safety factors
+    MEMORY_SAFETY_FACTOR: float = 0.7
+    MEMORY_BUFFER_FACTOR: float = 0.6
+    
+    # Partition limits
+    MAX_PARTITIONS: int = 500
+    MAX_CHUNKS_PER_PARTITION: int = 1000
+    
+    # File size thresholds (MB)
+    LARGE_FILE_THRESHOLD_MB: float = 500.0
+    SMALL_DATASET_THRESHOLD_MB: float = 50.0
+    
+    # Processing parameters
+    MIN_CHUNK_SIZE: int = 10_000
+    MAX_CHUNK_SIZE: int = 500_000
+    DEFAULT_ROW_GROUP_SIZE: int = 50_000
+    
+    # Batch processing
+    MAX_CONCURRENT_BATCHES: int = 10
+    SCHEMA_SAMPLE_SIZE: int = 5_000
+    
+    # Memory estimation (bytes per column)
+    BYTES_PER_COLUMN_ESTIMATE: int = 100
+
+
+@dataclass
+class MergeStrategy:
+    """Configuration for a merge operation."""
+    name: str
+    use_lazy_frames: bool = True
+    compression: str = "snappy"
+    row_group_size: int = ProcessingLimits.DEFAULT_ROW_GROUP_SIZE
+    maintain_order: bool = False
+    statistics: bool = False

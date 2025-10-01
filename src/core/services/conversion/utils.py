@@ -11,6 +11,7 @@ import polars as pl
 import gc
 import os
 from typing import Optional, Dict
+from ....setup.logging import logger
 
 from pathlib import Path
 import pyarrow as pa
@@ -73,33 +74,43 @@ def compute_chunk_size_for_file(path: Path, available_mb: int, default_min_rows=
     rows = max(default_min_rows, int(usable_bytes / avg_row_bytes))
     return min(rows, default_max_rows)
 
-def infer_schema(csv_path: Path, delimiter: str, sample_size: int = 10000) -> Dict:
-    """
-    Infer optimal schema with reduced sample size for safety.
-    """
-    
+def infer_schema_single(csv_path: Path, delimiter: str, sample_size: int = 10000) -> Optional[Dict[str, pl.DataType]]:
+    """Infer schema from a single CSV file."""
     try:
-        # Smaller sample for safety - reduced from 50000 to 10000
         sample_df = pl.read_csv(
             str(csv_path),
             separator=delimiter,
             n_rows=sample_size,
             encoding="utf8-lossy",
             ignore_errors=True,
-            truncate_ragged_lines=True,
-            null_values=["", "NULL", "null", "N/A", "n/a"],
-            infer_schema_length=min(sample_size, 5000),  # Further reduced
-            try_parse_dates=False,  # Disable for safety and speed
             has_header=False
         )
         
-        schema = sample_df.schema
-        
-        # Clean up sample immediately
+        schema = dict(sample_df.schema)
         del sample_df
         gc.collect()
-        
-        return dict(schema)
+        return schema
         
     except Exception as e:
+        logger.warning(f"Schema inference failed for {csv_path.name}: {e}")
         return None
+
+
+def infer_unified_schema(csv_paths: List[Path], delimiter: str) -> Dict[str, pl.DataType]:
+    """
+    Infer unified schema across multiple CSV files.
+    Uses the first successful schema and validates others are compatible.
+    """
+    base_schema = None
+    
+    for path in csv_paths[:3]:  # Sample first 3 files only
+        schema = infer_schema_single(path, delimiter)
+        if schema:
+            if base_schema is None:
+                base_schema = schema
+            else:
+                # Validate compatibility (same columns)
+                if set(schema.keys()) != set(base_schema.keys()):
+                    logger.warning(f"Schema mismatch in {path.name}, using base schema")
+    
+    return base_schema or {}

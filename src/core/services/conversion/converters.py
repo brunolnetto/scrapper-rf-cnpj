@@ -19,7 +19,7 @@ import math
 
 from ....setup.logging import logger
 from .strategies import process_csv_with_strategies
-from .utils import compute_chunk_size_for_file, infer_schema
+from .utils import compute_chunk_size_for_file, infer_unified_schema
 
 
 def estimate_rows_per_partition(max_memory_mb: int, num_columns: int) -> int:
@@ -141,125 +141,6 @@ def create_partition_plan(
     return partitions
 
 
-def execute_partition_plan(
-    partition_plan: List[List[Dict]],
-    output_path: Path,
-    expected_columns: List[str],
-    delimiter: str,
-    memory_monitor = None
-) -> Dict:
-    """Execute the partition plan with guaranteed memory safety."""
-    temp_dir = output_path.parent / f".plan_parts_{output_path.stem}"
-    temp_dir.mkdir(exist_ok=True)
-    
-    partition_outputs = []
-    total_rows = 0
-    
-    try:
-        # Process each partition
-        for part_idx, partition in enumerate(partition_plan):
-            part_output = temp_dir / f"part_{part_idx:04d}.parquet"
-            part_dfs = []
-            
-            # Load all chunks in this partition
-            for chunk_info in partition:
-                csv_path = chunk_info["path"]
-                start_row = chunk_info["start_row"]
-                end_row = chunk_info["end_row"]
-                num_rows = end_row - start_row if end_row > 0 else None
-                
-                # Read chunk
-                df = pl.read_csv(
-                    str(csv_path),
-                    separator=delimiter,
-                    encoding="utf8-lossy",
-                    ignore_errors=True,
-                    skip_rows=start_row,
-                    n_rows=num_rows,
-                    has_header=False,
-                    low_memory=True,
-                    rechunk=False
-                )
-                
-                # Rename columns
-                if expected_columns and len(df.columns) == len(expected_columns):
-                    df = df.rename({df.columns[i]: expected_columns[i] 
-                                   for i in range(len(expected_columns))})
-                
-                part_dfs.append(df)
-            
-            # Combine chunks in this partition
-            if len(part_dfs) == 1:
-                lazy_combined = pl.scan_parquet(str(part_dfs[0]))
-            else:
-                lazy_frames = [pl.scan_parquet(str(f)) for f in part_dfs]
-                lazy_combined = pl.concat(lazy_frames, how="vertical_relaxed")  # Keep relaxed for schema safety, but limit inputs
-
-            lazy_combined.sink_parquet(
-                str(part_output),
-                compression="snappy",
-                row_group_size=50000,
-                maintain_order=False,
-                statistics=False
-            )
-            
-            total_rows += len(combined)
-            
-            # Write partition
-            combined.write_parquet(
-                str(part_output),
-                compression="snappy",
-                row_group_size=50000,
-                statistics=False
-            )
-            
-            partition_outputs.append(part_output)
-            
-            # Cleanup partition memory
-            del part_dfs, combined
-            gc.collect()
-            
-            if memory_monitor:
-                memory_monitor.perform_aggressive_cleanup()
-        
-        # Final merge of all partitions
-        if len(partition_outputs) == 1:
-            partition_outputs[0].rename(output_path)
-        else:
-            lazy_frames = [pl.scan_parquet(str(f)) for f in partition_outputs]
-            combined = pl.concat(lazy_frames, how="vertical")
-            combined.sink_parquet(
-                str(output_path),
-                compression="snappy",
-                row_group_size=50000,
-                maintain_order=False,
-                statistics=False
-            )
-            
-            # Cleanup
-            for pf in partition_outputs:
-                pf.unlink()
-        
-        return {
-            "rows_processed": total_rows,
-            "output_bytes": output_path.stat().st_size,
-            "partitions_used": len(partition_outputs),
-            "strategy": "two_pass_planned"
-        }
-        
-    finally:
-        # Cleanup temp directory
-        try:
-            for pf in partition_outputs:
-                if pf.exists():
-                    pf.unlink()
-            if temp_dir.exists():
-                temp_dir.rmdir()
-        except:
-            pass
-
-
-
 def convert_with_two_pass_integration(
     csv_paths: List[Path],
     output_path: Path,
@@ -269,7 +150,7 @@ def convert_with_two_pass_integration(
     memory_monitor,
     config
 ) -> Dict:
-    unified_schema = infer_schema(csv_paths, delimiter)
+    unified_schema = infer_unified_schema(csv_paths, delimiter)
     if not unified_schema and expected_columns:
         unified_schema = {f"column_{i+1}": pl.Utf8 for i in range(len(expected_columns))}
     
@@ -490,9 +371,9 @@ def convert_table_csvs_multifile(
     output_dir: Path,
     delimiter: str,
     expected_columns: List[str],
-    config,
-    memory_monitor
-) -> str:
+    config: ConversionConfig,
+    memory_monitor: MemoryMonitor
+) -> str:  # Clear return type
     try:
         if not expected_columns:
             return f"[ERROR] No column mapping for '{table_name}'"
@@ -582,7 +463,7 @@ def convert_with_stream_merge_integration(
     output and keeps peak memory low.
     """
     
-    schema_override = infer_schema(csv_paths, delimiter)
+    schema_override = infer_unified_schema(csv_paths, delimiter)
     if not schema_override and expected_columns:
         schema_override = {f"column_{i+1}": pl.Utf8 for i in range(len(expected_columns))}
     

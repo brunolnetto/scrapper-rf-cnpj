@@ -96,8 +96,6 @@ class BatchProcessor:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
         batch_name = f"MemoryAware_Batch_{table_name}_chunk{batch_num}_{len(batch_chunk)}rows_{timestamp}"
 
-        print('Teste 2')
-
         with self.batch_context(
             table_name=table_name,
             batch_name=batch_name,
