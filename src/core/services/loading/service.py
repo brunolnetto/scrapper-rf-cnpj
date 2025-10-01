@@ -23,7 +23,6 @@ from ...schemas import AuditMetadata
 
 from ..memory.service import MemoryMonitor
 from ..audit.service import AuditService
-from .batch_processor import BatchProcessor
 from .file_handler import FileHandler
 
 
@@ -46,7 +45,6 @@ class FileLoadingService:
         # Initialize service components
         self.file_handler = FileHandler(config)
         self.database_service = DatabaseService(database, self.memory_monitor)
-        self.batch_processor = BatchProcessor(config, self.audit_service)
 
         self._connection_pool = None
         self._pool_lock = None

@@ -67,3 +67,6 @@ class PipelineOrchestrator:
             execution_time = time.perf_counter() - start_time
             logger.info(f"[METRICS] Total execution time: {execution_time:.2f} seconds")
 
+            import os
+            os._exit(0)
+
