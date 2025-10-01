@@ -7,7 +7,7 @@ import time
 from ....setup.logging import logger
 from ..memory.service import MemoryMonitor
 from .models import ProcessingStrategy
-from .utils import infer_schema
+from .utils import infer_unified_schema, infer_schema_single
 
 
 def get_processing_strategies(file_size_mb: float, memory_pressure: float) -> List[ProcessingStrategy]:
@@ -83,7 +83,7 @@ def _execute_chunked_strategy(
                 lazy_chunk = pl.scan_csv(
                     str(csv_path),
                     separator=delimiter,
-                    schema_overrides=schema_override,
+                    dtypes=schema_override,
                     encoding="utf8-lossy",
                     ignore_errors=True,
                     skip_rows=offset,
@@ -212,7 +212,7 @@ def _execute_streaming_strategy(
     lazy_frame = pl.scan_csv(
         str(csv_path),
         separator=delimiter,
-        schema_overrides=schema_override,
+        dtypes=schema_override,
         encoding="utf8-lossy",
         ignore_errors=True,
         truncate_ragged_lines=True,
@@ -288,7 +288,7 @@ def _execute_strategy(
     
     # Schema inference with error handling
     try:
-        inferred_schema = infer_schema(csv_path, delimiter, sample_size=5000)
+        inferred_schema = infer_schema_single(csv_path, delimiter, sample_size=5000)
     except Exception as e:
         logger.warning(f"Schema inference failed: {e}. Using string schema.")
         inferred_schema = None

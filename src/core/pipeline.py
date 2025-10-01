@@ -8,6 +8,7 @@ from ..setup.logging import logger
 from ..setup.config import ConfigurationService
 from ..database.models.audit import TableAuditManifest, AuditBase, AuditStatus
 from ..database.models.business import MainBase
+from .utils.development_filter import DevelopmentFilter
 from .interfaces import Pipeline
 
 from .schemas import FileInfo, AuditMetadata
@@ -30,6 +31,8 @@ class ReceitaCNPJPipeline(Pipeline):
 
         # Initialize file downloader and uploader (these are fast)
         self.file_downloader = FileDownloadService(config=config_service)
+        
+        self.dev_filter = DevelopmentFilter(self.config.pipeline.development)
         
     @property
     def database(self):
@@ -207,14 +210,13 @@ class ReceitaCNPJPipeline(Pipeline):
         # Apply development mode filtering to files before creating audits
         logger.info(f"Development mode enabled: {self.config.is_development_mode()}")
         if self.config.is_development_mode():
-            from .utils.development_filter import DevelopmentFilter
-            dev_filter = DevelopmentFilter(self.config.pipeline.development)
+            
             original_count = len(files_info)
             
             # Apply blob-based file size filtering in development mode
-            files_info = dev_filter.filter_files_by_blob_size_limit_with_file_info(files_info)
-            
-            dev_filter.log_simple_filtering(original_count, len(files_info), "discovered files (sum-based blob)")
+            files_info = self.dev_filter.filter_files_by_blob_size_limit_with_file_info(files_info)
+
+            self.dev_filter.log_simple_filtering(original_count, len(files_info), "discovered files (sum-based blob)")
 
         audits = self.audit_service.create_audits_from_files(files_info)
         logger.info(f"Created {len(audits)} audit entries from {len(files_info)} discovered files")
@@ -255,7 +257,7 @@ class ReceitaCNPJPipeline(Pipeline):
 
     def convert_to_parquet(self, audit_metadata: AuditMetadata) -> Path:
         from ..utils.misc import makedir
-        from .services.conversion.service import FileConversionService, convert_csvs_to_parquet_smart
+        from .services.conversion.service import convert_csvs_to_parquet_smart
 
         num_workers = self.config.pipeline.conversion.workers
         output_dir = self.config.pipeline.get_temporal_conversion_path(self.config.year, self.config.month)
@@ -280,9 +282,7 @@ class ReceitaCNPJPipeline(Pipeline):
         logger.info(f"Processing {len(audit_map)} tables with {num_workers} workers")
 
         # Centralized conversion summary logging
-        from .utils.development_filter import DevelopmentFilter
-        dev_filter = DevelopmentFilter(self.config.pipeline.development)
-        dev_filter.log_conversion_summary(audit_map)
+        self.dev_filter.log_conversion_summary(audit_map)
 
         extract_path = self.config.pipeline.get_temporal_extraction_path(self.config.year, self.config.month)
 
@@ -383,10 +383,9 @@ class ReceitaCNPJPipeline(Pipeline):
         # Development mode filtering
         if self.config.is_development_mode():
             from .utils.development_filter import DevelopmentFilter
-            dev_filter = DevelopmentFilter(self.config.pipeline.development)
             original_count = len(parquet_files)
-            parquet_files = [f for f in parquet_files if dev_filter.check_blob_size_limit(f)]
-            dev_filter.log_simple_filtering(original_count, len(parquet_files), "Parquet files")
+            parquet_files = [f for f in parquet_files if self.dev_filter.check_blob_size_limit(f)]
+            self.dev_filter.log_simple_filtering(original_count, len(parquet_files), "Parquet files")
 
         # Map Parquet files to table names (e.g., cnae.parquet -> cnae)
         tablename_to_files = {}
@@ -436,11 +435,9 @@ class ReceitaCNPJPipeline(Pipeline):
 
         # Development mode filtering
         if self.config.is_development_mode():
-            from .utils.development_filter import DevelopmentFilter
-            dev_filter = DevelopmentFilter(self.config.pipeline.development)
             original_count = len(csv_files)
-            csv_files = [f for f in csv_files if dev_filter.check_blob_size_limit(f)]
-            dev_filter.log_simple_filtering(original_count, len(csv_files), "CSV files")
+            csv_files = [f for f in csv_files if self.dev_filter.check_blob_size_limit(f)]
+            self.dev_filter.log_simple_filtering(original_count, len(csv_files), "CSV files")
 
         for csv_file in csv_files:
             logger.debug(f"Detected CSV file: {csv_file.name}")
@@ -556,11 +553,9 @@ class ReceitaCNPJPipeline(Pipeline):
 
         # Development mode filtering - blob-level filtering
         if self.config.is_development_mode():
-            from .utils.development_filter import DevelopmentFilter
-            dev_filter = DevelopmentFilter(self.config.pipeline.development)
             original_count = len(csv_files)
-            csv_files = dev_filter.filter_files_by_blob_size_limit(csv_files, group_by_table=True)
-            dev_filter.log_simple_filtering(original_count, len(csv_files), "CSV files (blob-level, direct loading)")
+            csv_files = self.dev_filter.filter_files_by_blob_size_limit(csv_files, group_by_table=True)
+            self.dev_filter.log_simple_filtering(original_count, len(csv_files), "CSV files (blob-level, direct loading)")
 
         # Map CSV files to table names using expression patterns
         tablename_to_files = {}

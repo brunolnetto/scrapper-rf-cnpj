@@ -86,7 +86,7 @@ class ChunkIterator:
             chunk = pl.read_csv(
                 str(self.csv_path),
                 separator=self.delimiter,
-                schema_overrides=self.schema_override,
+                dtypes=self.schema_override,
                 encoding="utf8-lossy",
                 ignore_errors=True,
                 skip_rows=self._offset,

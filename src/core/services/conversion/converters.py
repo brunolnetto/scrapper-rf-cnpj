@@ -18,8 +18,10 @@ import time
 import math
 
 from ....setup.logging import logger
+from ....setup.config.models import ConversionConfig
 from .strategies import process_csv_with_strategies
 from .utils import compute_chunk_size_for_file, infer_unified_schema
+from ..memory.service import MemoryMonitor
 
 
 def estimate_rows_per_partition(max_memory_mb: int, num_columns: int) -> int:
@@ -246,7 +248,7 @@ def convert_with_two_pass_integration(
                     df = pl.read_csv(
                         str(chunk_info["path"]),
                         separator=delimiter,
-                        schema_overrides=unified_schema,
+                        dtypes=unified_schema,
                         encoding="utf8-lossy",
                         ignore_errors=True,
                         skip_rows=chunk_info["start_row"],
@@ -487,7 +489,7 @@ def convert_with_stream_merge_integration(
                 chunk = pl.read_csv(
                     str(self.path),
                     separator=delimiter,
-                    schema_overrides=schema_override,
+                    dtypes=schema_override,
                     encoding="utf8-lossy",
                     ignore_errors=True,
                     skip_rows=self.offset,

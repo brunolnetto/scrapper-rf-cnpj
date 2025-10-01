@@ -10,8 +10,7 @@ from pathlib import Path
 import polars as pl
 import gc
 import os
-from typing import Optional, Dict
-from ....setup.logging import logger
+from typing import Optional, Dict, List 
 
 from pathlib import Path
 import pyarrow as pa
@@ -19,6 +18,7 @@ import pyarrow.parquet as pq
 import polars as pl
 import os
 
+from ....setup.logging import logger
 
 def read_cgroup_memory_limit_bytes() -> Optional[int]:
     """
