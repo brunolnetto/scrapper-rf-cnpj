@@ -1,0 +1,1 @@
+# Benchmarking suite for DuckDB vs Polars CNPJ processing
