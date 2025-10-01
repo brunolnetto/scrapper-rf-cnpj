@@ -56,7 +56,6 @@ class AuditRepository:
                 file_path,
                 checksum,
                 filesize,
-                rows_processed,
                 notes
             )
             VALUES (
@@ -69,7 +68,6 @@ class AuditRepository:
                 :file_path,
                 :checksum,
                 :filesize,
-                :rows_processed,
                 :notes
             )
             '''
@@ -91,7 +89,6 @@ class AuditRepository:
                     'file_path': file_path,
                     'checksum': checksum,
                     'filesize': filesize,
-                    'rows_processed': rows_processed,
                     'notes': safe_notes
                 })
 
@@ -127,11 +124,7 @@ class AuditRepository:
             if error_msg is not None:
                 update_fields.append('error_message = :error_msg')
                 params['error_msg'] = error_msg
-                
-            if rows_processed is not None:
-                update_fields.append('rows_processed = :rows_processed')
-                params['rows_processed'] = rows_processed
-                
+
             if notes is not None:
                 update_fields.append('notes = :notes')
                 params['notes'] = self._serialize_notes(notes)
