@@ -26,8 +26,6 @@ class FileGroupInfo(BaseModel):
     def __repr__(self) -> str:
         return f"FileGroupInfo(table_name='{self.table_name}', files_count={len(self.files)}, year={self.year}, month={self.month})"
 
-
-
 class AuditMetadata(BaseModel):
     """Represents the metadata for auditing purposes."""
     audit_list: List[TableAuditManifestSchema]

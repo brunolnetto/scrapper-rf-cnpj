@@ -211,95 +211,10 @@ class ReceitaCNPJPipeline(Pipeline):
             dev_filter = DevelopmentFilter(self.config.pipeline.development)
             original_count = len(files_info)
             
-            # Filter files by size
-            size_filtered_files = [f for f in files_info if dev_filter._check_file_size_limit(f)]
-            logger.info(f"[DEV-MODE] Size filtering: {len(files_info)} → {len(size_filtered_files)} files (limit: {dev_filter.config.file_size_limit_mb}MB)")
-            files_info = size_filtered_files
+            # Apply blob-based file size filtering in development mode
+            files_info = dev_filter.filter_files_by_blob_size_limit_with_file_info(files_info)
             
-            # Log sample filenames for debugging
-            if files_info:
-                sample_names = [f.filename for f in files_info[:5]]
-                logger.debug(f"[DEV-MODE] Sample filenames after size filtering: {sample_names}")
-            else:
-                logger.warning("[DEV-MODE] No files passed size filtering!")
-            
-            # Apply whole-blob filtering - limit total files across all tables
-            max_files_total = dev_filter.config.max_files_per_blob  # This is the total blob limit
-            
-            if len(files_info) <= max_files_total:
-                # No need to filter - we're under the total limit
-                logger.info(f"[DEV-MODE] Blob under limit: {len(files_info)} files ≤ {max_files_total} limit")
-                filtered_files = files_info
-            else:
-                # Need to strategically select files from the entire blob
-                logger.info(f"[DEV-MODE] Blob filtering: {len(files_info)} files → {max_files_total} files (whole-blob limit)")
-                
-                # Group files by table for diversity, but don't limit per table
-                from collections import defaultdict
-                from .constants import TABLES_INFO_DICT
-                
-                table_groups = defaultdict(list)
-                unmatched_files = []
-                
-                for file_info in files_info:
-                    # Find which table this file belongs to
-                    table_name = None
-                    filename_upper = file_info.filename.upper()  # Make case-insensitive
-                    
-                    for tname, table_info in TABLES_INFO_DICT.items():
-                        expression = table_info.get("expression")
-                        if expression and expression.upper() in filename_upper:
-                            table_name = tname
-                            break
-                    
-                    if table_name:
-                        table_groups[table_name].append(file_info)
-                    else:
-                        unmatched_files.append(file_info)
-                
-                # Strategic selection for table diversity within total blob limit
-                filtered_files = []
-                remaining_slots = max_files_total
-                
-                # First pass: Take 1-2 files from each table to ensure diversity
-                tables_with_files = [(name, files) for name, files in table_groups.items() if files]
-                files_per_table_round1 = max(1, remaining_slots // max(1, len(tables_with_files))) if tables_with_files else 0
-                
-                for table_name, table_files in tables_with_files:
-                    # Take first few files from this table (strategic: first, middle if available)
-                    take_count = min(files_per_table_round1, len(table_files), remaining_slots)
-                    if take_count > 0:
-                        if take_count == 1:
-                            selected = [table_files[0]]
-                        elif take_count == 2 and len(table_files) >= 2:
-                            selected = [table_files[0], table_files[len(table_files)//2]]
-                        else:
-                            selected = dev_filter._select_representative_files(table_files, take_count)
-                        
-                        filtered_files.extend(selected)
-                        remaining_slots -= len(selected)
-                        logger.debug(f"[DEV-MODE] {table_name}: selected {len(selected)} files (round 1)")
-                
-                # Second pass: Fill remaining slots with any remaining files
-                if remaining_slots > 0:
-                    all_remaining_files = []
-                    for table_files in table_groups.values():
-                        for f in table_files:
-                            if f not in filtered_files:
-                                all_remaining_files.append(f)
-                    
-                    # Add unmatched files to remaining pool
-                    all_remaining_files.extend(unmatched_files)
-                    
-                    if all_remaining_files and remaining_slots > 0:
-                        additional = all_remaining_files[:remaining_slots]
-                        filtered_files.extend(additional)
-                        logger.debug(f"[DEV-MODE] Added {len(additional)} additional files (round 2)")
-                
-                logger.info(f"[DEV-MODE] Final selection: {len(filtered_files)} files from {len(table_groups)} tables")
-            
-            files_info = filtered_files
-            dev_filter.log_simple_filtering(original_count, len(files_info), "discovered files")
+            dev_filter.log_simple_filtering(original_count, len(files_info), "discovered files (sum-based blob)")
 
         audits = self.audit_service.create_audits_from_files(files_info)
         logger.info(f"Created {len(audits)} audit entries from {len(files_info)} discovered files")
@@ -340,7 +255,7 @@ class ReceitaCNPJPipeline(Pipeline):
 
     def convert_to_parquet(self, audit_metadata: AuditMetadata) -> Path:
         from ..utils.misc import makedir
-        from .services.conversion.service import FileConversionService
+        from .services.conversion.service import FileConversionService, convert_csvs_to_parquet_smart
 
         num_workers = self.config.pipeline.conversion.workers
         output_dir = self.config.pipeline.get_temporal_conversion_path(self.config.year, self.config.month)
@@ -639,13 +554,13 @@ class ReceitaCNPJPipeline(Pipeline):
 
         logger.info(f"Found {len(csv_files)} CSV files for direct loading in {extract_path}")
 
-        # Development mode filtering
+        # Development mode filtering - blob-level filtering
         if self.config.is_development_mode():
             from .utils.development_filter import DevelopmentFilter
             dev_filter = DevelopmentFilter(self.config.pipeline.development)
             original_count = len(csv_files)
-            csv_files = [f for f in csv_files if dev_filter.check_blob_size_limit(f)]
-            dev_filter.log_simple_filtering(original_count, len(csv_files), "CSV files (direct loading)")
+            csv_files = dev_filter.filter_files_by_blob_size_limit(csv_files, group_by_table=True)
+            dev_filter.log_simple_filtering(original_count, len(csv_files), "CSV files (blob-level, direct loading)")
 
         # Map CSV files to table names using expression patterns
         tablename_to_files = {}

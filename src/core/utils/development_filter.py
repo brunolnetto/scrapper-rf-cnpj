@@ -89,7 +89,11 @@ class DevelopmentFilter:
         return selected
 
     def check_blob_size_limit(self, file_path: Path) -> bool:
-        """Check if file exceeds file size limit for development mode."""
+        """Check if file exceeds file size limit for development mode.
+        
+        DEPRECATED: Use filter_files_by_blob_size_limit() for proper blob-level filtering.
+        This method only checks individual files, not blob totals.
+        """
         if not self.is_enabled:
             return True
 
@@ -104,6 +108,213 @@ class DevelopmentFilter:
             return False
 
         return True
+
+    def filter_files_by_blob_size_limit(self, files: List[Path], group_by_table: bool = True) -> List[Path]:
+        """Filter files by blob-level size limits.
+        
+        This method groups files by table (e.g., all Estabelecimentos*.zip files)
+        and excludes entire table groups if the TOTAL SIZE of all files in the group 
+        exceeds the size limit.
+        
+        Args:
+            files: List of file paths to filter
+            group_by_table: If True, group by table name and filter entire tables.
+                          If False, use individual file filtering.
+        
+        Returns:
+            List of files that pass the blob-level size filtering
+        """
+        if not self.is_enabled:
+            return files
+
+        if not group_by_table:
+            # Fall back to individual file filtering
+            return [f for f in files if self.check_blob_size_limit(f)]
+
+        max_size_mb = self.config.file_size_limit_mb
+        table_groups = {}
+        
+        # Group files by table name (extract base table name from filename)
+        for file_path in files:
+            table_name = self._extract_table_name(file_path.name)
+            if table_name not in table_groups:
+                table_groups[table_name] = []
+            table_groups[table_name].append(file_path)
+
+        filtered_files = []
+        excluded_tables = []
+
+        for table_name, table_files in table_groups.items():
+            # Calculate TOTAL SIZE of all files in this table group
+            total_size_mb = 0
+            individual_sizes = []
+            
+            for file_path in table_files:
+                try:
+                    file_size_mb = file_path.stat().st_size / (1024 * 1024)
+                    individual_sizes.append(file_size_mb)
+                    total_size_mb += file_size_mb
+                except OSError as e:
+                    logger.warning(f"[DEV-MODE] Could not check size of {file_path}: {e}")
+                    # If we can't check size, be conservative and exclude the table
+                    total_size_mb = float('inf')  # Force exclusion
+                    break
+
+            # Check if TOTAL SIZE of the table group exceeds the limit
+            if total_size_mb > max_size_mb:
+                excluded_tables.append(table_name)
+                logger.info(
+                    f"[DEV-MODE] Excluded {table_name} table: {len(table_files)} files, "
+                    f"total {total_size_mb:.1f}MB > {max_size_mb}MB limit"
+                )
+                
+                # Log individual file sizes for debugging
+                for file_path, size_mb in zip(table_files, individual_sizes):
+                    logger.debug(f"  └─ {file_path.name}: {size_mb:.1f}MB")
+            else:
+                # Include all files from this table (total size is within limit)
+                filtered_files.extend(table_files)
+                logger.info(
+                    f"[DEV-MODE] Included {table_name} table: {len(table_files)} files, "
+                    f"total {total_size_mb:.1f}MB ≤ {max_size_mb}MB limit"
+                )
+                
+                # Log individual file sizes for debugging
+                for file_path, size_mb in zip(table_files, individual_sizes):
+                    logger.debug(f"  └─ {file_path.name}: {size_mb:.1f}MB")
+
+        if excluded_tables:
+            logger.info(
+                f"[DEV-MODE] Blob filtering (sum-based) excluded {len(excluded_tables)} tables: "
+                f"{', '.join(excluded_tables)}"
+            )
+
+        logger.info(
+            f"[DEV-MODE] Blob filtering (sum-based): {len(files)} → {len(filtered_files)} files "
+            f"({len(table_groups) - len(excluded_tables)}/{len(table_groups)} tables kept)"
+        )
+
+        return filtered_files
+
+    def filter_files_by_blob_size_limit_with_sizes(self, file_paths_with_sizes: List[Path], group_by_table: bool = True) -> List[Path]:
+        """Filter files by blob-level size limits using pre-calculated file sizes.
+        
+        This method works with Path objects that have a _file_size_bytes attribute
+        instead of reading file sizes from disk.
+        
+        Args:
+            file_paths_with_sizes: List of Path objects with _file_size_bytes attribute
+            group_by_table: If True, group by table name and filter entire tables.
+        
+        Returns:
+            List of files that pass the blob-level size filtering
+        """
+        if not self.is_enabled:
+            return file_paths_with_sizes
+
+        if not group_by_table:
+            # Fall back to individual file filtering using provided sizes
+            filtered = []
+            for file_path in file_paths_with_sizes:
+                file_size_mb = getattr(file_path, '_file_size_bytes', 0) / (1024 * 1024)
+                if file_size_mb <= self.config.file_size_limit_mb:
+                    filtered.append(file_path)
+            return filtered
+
+        max_size_mb = self.config.file_size_limit_mb
+        table_groups = {}
+        
+        # Group files by table name (extract base table name from filename)
+        for file_path in file_paths_with_sizes:
+            table_name = self._extract_table_name(file_path.name)
+            if table_name not in table_groups:
+                table_groups[table_name] = []
+            table_groups[table_name].append(file_path)
+
+        filtered_files = []
+        excluded_tables = []
+
+        for table_name, table_files in table_groups.items():
+            # Calculate TOTAL SIZE of all files in this table group using provided sizes
+            total_size_mb = 0
+            individual_sizes = []
+            
+            for file_path in table_files:
+                file_size_bytes = getattr(file_path, '_file_size_bytes', 0)
+                file_size_mb = file_size_bytes / (1024 * 1024)
+                individual_sizes.append(file_size_mb)
+                total_size_mb += file_size_mb
+
+            # Check if TOTAL SIZE of the table group exceeds the limit
+            if total_size_mb > max_size_mb:
+                excluded_tables.append(table_name)
+                logger.info(
+                    f"[DEV-MODE] Excluded {table_name} table: {len(table_files)} files, "
+                    f"total {total_size_mb:.1f}MB > {max_size_mb}MB limit"
+                )
+                
+                # Log individual file sizes for debugging
+                for file_path, size_mb in zip(table_files, individual_sizes):
+                    logger.debug(f"  └─ {file_path.name}: {size_mb:.1f}MB")
+            else:
+                # Include all files from this table (total size is within limit)
+                filtered_files.extend(table_files)
+                logger.info(
+                    f"[DEV-MODE] Included {table_name} table: {len(table_files)} files, "
+                    f"total {total_size_mb:.1f}MB ≤ {max_size_mb}MB limit"
+                )
+                
+                # Log individual file sizes for debugging
+                for file_path, size_mb in zip(table_files, individual_sizes):
+                    logger.debug(f"  └─ {file_path.name}: {size_mb:.1f}MB")
+
+        if excluded_tables:
+            logger.info(
+                f"[DEV-MODE] Blob filtering (sum-based) excluded {len(excluded_tables)} tables: "
+                f"{', '.join(excluded_tables)}"
+            )
+
+        logger.info(
+            f"[DEV-MODE] Blob filtering (sum-based): {len(file_paths_with_sizes)} → {len(filtered_files)} files "
+            f"({len(table_groups) - len(excluded_tables)}/{len(table_groups)} tables kept)"
+        )
+
+        return filtered_files
+
+    def _extract_table_name(self, filename: str) -> str:
+        """Extract base table name from filename.
+        
+        Examples:
+        - Estabelecimentos0.zip → estabelecimentos
+        - Empresas5.zip → empresas
+        - Socios3.zip → socios
+        - Simples.zip → simples
+        - Cnaes.zip → cnaes
+        """
+        # Remove extension
+        name = filename.lower()
+        if name.endswith('.zip'):
+            name = name[:-4]
+        elif name.endswith('.csv'):
+            name = name[:-4]
+        elif name.endswith('.parquet'):
+            name = name[:-8]
+        
+        # Remove numeric suffixes (e.g., estabelecimentos0 → estabelecimentos)
+        import re
+        base_name = re.sub(r'\d+$', '', name)
+        
+        # Handle special cases
+        if base_name == 'estabelecimento':
+            return 'estabelecimentos'
+        elif base_name == 'empresa':
+            return 'empresas'
+        elif base_name == 'socio':
+            return 'socios'
+        elif base_name == 'cnae':
+            return 'cnaes'
+        
+        return base_name if base_name else name
 
     def filter_dataframe_by_percentage(self, df: Any, table_name: str) -> Any:
         """Sample dataframe by configured percentage in development mode."""
@@ -330,3 +541,87 @@ class DevelopmentFilter:
                 f"Total row reduction: {total_rows_original:,} → {total_rows_processed:,} "
                 f"({rows_reduction_pct:.1f}% reduction)"
             )
+
+    def filter_files_by_blob_size_limit_with_file_info(self, file_infos: List, group_by_table: bool = True) -> List:
+        """Filter files by blob-level size limits using FileInfo objects.
+        
+        Args:
+            file_infos: List of FileInfo objects with filename and file_size attributes
+            group_by_table: If True, group by table name and filter entire tables.
+        
+        Returns:
+            List of FileInfo objects that pass the blob-level size filtering
+        """
+        if not self.is_enabled:
+            return file_infos
+            
+        if not self.config.file_size_limit_mb:
+            return file_infos
+
+        if not group_by_table:
+            # Fall back to individual file filtering
+            filtered = []
+            for file_info in file_infos:
+                file_size_mb = file_info.file_size / (1024 * 1024)
+                if file_size_mb <= self.config.file_size_limit_mb:
+                    filtered.append(file_info)
+            return filtered
+
+        max_size_mb = self.config.file_size_limit_mb
+        table_groups = {}
+        
+        # Group files by table name (extract base table name from filename)
+        for file_info in file_infos:
+            table_name = self._extract_table_name(file_info.filename)
+            if table_name not in table_groups:
+                table_groups[table_name] = []
+            table_groups[table_name].append(file_info)
+
+        filtered_files = []
+        excluded_tables = []
+
+        for table_name, table_files in table_groups.items():
+            # Calculate TOTAL SIZE of all files in this table group
+            total_size_mb = 0
+            individual_sizes = []
+            
+            for file_info in table_files:
+                file_size_mb = file_info.file_size / (1024 * 1024)
+                individual_sizes.append(file_size_mb)
+                total_size_mb += file_size_mb
+
+            # Check if TOTAL SIZE of the table group exceeds the limit
+            if total_size_mb > max_size_mb:
+                excluded_tables.append(table_name)
+                logger.info(
+                    f"[DEV-MODE] Excluded {table_name} table: {len(table_files)} files, "
+                    f"total {total_size_mb:.1f}MB > {max_size_mb}MB limit"
+                )
+                
+                # Log individual file sizes for debugging
+                for file_info, size_mb in zip(table_files, individual_sizes):
+                    logger.debug(f"  └─ {file_info.filename}: {size_mb:.1f}MB")
+            else:
+                # Include all files from this table (total size is within limit)
+                filtered_files.extend(table_files)
+                logger.info(
+                    f"[DEV-MODE] Included {table_name} table: {len(table_files)} files, "
+                    f"total {total_size_mb:.1f}MB ≤ {max_size_mb}MB limit"
+                )
+                
+                # Log individual file sizes for debugging
+                for file_info, size_mb in zip(table_files, individual_sizes):
+                    logger.debug(f"  └─ {file_info.filename}: {size_mb:.1f}MB")
+
+        if excluded_tables:
+            logger.info(
+                f"[DEV-MODE] Blob filtering (sum-based) excluded {len(excluded_tables)} tables: "
+                f"{', '.join(excluded_tables)}"
+            )
+
+        logger.info(
+            f"[DEV-MODE] Blob filtering (sum-based): {len(file_infos)} → {len(filtered_files)} files "
+            f"({len(table_groups) - len(excluded_tables)}/{len(table_groups)} tables kept)"
+        )
+
+        return filtered_files
