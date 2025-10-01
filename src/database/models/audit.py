@@ -178,6 +178,7 @@ class FileAuditManifest(BaseAuditModel):
     file_path = Column(Text, nullable=False)
     checksum = Column(Text, nullable=True)  # File integrity verification
     filesize = Column(BigInteger, nullable=True)  # File size in bytes
+    rows_processed = Column(BigInteger, nullable=True, default=0)  # Rows processed from this file
     
     # Standard index pattern
     __table_args__ = (

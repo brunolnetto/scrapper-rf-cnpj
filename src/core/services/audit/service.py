@@ -16,9 +16,12 @@ from typing import List, Optional, Dict, Any, Generator
 from typing import Union
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from threading import Lock
+from threading import Lock, Event, Timer
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import asyncio
 
 from sqlalchemy import text
+import sqlalchemy.exc
 
 from ....setup.logging import logger
 from ....setup.config import get_config, ConfigurationService
@@ -30,68 +33,185 @@ from ....database.models.audit import (
 from ....utils.models import create_audits, create_audit_metadata, insert_audit
 from ...schemas import AuditMetadata, FileInfo, FileGroupInfo
 from ...utils.schemas import create_file_groups
+from .repository import AuditRepository
+
+
+@dataclass
+class BatchTimeout:
+    """Configuration for batch operation timeouts and watchdogs."""
+    operation_timeout_seconds: float = 3600.0  # 1 hour default
+    watchdog_interval_seconds: float = 300.0   # 5 minutes check interval
+    max_idle_seconds: float = 1800.0           # 30 minutes max idle time
+    enable_watchdog: bool = True
 
 
 @dataclass
 class BatchAccumulator:
-    """Metrics accumulator for efficient batch tracking."""
+    """Thread-safe metrics accumulator with timeout and watchdog capabilities."""
     files_completed: int = 0
     files_failed: int = 0
     total_rows: int = 0
     total_bytes: int = 0
     start_time: float = field(default_factory=time.perf_counter)
     last_activity: float = field(default_factory=time.perf_counter)
+    timeout_config: BatchTimeout = field(default_factory=BatchTimeout)
+    
+    # Concurrency control
+    _lock: Lock = field(default_factory=Lock)
+    _cancelled: Event = field(default_factory=Event)
+    _watchdog_timer: Optional[Timer] = field(default=None, init=False)
 
     def add_file_event(self, status: AuditStatus, rows: int = 0, bytes_: int = 0):
-        """Add a file processing event to the accumulator.
+        """Add a file processing event to the accumulator with thread safety.
 
         Accepts legacy status strings and normalizes them to the
         AuditStatus values before updating metrics.
         """
-        # Accept either AuditStatus instances or legacy status strings and normalize
-        norm_status = None
-        try:
-            if isinstance(status, AuditStatus):
-                norm_status = status
-            elif isinstance(status, str):
-                # try mapping by name (case-insensitive) then by value
-                try:
-                    norm_status = AuditStatus[status.strip().upper()]
-                except Exception:
-                    try:
-                        norm_status = AuditStatus(status)
-                    except Exception:
-                        norm_status = AuditStatus.PENDING
-            else:
-                norm_status = AuditStatus.PENDING
-        except Exception:
-            norm_status = AuditStatus.PENDING
-
-        if norm_status == AuditStatus.COMPLETED:
-            self.files_completed += 1
-            self.total_rows += int(rows or 0)
+        with self._lock:
+            if self._cancelled.is_set():
+                logger.warning("Attempting to add event to cancelled batch accumulator")
+                return
+                
+            # Accept either AuditStatus instances or legacy status strings and normalize
+            norm_status = None
             try:
-                self.total_bytes += int(bytes_ or 0)
-            except Exception:
-                pass
-        elif norm_status == AuditStatus.FAILED:
-            self.files_failed += 1
-        # update last activity timestamp
-        self.last_activity = time.perf_counter()
+                if isinstance(status, AuditStatus):
+                    norm_status = status
+                elif isinstance(status, str):
+                    # try mapping by name (case-insensitive) then by value
+                    try:
+                        norm_status = AuditStatus[status.strip().upper()]
+                    except KeyError:
+                        try:
+                            norm_status = AuditStatus(status)
+                        except ValueError:
+                            norm_status = AuditStatus.PENDING
+                else:
+                    norm_status = AuditStatus.PENDING
+            except (TypeError, AttributeError):
+                norm_status = AuditStatus.PENDING
+
+            if norm_status == AuditStatus.COMPLETED:
+                self.files_completed += 1
+                self.total_rows += int(rows or 0)
+                try:
+                    self.total_bytes += int(bytes_ or 0)
+                except Exception:
+                    pass
+            elif norm_status == AuditStatus.FAILED:
+                self.files_failed += 1
+            
+            # Update last activity timestamp
+            self.last_activity = time.perf_counter()
+    
+    def is_expired(self) -> bool:
+        """Check if the batch operation has exceeded timeout limits."""
+        current_time = time.perf_counter()
+        elapsed = current_time - self.start_time
+        idle_time = current_time - self.last_activity
+        
+        return (elapsed > self.timeout_config.operation_timeout_seconds or 
+                idle_time > self.timeout_config.max_idle_seconds)
+    
+    def cancel(self) -> None:
+        """Cancel the batch operation and stop watchdog."""
+        with self._lock:
+            self._cancelled.set()
+            if self._watchdog_timer:
+                self._watchdog_timer.cancel()
+                self._watchdog_timer = None
+    
+    def is_cancelled(self) -> bool:
+        """Check if the batch has been cancelled."""
+        return self._cancelled.is_set()
+        
+    def start_watchdog(self, callback) -> None:
+        """Start watchdog timer for monitoring batch progress."""
+        if not self.timeout_config.enable_watchdog:
+            return
+            
+        def watchdog_check():
+            if self.is_expired() and not self.is_cancelled():
+                logger.warning(f"Batch watchdog triggered - operation timeout or idle")
+                callback(self)
+            elif not self.is_cancelled():
+                # Schedule next check
+                self._watchdog_timer = Timer(self.timeout_config.watchdog_interval_seconds, watchdog_check)
+                self._watchdog_timer.start()
+        
+        with self._lock:
+            if not self._watchdog_timer and not self._cancelled.is_set():
+                self._watchdog_timer = Timer(self.timeout_config.watchdog_interval_seconds, watchdog_check)
+                self._watchdog_timer.start()
+    
+    def get_metrics_snapshot(self) -> Dict[str, Any]:
+        """Get thread-safe snapshot of current metrics."""
+        with self._lock:
+            return {
+                'files_completed': self.files_completed,
+                'files_failed': self.files_failed,
+                'total_rows': self.total_rows,
+                'total_bytes': self.total_bytes,
+                'elapsed_seconds': time.perf_counter() - self.start_time,
+                'idle_seconds': time.perf_counter() - self.last_activity,
+                'is_cancelled': self.is_cancelled(),
+                'is_expired': self.is_expired()
+            }
 
 
 class AuditService:
-    """Unified audit and batch tracking service with comprehensive manifest capabilities."""
+    """Unified audit and batch tracking service with comprehensive manifest capabilities and timeout support."""
 
-    def __init__(self, database: Database, config: Optional[ConfigurationService] = None):
+    def __init__(self, database: Database, config: Optional[ConfigurationService] = None, 
+                 timeout_config: Optional[BatchTimeout] = None):
         self.database = database
         self.config = config or get_config()
+        self.repository = AuditRepository(database)
+        self.timeout_config = timeout_config or BatchTimeout()
         
-        # Batch tracking state
+        # Batch tracking state with enhanced concurrency
         self._active_batches: Dict[str, BatchAccumulator] = {}
         self._active_subbatches: Dict[str, BatchAccumulator] = {}
         self._subbatch_to_batch: Dict[str, str] = {}
         self._metrics_lock = Lock()
+        
+        # Async support for database operations
+        self._executor: Optional[ThreadPoolExecutor] = None
+        self._async_enabled = getattr(self.config.pipeline.loading, 'enable_internal_parallelism', True)
+        
+        if self._async_enabled:
+            max_workers = getattr(self.config.pipeline.loading, 'internal_concurrency', 3)
+            self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="audit-worker")
+
+    def __enter__(self):
+        return self
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.shutdown()
+    
+    def shutdown(self):
+        """Shutdown the service and cleanup resources."""
+        # Cancel all active batches
+        with self._metrics_lock:
+            for accumulator in list(self._active_batches.values()):
+                accumulator.cancel()
+            for accumulator in list(self._active_subbatches.values()):
+                accumulator.cancel()
+        
+        # Shutdown thread pool
+        if self._executor:
+            self._executor.shutdown(wait=True)
+            self._executor = None
+
+    def _handle_batch_timeout(self, accumulator: BatchAccumulator):
+        """Handle batch timeout/watchdog trigger."""
+        metrics = accumulator.get_metrics_snapshot()
+        logger.error(
+            f"Batch operation timeout - elapsed: {metrics['elapsed_seconds']:.1f}s, "
+            f"idle: {metrics['idle_seconds']:.1f}s, completed: {metrics['files_completed']}, "
+            f"failed: {metrics['files_failed']}"
+        )
+        accumulator.cancel()
 
     def _coerce_status(self, status: Union[AuditStatus, str]) -> AuditStatus:
         """Coerce a status value (enum or string) into an AuditStatus enum.
@@ -106,12 +226,12 @@ class AuditService:
             if isinstance(status, str):
                 try:
                     return AuditStatus[status.strip().upper()]
-                except Exception:
+                except KeyError:
                     try:
                         return AuditStatus(status)
-                    except Exception:
+                    except ValueError:
                         return AuditStatus.PENDING
-        except Exception:
+        except (TypeError, AttributeError):
             return AuditStatus.PENDING
         return AuditStatus.PENDING
 
@@ -305,7 +425,7 @@ class AuditService:
             file_manifest_id = str(uuid.uuid4())
 
             # Create manifest entry with table name and audit reference
-            self._insert_file_manifest(
+            self.repository.insert_file_manifest(
                 file_manifest_id=file_manifest_id,
                 table_name=Path(file_path).name if file_path != "unknown" else table_name,  # entity_name should be filename
                 file_path=file_path,
@@ -349,24 +469,7 @@ class AuditService:
     # Manifest tracking capabilities
     def _find_table_audit(self, table_name: str) -> Optional[str]:
         """Find the most recent table audit ID for a given table name."""
-        try:
-            from sqlalchemy import text
-            
-            query = '''
-            SELECT table_audit_id FROM table_audit_manifest 
-            WHERE entity_name = :table_name 
-            ORDER BY created_at DESC 
-            LIMIT 1
-            '''
-            
-            with self.database.engine.connect() as conn:
-                result = conn.execute(text(query), {'table_name': table_name})
-                row = result.fetchone()
-                return row[0] if row else None
-                
-        except Exception as e:
-            logger.error(f"Failed to find table audit for {table_name}: {e}")
-            return None
+        return self.repository.find_table_audit(table_name)
 
     @contextmanager
     def table_context(self, table_names: List[str]):
@@ -508,7 +611,7 @@ class AuditService:
             file_manifest_id = str(uuid.uuid4())
 
             # Insert manifest entry
-            self._insert_file_manifest(
+            self.repository.insert_file_manifest(
                 file_manifest_id=file_manifest_id,
                 table_name=file_path_obj.name,  # entity_name should be filename
                 file_path=str(file_path_obj),
@@ -542,76 +645,7 @@ class AuditService:
             logger.error(f"Failed to create manifest entry for {file_path}: {e}")
             return ""
     
-    def _insert_file_manifest(
-        self, 
-        file_manifest_id: str, table_name: str, file_path: str, status: AuditStatus,
-        checksum: Optional[str], filesize: Optional[int],
-        rows_processed: Optional[int], 
-        table_manifest_id: str, 
-        notes: Optional[str] = None
-    ) -> None:
-        """Insert manifest entry into database with required table_manifest_id."""
-        try:
-            insert_query = '''
-            INSERT INTO file_audit_manifest
-            (
-                file_audit_id, 
-                parent_table_audit_id, 
-                entity_name, 
-                status, 
-                created_at,
-                started_at,
-                file_path,
-                checksum,
-                filesize, 
-                notes
-            )
-            VALUES (
-                :file_audit_id, 
-                :table_audit_id, 
-                :entity_name, 
-                :status,  
-                :created_at,
-                :started_at,
-                :file_path,
-                :checksum,
-                :filesize, 
-                :notes
-            )
-            '''
 
-            # Coerce status to AuditStatus enum for consistent DB values
-            norm_status = self._coerce_status(status)
-
-            # Ensure notes are serialized consistently
-            try:
-                if notes is None:
-                    safe_notes = '{}'  # store empty object
-                elif isinstance(notes, dict):
-                    safe_notes = json.dumps(notes)
-                else:
-                    # wrap string notes into a dict for consistency
-                    safe_notes = json.dumps({'notes': str(notes)})
-            except Exception:
-                safe_notes = json.dumps({'notes': str(notes)})
-
-            with self.database.engine.begin() as conn:
-                conn.execute(text(insert_query), {
-                    'file_audit_id': file_manifest_id,
-                    'table_audit_id': table_manifest_id,
-                    'entity_name': table_name,
-                    'status': norm_status.value,
-                    'created_at': datetime.now(),
-                    'started_at': datetime.now(),
-                    'file_path': file_path,
-                    'checksum': checksum,
-                    'filesize': filesize,
-                    'rows_processed': rows_processed,
-                    'notes': safe_notes
-                })
-
-        except Exception as e:
-            logger.error(f"Failed to insert manifest entry: {e}")
 
     def update_file_manifest(
         self,
@@ -624,65 +658,30 @@ class AuditService:
     ) -> None:
         """Update an existing file manifest entry with completion details."""
         try:
-            from sqlalchemy import text
-            import json
             # Normalize manifest id (accept either keyword)
             manifest = manifest_id or file_manifest_id
-
-            # Coerce status to enum and build update fields dynamically
-            norm_status = self._coerce_status(status)
-
-            update_fields = ['status = :status', 'completed_at = :completed_at']
-            params = {
-                'manifest_id': manifest,
-                'status': norm_status.value,
-                'completed_at': datetime.now()
-            }
-                
-            if error_msg is not None:
-                update_fields.append('error_message = :error_msg')
-                params['error_msg'] = error_msg
-                
-            if notes is not None:
-                # Write notes into audit_metadata JSON field
-                update_fields.append('notes = :notes')
-                params['notes'] = notes
             
-            # Execute update
-            with self.database.engine.begin() as conn:
-                conn.execute(text(f'''
-                    UPDATE file_audit_manifest 
-                    SET {', '.join(update_fields)}
-                    WHERE file_audit_id = :manifest_id
-                '''), params)
-                
-                # Collect metrics for batch accumulation if this is a completion
-                try:
-                    if norm_status in (AuditStatus.COMPLETED, AuditStatus.FAILED) and rows_processed is not None:
-                        with self.database.engine.connect() as conn:
-                            # Query chain: file_audit → batch_audit → subbatch_audit (latest subbatch)
-                            result = conn.execute(text('''
-                                SELECT s.subbatch_audit_id 
-                                FROM file_audit_manifest f
-                                JOIN batch_audit_manifest b ON f.file_audit_id = b.parent_file_audit_id
-                                JOIN subbatch_audit_manifest s ON b.batch_audit_id = s.parent_batch_audit_id
-                                WHERE f.file_audit_id = :manifest_id
-                                ORDER BY s.started_at DESC
-                                LIMIT 1
-                            '''), {'manifest_id': file_manifest_id})
-                            row = result.fetchone()
-                            if row and row[0]:
-                                subbatch_id = str(row[0])
-                                # Use coerced enum when collecting
-                                self.collect_file_processing_event(subbatch_id, norm_status, int(rows_processed or 0), 0)
-                                logger.debug(f"Collected file metrics: {norm_status}, {rows_processed} rows")
-                except Exception as metrics_error:
-                    logger.debug(f"Could not collect metrics for manifest {file_manifest_id}: {metrics_error}")
+            # Update via repository
+            self.repository.update_file_manifest(
+                file_manifest_id=manifest,
+                status=status,
+                rows_processed=rows_processed,
+                error_msg=error_msg,
+                notes=notes
+            )
+            
+            # Collect metrics for batch accumulation if this is a completion
+            if status in (AuditStatus.COMPLETED, AuditStatus.FAILED) and rows_processed is not None:
+                subbatch_id = self.repository.find_subbatch_for_file_manifest(manifest)
+                if subbatch_id:
+                    self.collect_file_processing_event(subbatch_id, status, int(rows_processed or 0), 0)
+                    logger.debug(f"Collected file metrics: {status}, {rows_processed} rows")
                         
-            logger.debug(f"Updated manifest {file_manifest_id} with status {status}")
+            logger.debug(f"Updated manifest {manifest} with status {status}")
             
         except Exception as e:
-            logger.error(f"Failed to update file manifest {file_manifest_id}: {e}")
+            logger.error(f"Error updating file manifest {file_manifest_id}: {e}")
+            raise
 
     def _calculate_file_checksum(self, file_path: Path, algorithm: str = 'sha256') -> str:
         """Calculate file checksum for integrity verification."""
@@ -702,36 +701,16 @@ class AuditService:
                 for chunk in iter(lambda: f.read(8192), b""):
                     hash_func.update(chunk)
             return hash_func.hexdigest()
+        except (OSError, IOError, PermissionError) as e:
+            logger.error(f"File access error calculating checksum for {file_path}: {e}")
+            return None
         except Exception as e:
-            logger.error(f"Failed to calculate checksum for {file_path}: {e}")
+            logger.error(f"Unexpected error calculating checksum for {file_path}: {e}")
             return None
 
     def get_file_manifest_history(self, filename: str) -> List[dict]:
         """Get manifest history for a specific file."""
-        try:
-            from sqlalchemy import text
-
-            query = '''
-            SELECT 
-                file_path, 
-                entity_name as filename, 
-                status, 
-                checksum, 
-                filesize, 
-                rows_processed, 
-                completed_at
-            FROM file_audit_manifest
-            WHERE entity_name = :filename
-            ORDER BY completed_at DESC
-            '''
-
-            with self.database.engine.connect() as conn:
-                result = conn.execute(text(query), {'filename': filename})
-                return [dict(row._mapping) for row in result]
-
-        except Exception as e:
-            logger.error(f"Failed to get manifest history for {filename}: {e}")
-            return []
+        return self.repository.get_file_manifest_history(filename)
 
     def verify_file_integrity(self, file_path: str) -> bool:
         """Verify file integrity against stored manifest."""
@@ -884,7 +863,7 @@ class AuditService:
         self, target_table: str, batch_name: str, 
         file_manifest_id: Optional[str] = None
     ) -> uuid.UUID:
-        """Start a new batch for a single target table and return its ID."""
+        """Start a new batch for a single target table and return its ID with timeout support."""
         try:
             batch_id = uuid.uuid4()
             batch_data = {
@@ -905,11 +884,17 @@ class AuditService:
                     VALUES (:batch_id, :parent_file_audit_id, :target_table, :status, :created_at, :started_at, :description)
                 '''), batch_data)
 
-            # Start in-memory tracking
+            # Start in-memory tracking with timeout configuration
             with self._metrics_lock:
-                self._active_batches[str(batch_id)] = BatchAccumulator()
+                accumulator = BatchAccumulator(timeout_config=self.timeout_config)
+                self._active_batches[str(batch_id)] = accumulator
+                
+                # Start watchdog for this batch
+                accumulator.start_watchdog(self._handle_batch_timeout)
 
-            logger.info(f"Started batch {batch_id} for table: {target_table}")
+            logger.info(f"Started batch {batch_id} for table: {target_table} with timeout config: "
+                       f"operation={self.timeout_config.operation_timeout_seconds}s, "
+                       f"idle={self.timeout_config.max_idle_seconds}s")
             return batch_id
 
         except Exception as e:
@@ -917,7 +902,7 @@ class AuditService:
             raise
 
     def _start_subbatch(self, batch_id: uuid.UUID, table_name: str, description: str = None) -> uuid.UUID:
-        """Start a new subbatch and return its ID."""
+        """Start a new subbatch and return its ID with timeout support."""
         try:
             subbatch_id = uuid.uuid4()
             subbatch_data = {
@@ -956,10 +941,14 @@ class AuditService:
                     )
                 '''), subbatch_data)
 
-            # Start in-memory tracking
+            # Start in-memory tracking with timeout configuration
             with self._metrics_lock:
-                self._active_subbatches[str(subbatch_id)] = BatchAccumulator()
+                accumulator = BatchAccumulator(timeout_config=self.timeout_config)
+                self._active_subbatches[str(subbatch_id)] = accumulator
                 self._subbatch_to_batch[str(subbatch_id)] = str(batch_id)
+                
+                # Start watchdog for this subbatch
+                accumulator.start_watchdog(self._handle_batch_timeout)
 
             logger.info(f"Started subbatch {subbatch_id} for table: {table_name}")
             return subbatch_id
@@ -1140,28 +1129,7 @@ class AuditService:
 
     def get_batch_status(self, batch_id: uuid.UUID) -> Optional[Dict[str, Any]]:
         """Get the current status of a batch."""
-        try:
-            with self.database.engine.connect() as conn:
-                result = conn.execute(text('''
-                    SELECT 
-                        batch_audit_id, 
-                        entity_name, 
-                        target_table, 
-                        status, 
-                        started_at, 
-                        completed_at, 
-                        error_message, 
-                        description
-                    FROM batch_audit_manifest
-                    WHERE batch_audit_id = :batch_id
-                '''), {'batch_id': str(batch_id)})
-                
-                row = result.fetchone()
-                return dict(row._mapping) if row else None
-
-        except Exception as e:
-            logger.error(f"Failed to get batch status {batch_id}: {e}")
-            return None
+        return self.repository.get_batch_status(batch_id)
 
     def collect_comprehensive_column_metrics(self, table_name: str, parquet_file_path: str) -> Dict[str, Any]:
         """
@@ -1861,6 +1829,109 @@ class AuditService:
                 "error": str(e),
                 "collection_timestamp": datetime.now().isoformat()
             }
+
+    # Async database operations for improved concurrency
+    def batch_create_file_manifests_async(
+        self, 
+        manifest_data_list: List[Dict[str, Any]], 
+        max_workers: Optional[int] = None
+    ) -> List[uuid.UUID]:
+        """Create multiple file manifests concurrently using thread pool."""
+        if not self._async_enabled or not self._executor:
+            # Fallback to synchronous processing
+            return [self.create_file_manifest(**data) for data in manifest_data_list]
+        
+        max_workers = max_workers or self._executor._max_workers
+        manifest_ids = []
+        
+        # Submit all tasks
+        futures = []
+        for data in manifest_data_list:
+            future = self._executor.submit(self.create_file_manifest, **data)
+            futures.append(future)
+        
+        # Collect results as they complete
+        for future in as_completed(futures):
+            try:
+                manifest_id = future.result(timeout=self.timeout_config.operation_timeout_seconds)
+                manifest_ids.append(manifest_id)
+            except Exception as e:
+                logger.error(f"Failed to create file manifest in async batch: {e}")
+                # Continue processing other manifests
+        
+        return manifest_ids
+    
+    def batch_update_file_manifests_async(
+        self, 
+        update_data_list: List[Dict[str, Any]], 
+        max_workers: Optional[int] = None
+    ) -> int:
+        """Update multiple file manifests concurrently using thread pool."""
+        if not self._async_enabled or not self._executor:
+            # Fallback to synchronous processing
+            success_count = 0
+            for data in update_data_list:
+                try:
+                    self.update_file_manifest(**data)
+                    success_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to update file manifest: {e}")
+            return success_count
+        
+        max_workers = max_workers or self._executor._max_workers
+        success_count = 0
+        
+        # Submit all tasks
+        futures = []
+        for data in update_data_list:
+            future = self._executor.submit(self._safe_update_file_manifest, **data)
+            futures.append(future)
+        
+        # Collect results as they complete
+        for future in as_completed(futures):
+            try:
+                if future.result(timeout=self.timeout_config.operation_timeout_seconds):
+                    success_count += 1
+            except Exception as e:
+                logger.error(f"Failed to update file manifest in async batch: {e}")
+        
+        return success_count
+    
+    def _safe_update_file_manifest(self, **kwargs) -> bool:
+        """Thread-safe wrapper for update_file_manifest that returns success status."""
+        try:
+            self.update_file_manifest(**kwargs)
+            return True
+        except Exception as e:
+            logger.error(f"Safe update file manifest failed: {e}")
+            return False
+    
+    def get_batch_metrics_snapshot(self, batch_id: uuid.UUID) -> Optional[Dict[str, Any]]:
+        """Get thread-safe snapshot of batch metrics."""
+        with self._metrics_lock:
+            accumulator = self._active_batches.get(str(batch_id))
+            if accumulator:
+                return accumulator.get_metrics_snapshot()
+        return None
+    
+    def get_all_active_batches_status(self) -> Dict[str, Dict[str, Any]]:
+        """Get status of all active batches and subbatches."""
+        with self._metrics_lock:
+            status = {}
+            
+            # Active batches
+            for batch_id, accumulator in self._active_batches.items():
+                status[f"batch_{batch_id}"] = accumulator.get_metrics_snapshot()
+            
+            # Active subbatches
+            for subbatch_id, accumulator in self._active_subbatches.items():
+                parent_batch = self._subbatch_to_batch.get(subbatch_id, "unknown")
+                status[f"subbatch_{subbatch_id}"] = {
+                    **accumulator.get_metrics_snapshot(),
+                    "parent_batch_id": parent_batch
+                }
+            
+            return status
 
 
 
