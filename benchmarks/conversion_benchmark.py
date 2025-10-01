@@ -15,8 +15,8 @@ from typing import List, Optional
 project_root = Path(__file__).parent.parent
 sys.path.append(str(project_root))
 
-from benchmarks.utils import benchmark_context, BenchmarkResult, get_file_size_gb, cleanup_memory
-from benchmarks.duckdb_benchmark import DuckDBBenchmark
+from .utils import benchmark_context, BenchmarkResult, get_file_size_gb, cleanup_memory
+from .duckdb_benchmark import DuckDBBenchmark
 
 logger = logging.getLogger(__name__)
 
@@ -298,14 +298,14 @@ def main():
         fastest = min(successful, key=lambda x: x.duration_seconds)
         most_efficient = min(successful, key=lambda x: x.peak_memory_gb)
         
-        logger.info(f"🏃 Fastest: {fastest.name} ({fastest.duration_seconds:.2f}s)")
-        logger.info(f"🧠 Most memory efficient: {most_efficient.name} ({most_efficient.peak_memory_gb:.2f}GB)")
-        
+        logger.info(f"[FASTEST] Fastest: {fastest.name} ({fastest.duration_seconds:.2f}s)")
+        logger.info(f"[MEMORY_EFFICIENT] Most memory efficient: {most_efficient.name} ({most_efficient.peak_memory_gb:.2f}GB)")
+
         # Compare compression ratios
         compression_results = [r for r in successful if r.compression_ratio]
         if compression_results:
             best_compression = max(compression_results, key=lambda x: x.compression_ratio)
-            logger.info(f"📦 Best compression: {best_compression.name} ({best_compression.compression_ratio:.2f}x)")
+            logger.info(f"[COMPRESSION] Best compression: {best_compression.name} ({best_compression.compression_ratio:.2f}x)")
     
     return 0
 

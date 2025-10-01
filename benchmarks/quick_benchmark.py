@@ -12,7 +12,7 @@ import logging
 project_root = Path(__file__).parent.parent
 sys.path.append(str(project_root))
 
-from benchmarks.run_benchmarks import main
+from .run_benchmarks import main
 
 def quick_test():
     """Run quick benchmark test with limited data."""
@@ -34,7 +34,7 @@ def quick_test():
             "--memory-limit", "4GB"
         ]
         
-        print("🚀 Running quick benchmark test...")
+        print("Running quick benchmark test...")
         print("   - Pattern: *ESTABELE* files")
         print("   - Max files: 1 (reduced for memory safety)")
         print("   - Memory limit: 4GB")
@@ -51,9 +51,9 @@ if __name__ == "__main__":
     exit_code = quick_test()
     
     if exit_code == 0:
-        print("\n✅ Quick benchmark test completed successfully!")
+        print("\n[SUCCESS] Quick benchmark test completed successfully!")
         print("Check benchmark_test_output/ for results")
     else:
-        print("\n❌ Quick benchmark test failed")
-    
+        print("\n[FAILED] Quick benchmark test failed")
+
     sys.exit(exit_code)

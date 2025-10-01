@@ -17,7 +17,7 @@ import argparse
 project_root = Path(__file__).parent.parent
 sys.path.append(str(project_root))
 
-from benchmarks.utils import BenchmarkResult, load_benchmark_results
+from .utils import BenchmarkResult, load_benchmark_results
 
 def analyze_results(results: List[BenchmarkResult]) -> Dict[str, Any]:
     """Analyze benchmark results and return summary statistics."""

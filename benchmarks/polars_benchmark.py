@@ -14,7 +14,7 @@ import psutil
 from typing import Optional, Dict, Any, Union
 import logging
 
-from benchmarks.utils import benchmark_context, BenchmarkResult, get_file_size_gb, cleanup_memory
+from .utils import benchmark_context, BenchmarkResult, get_file_size_gb, cleanup_memory
 
 logger = logging.getLogger(__name__)
 
@@ -35,18 +35,20 @@ class PolarsBenchmark:
         """
         self.streaming = streaming
         self.chunk_size = chunk_size
+        self.max_threads = max_threads
         
+        # Note: Polars automatically manages thread pool size
+        # Manual thread pool configuration is deprecated in modern versions
         if max_threads:
-            pl.Config.set_thread_pool_size(max_threads)
+            logger.info(f"Note: max_threads parameter set to {max_threads} but Polars manages threads automatically")
             
-        logger.info(f"Polars setup: streaming={streaming}, chunk_size={chunk_size}, "
-                   f"threads={pl.threadpool_size()}")
+        logger.info(f"Polars setup: streaming={streaming}, chunk_size={chunk_size}")
     
     def benchmark_csv_ingestion(self, 
                                csv_files: list[Path], 
                                output_path: Path,
                                delimiter: str = ";",
-                               encoding: str = "utf-8",
+                               encoding: str = "utf8-lossy",
                                memory_limit_gb: float = 8.0) -> BenchmarkResult:
         """
         Benchmark CSV ingestion with Polars.
@@ -75,19 +77,14 @@ class PolarsBenchmark:
                     return self._fallback_to_chunked_processing(csv_files, output_path, delimiter, encoding, monitor)
                 
                 # Strategy 1: Try lazy scan with streaming
+                # CNPJ files don't have .csv extension, so we need to pass actual file paths
                 if len(csv_files) == 1:
                     file_pattern = str(csv_files[0])
                 else:
-                    # For multiple files, create a pattern or process individually
-                    base_dir = csv_files[0].parent
-                    if all(f.parent == base_dir for f in csv_files):
-                        # Use glob pattern
-                        file_pattern = str(base_dir / "*.csv")
-                    else:
-                        # Different directories - use first file as template
-                        file_pattern = str(csv_files[0])
+                    # For multiple files, Polars can accept a list of paths
+                    file_pattern = [str(f) for f in csv_files]
                 
-                logger.info(f"Starting Polars lazy scan: {file_pattern}")
+                logger.info(f"Starting Polars lazy scan: {len(csv_files)} file(s)")
                 
                 # Create lazy frame with memory-friendly settings
                 lazy_df = pl.scan_csv(
@@ -246,7 +243,7 @@ class PolarsBenchmark:
                                    csv_files: list[Path], 
                                    output_path: Path,
                                    delimiter: str = ";",
-                                   encoding: str = "utf-8") -> BenchmarkResult:
+                                   encoding: str = "utf8-lossy") -> BenchmarkResult:
         """
         Benchmark chunked CSV processing (fallback strategy).
         
@@ -281,21 +278,30 @@ class PolarsBenchmark:
                     )
                     
                     file_chunks = []
-                    for batch_idx, batch_df in enumerate(batch_reader):
-                        monitor.update_peak_memory()
+                    batch_idx = 0
+                    
+                    # Use next_batches() method to iterate over batches
+                    while True:
+                        batches = batch_reader.next_batches(1)
+                        if not batches:
+                            break
                         
-                        # Simple processing (you can add transformations here)
-                        processed_df = batch_df
-                        
-                        # Write chunk to temporary parquet
-                        chunk_path = output_path.parent / f"chunk_{i}_{batch_idx}.parquet"
-                        processed_df.write_parquet(chunk_path, compression="zstd")
-                        file_chunks.append(chunk_path)
-                        
-                        total_rows += len(processed_df)
-                        
-                        # Clean up batch
-                        del processed_df
+                        for batch_df in batches:
+                            monitor.update_peak_memory()
+                            
+                            # Simple processing (you can add transformations here)
+                            processed_df = batch_df
+                            
+                            # Write chunk to temporary parquet
+                            chunk_path = output_path.parent / f"chunk_{i}_{batch_idx}.parquet"
+                            processed_df.write_parquet(chunk_path, compression="zstd")
+                            file_chunks.append(chunk_path)
+                            
+                            total_rows += len(processed_df)
+                            batch_idx += 1
+                            
+                            # Clean up batch
+                            del processed_df
                         
                     chunk_files.extend(file_chunks)
                 
@@ -499,7 +505,7 @@ def run_polars_benchmarks(csv_files: list[Path],
             csv_files=csv_files,
             output_path=parquet_output,
             delimiter=";",  # CNPJ files use semicolon
-            encoding="utf-8",  # Or "iso-8859-1" if needed
+            encoding="utf8-lossy",  # Or "iso-8859-1" if needed
             memory_limit_gb=memory_limit_gb
         )
         results.append(ingestion_result)
@@ -524,7 +530,7 @@ def run_polars_benchmarks(csv_files: list[Path],
         csv_files=csv_files,
         output_path=chunked_output,
         delimiter=";",
-        encoding="utf-8"
+        encoding="utf8-lossy"
     )
     results.append(chunked_result)
     

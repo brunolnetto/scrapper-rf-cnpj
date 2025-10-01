@@ -10,7 +10,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.append(str(project_root))
 
-from benchmarks.conversion_benchmark import main
+from .conversion_benchmark import main
 
 def quick_conversion_test():
     """Run quick conversion benchmark test."""
@@ -45,9 +45,9 @@ if __name__ == "__main__":
     exit_code = quick_conversion_test()
     
     if exit_code == 0:
-        print("\n✅ Quick conversion benchmark completed!")
+        print("\n[SUCCESS] Quick conversion benchmark completed!")
         print("Check conversion_test_output/ for results")
     else:
-        print("\n❌ Quick conversion benchmark failed")
+        print("\n[FAILED] Quick conversion benchmark failed")
     
     sys.exit(exit_code)

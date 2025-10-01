@@ -15,9 +15,9 @@ import json
 project_root = Path(__file__).parent.parent
 sys.path.append(str(project_root))
 
-from benchmarks.utils import BenchmarkResult, save_benchmark_results, cleanup_memory
-from benchmarks.duckdb_benchmark import run_duckdb_benchmarks
-from benchmarks.polars_benchmark import run_polars_benchmarks
+from .utils import BenchmarkResult, save_benchmark_results, cleanup_memory
+from .duckdb_benchmark import run_duckdb_benchmarks
+from .polars_benchmark import run_polars_benchmarks
 
 # Setup logging
 logging.basicConfig(
@@ -43,13 +43,16 @@ def find_cnpj_files(data_dir: Path, pattern: str = "*ESTABELE*") -> list[Path]:
     """
     csv_files = []
     
-    # Look in EXTRACTED_FILES directory
+    # Look in EXTRACTED_FILES directory (recursively)
     extracted_dir = data_dir / "EXTRACTED_FILES"
     if extracted_dir.exists():
-        csv_files.extend(list(extracted_dir.glob(pattern)))
+        csv_files.extend(list(extracted_dir.rglob(pattern)))
     
-    # Also look directly in data_dir
-    csv_files.extend(list(data_dir.glob(pattern)))
+    # Also look directly in data_dir (recursively)
+    csv_files.extend(list(data_dir.rglob(pattern)))
+    
+    # Filter to only CSV-like files (exclude .zip, .parquet files)
+    csv_files = [f for f in csv_files if not f.suffix.lower() in ['.zip', '.parquet']]
     
     # Remove duplicates and sort
     csv_files = sorted(list(set(csv_files)))
@@ -101,9 +104,9 @@ def generate_benchmark_report(results: list[BenchmarkResult], output_path: Path)
         report.append("")
         
         if result.errors:
-            report.append(f"**Status**: ❌ FAILED - {result.errors}")
+            report.append(f"**Status**: FAILED - {result.errors}")
         else:
-            report.append("**Status**: ✅ SUCCESS")
+            report.append("**Status**: SUCCESS")
         
         report.append("")
         report.append(f"- **Duration**: {result.duration_seconds:.2f} seconds")
@@ -155,15 +158,15 @@ def generate_benchmark_report(results: list[BenchmarkResult], output_path: Path)
             report.append(f"- **Polars Best**: {polars_best.duration_seconds:.2f}s, {polars_best.peak_memory_gb:.2f}GB")
             report.append("")
             
-            if speed_ratio < 1:
-                report.append(f"🏆 **Polars is {(1/speed_ratio):.2f}x faster** than DuckDB")
-            else:
-                report.append(f"🏆 **DuckDB is {speed_ratio:.2f}x faster** than Polars")
+            speed_ratio_winner = "Polars" if speed_ratio < 1 else "DuckDB"
+            speed_ratio_loser = "DuckDB" if speed_ratio < 1 else "Polars"
             
-            if memory_ratio < 1:
-                report.append(f"🧠 **Polars uses {(1/memory_ratio):.2f}x less memory** than DuckDB")
-            else:
-                report.append(f"🧠 **DuckDB uses {(1/memory_ratio):.2f}x less memory** than Polars")
+            report.append(f"[SPEED_RATIO] **{speed_ratio_winner} is {(1/speed_ratio):.2f}x faster** than {speed_ratio_loser}")
+            
+            memory_ratio_winner = "Polars" if memory_ratio < 1 else "DuckDB"
+            memory_ratio_loser = "DuckDB" if memory_ratio < 1 else "Polars"
+
+            report.append(f"[MEMORY_RATIO] **{memory_ratio_winner} uses {(1/memory_ratio):.2f}x less memory** than {memory_ratio_loser}")
     
     # Write report
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -221,7 +224,7 @@ def main():
     try:
         # DuckDB benchmarks
         if not args.skip_duckdb:
-            logger.info("🦆 Running DuckDB benchmarks...")
+            logger.info("[DuckDB] Running DuckDB benchmarks...")
             cleanup_memory()
             
             duckdb_output_dir = args.output_dir / "duckdb"
@@ -238,7 +241,7 @@ def main():
         
         # Polars benchmarks
         if not args.skip_polars:
-            logger.info("🐻‍❄️ Running Polars benchmarks...")
+            logger.info("[Polars] Running Polars benchmarks...")
             cleanup_memory()
             
             polars_output_dir = args.output_dir / "polars"
@@ -267,7 +270,7 @@ def main():
         generate_benchmark_report(all_results, report_file)
         
         # Print summary
-        logger.info("🎉 Benchmarks completed successfully!")
+        logger.info("[SUCCESS] Benchmarks completed successfully!")
         logger.info(f"Results saved to: {results_file}")
         logger.info(f"Report generated: {report_file}")
         

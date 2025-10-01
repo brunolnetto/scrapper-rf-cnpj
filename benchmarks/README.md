@@ -11,7 +11,7 @@ Test with a small subset of your data:
 
 ```bash
 # Quick test with 2 files
-python benchmarks/quick_benchmark.py
+python3 -m benchmarks.quick_benchmark
 ```
 
 ### 2. Full Benchmark
@@ -19,14 +19,14 @@ Run comprehensive benchmarks on your entire dataset:
 
 ```bash
 # Full benchmark on estabelecimento files
-python benchmarks/run_benchmarks.py --data-dir data --pattern "*ESTABELE*"
+python3 -m benchmarks.run_benchmarks --data-dir data --pattern "*ESTABELE*"
 
 # Benchmark with memory limit
-python benchmarks/run_benchmarks.py --memory-limit 6GB --max-files 5
+python3 -m benchmarks.run_benchmarks --memory-limit 6GB --max-files 5
 
 # Skip DuckDB or Polars tests
-python benchmarks/run_benchmarks.py --skip-duckdb
-python benchmarks/run_benchmarks.py --skip-polars
+python3 -m benchmarks.run_benchmarks --skip-duckdb
+python3 -m benchmarks.run_benchmarks --skip-polars
 ```
 
 ### 3. Analyze Results
@@ -34,7 +34,7 @@ Generate visualizations and analysis:
 
 ```bash
 # Analyze results from a benchmark run
-python benchmarks/analyze_results.py benchmark_output/benchmark_results_YYYYMMDD_HHMMSS.json
+python3 -m benchmarks.analyze_results benchmark_output/benchmark_results_YYYYMMDD_HHMMSS.json
 ```
 
 ## What Gets Measured
