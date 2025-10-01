@@ -8,15 +8,85 @@ import sys
 import re
 import os
 
-# --- keep your parse_args, detect_encoding, group_files_by_encoding as-is --- #
-# (I assume you already have those functions from your posted snippet)
+def parse_args(argv):
+    parser = argparse.ArgumentParser(description="Ingest Receita Federal CNPJ CSV files into PostgreSQL using DuckDB")
+    
+    parser.add_argument("source", type=Path, help="CSV directory or file")
+    parser.add_argument("--table", default="cnpjs", help="Target PostgreSQL table")
+    parser.add_argument("--limit-rows", type=int, default=None)
+    parser.add_argument("--sample-rows", type=int, default=5)
+    parser.add_argument("--user", default="postgres")
+    parser.add_argument("--password", default="postgres")
+    parser.add_argument("--host", default="localhost")
+    parser.add_argument("--port", default=5432)
+    parser.add_argument("--dbname", default="postgres")
+    parser.add_argument("--overwrite", action="store_true", 
+                        help="Drop table if exists before creating")
+    parser.add_argument("--encoding", default=None,
+                        help="CSV file encoding (default: auto-detect)")
+    parser.add_argument("--encoding-sample-size", type=int, default=100000,
+                        help="Bytes to sample for encoding detection (default: 100000)")
+    parser.add_argument("--threads", type=int, default=None,
+                        help="Number of threads for DuckDB (default: auto)")
+    return parser.parse_args(argv)
 
 
-def _safe_ident(name: str) -> str:
-    """Very small check to avoid injecting unsafe table names into SQL."""
-    if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', name):
-        raise ValueError(f"Unsafe table name: {name!r}")
-    return name
+def detect_encoding(file_path, sample_size=100000):
+    """Detect file encoding by trying common encodings.
+    Returns DuckDB-compatible encoding names."""
+    
+    # Map Python encoding names to DuckDB-compatible names
+    encodings_to_try = [
+        ('utf-8', 'utf-8'),
+        ('windows-1252', 'CP1252'),
+        ('cp1252', 'CP1252'),
+        ('latin-1', 'latin-1'),
+        ('iso-8859-1', 'latin-1'),
+        ('windows-1250', 'windows-1250-2000'),
+        ('cp1250', 'CP1250'),
+        ('windows-1251', 'CP1251'),
+        ('cp1251', 'CP1251'),
+    ]
+    
+    try:
+        with open(file_path, 'rb') as f:
+            sample = f.read(sample_size)
+        
+        # Try each encoding
+        for python_enc, duckdb_enc in encodings_to_try:
+            try:
+                sample.decode(python_enc)
+                return duckdb_enc
+            except (UnicodeDecodeError, LookupError):
+                continue
+        
+        # Fallback to latin-1 (always works)
+        return 'latin-1'
+    except Exception as e:
+        print(f"⚠ Warning: Could not detect encoding: {e}")
+        return 'latin-1'
+
+
+def group_files_by_encoding(file_paths, sample_size=100000):
+    """Group files by their detected encoding.
+    Returns dict of {encoding: [file_paths]}.
+    """
+    encoding_groups = {}
+    
+    print(f"🔍 Detecting encoding for {len(file_paths)} files...")
+    for file_path in file_paths:
+        encoding = detect_encoding(file_path, sample_size)
+        if encoding not in encoding_groups:
+            encoding_groups[encoding] = []
+        encoding_groups[encoding].append(file_path)
+        print(f"   {Path(file_path).name}: {encoding}")
+    
+    print(f"\n📊 Encoding distribution:")
+    for encoding, files in encoding_groups.items():
+        total_size = sum(Path(f).stat().st_size for f in files) / (1024 * 1024)
+        print(f"   {encoding}: {len(files)} files, {total_size:.1f} MB")
+    
+    return encoding_groups
 
 
 def _quote_path(p: str) -> str:
@@ -222,3 +292,27 @@ def ingest_with_duckdb_to_postgres(args):
         print(f"  {col_name}: {col_type}")
 
     con.close()
+
+
+def main(argv):
+    args = parse_args(argv)
+    start = time.perf_counter()
+    
+    print(f"Starting DuckDB → PostgreSQL CSV ingestion...")
+    print(f"   Source: {args.source}")
+    print(f"   Target: {args.host}:{args.port}/{args.dbname}.{args.table}")
+    if args.limit_rows:
+        print(f"   Limit: {args.limit_rows:,} rows")
+    if args.threads:
+        print(f"   Threads: {args.threads}")
+    print()
+    
+    ingest_with_duckdb_to_postgres(args)
+    
+    elapsed = time.perf_counter() - start
+    print(f"\n✓ Ingestion finished in {elapsed:.2f}s")
+
+
+if __name__ == "__main__":
+    import sys
+    main(sys.argv[1:])
