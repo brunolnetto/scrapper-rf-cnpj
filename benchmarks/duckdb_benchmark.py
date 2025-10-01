@@ -90,7 +90,7 @@ class DuckDBBenchmark:
                     # Single file
                     self.connection.execute(f"""
                     CREATE TABLE {table_name} AS 
-                    SELECT * FROM read_csv_auto('{file_list[0]}', {csv_params})
+                    SELECT * FROM read_csv('{file_list[0]}', {csv_params})
                     """)
                 else:
                     # Multiple files - process one by one to avoid memory issues
@@ -98,7 +98,7 @@ class DuckDBBenchmark:
                     logger.info(f"Creating table from first file: {Path(file_list[0]).name}")
                     self.connection.execute(f"""
                     CREATE TABLE {table_name} AS 
-                    SELECT * FROM read_csv_auto('{file_list[0]}', {csv_params})
+                    SELECT * FROM read_csv('{file_list[0]}', {csv_params})
                     """)
                     
                     monitor.update_peak_memory()
@@ -108,7 +108,7 @@ class DuckDBBenchmark:
                         logger.info(f"Inserting file {i}/{len(file_list)}: {Path(file_path).name}")
                         self.connection.execute(f"""
                         INSERT INTO {table_name} 
-                        SELECT * FROM read_csv_auto('{file_path}', {csv_params})
+                        SELECT * FROM read_csv('{file_path}', {csv_params})
                         """)
                         monitor.update_peak_memory()
                 
