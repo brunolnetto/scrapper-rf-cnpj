@@ -253,7 +253,7 @@ class FileLoadingService:
 
     async def _load_single_file(self, table_info: TableInfo, file_path: Path, table_name: str) -> Tuple[bool, Optional[str], int]:
         """
-        Load a single file using coordinated FileHandler + DatabaseService + BatchProcessor.
+        Load a single file using coordinated FileHandler + DatabaseService.
         FIX: Properly handles async context detection and coroutine execution.
         """
         try:
@@ -932,30 +932,32 @@ class FileLoadingService:
             return None
 
     async def close_resources(self):
+        """Enhanced resource cleanup with forced termination."""
         if self._connection_pool:
+            logger.debug("Closing connection pool...")
+            
             try:
-                loop = asyncio.get_running_loop()
-                logger.info(f"[LoadingService] Closing pool on loop id={id(loop)} (pool={self._connection_pool})")
-                # Wrap close in a short timeout to avoid indefinite hangs
+                # Try graceful close first
+                await asyncio.wait_for(self._connection_pool.close(), timeout=5.0)
+                logger.debug("Connection pool closed gracefully")
+                
+            except asyncio.TimeoutError:
+                logger.warning("Pool close timed out, forcing termination...")
+                
+                # Force termination
                 try:
-                    await asyncio.wait_for(self._connection_pool.close(), timeout=10.0)
-                    logger.info("[LoadingService] AsyncPG pool closed cleanly")
-                except asyncio.TimeoutError:
-                    logger.warning("[LoadingService] Timeout while closing asyncpg pool; attempting fallback termination")
-                    try:
-                        if hasattr(self._connection_pool, 'terminate'):
-                            # asyncpg.Pool may expose terminate in some versions
-                            self._connection_pool.terminate()
-                            logger.info("[LoadingService] Called pool.terminate() as fallback")
-                        else:
-                            # Last-resort: run close in thread to avoid blocking event loop
-                            await asyncio.to_thread(self._connection_pool.close)
-                            logger.info("[LoadingService] Fallback pool.close() executed in thread")
-                    except Exception as term_exc:
-                        logger.exception(f"[LoadingService] Fallback pool termination failed: {term_exc}")
-                except Exception as e:
-                    logger.exception("[LoadingService] Error while closing asyncpg pool")
+                    self._connection_pool.terminate()
+                    # Wait for termination to complete
+                    await asyncio.wait_for(
+                        self._connection_pool.wait_closed(), 
+                        timeout=3.0
+                    )
+                except (asyncio.TimeoutError, AttributeError):
+                    logger.warning("Forced termination timed out")
+                    
             except Exception as e:
-                logger.exception("Error closing pool")
+                logger.error(f"Error closing pool: {e}")
+                
             finally:
                 self._connection_pool = None
+                logger.debug("Connection pool cleanup completed")

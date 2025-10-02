@@ -9,6 +9,7 @@ import asyncio
 import concurrent.futures
 import threading
 import uuid
+import time
 
 from ....setup.logging import logger
 from .ingestors import create_batch_generator
@@ -68,6 +69,13 @@ class FileHandler:
 
         self._producer_controls = {}
         self._producer_controls_lock = threading.Lock()
+
+        self._active_threads: Set[threading.Thread] = set()
+        self._shutdown_requested = False
+
+        # Register cleanup on process exit
+        import atexit
+        atexit.register(self._emergency_cleanup)
     
     def detect_format(self, file_path: str) -> str:
         """Memory-efficient format detection."""
@@ -178,6 +186,36 @@ class FileHandler:
         except Exception:
             return None
     
+    def _emergency_cleanup(self):
+        """Emergency cleanup for process shutdown."""
+        if not self._active_threads:
+            return
+            
+        logger.warning(f"[FileHandler] Emergency cleanup: {len(self._active_threads)} active threads")
+        
+        # Signal all threads to stop
+        self._shutdown_requested = True
+        for run_id, control in list(self._producer_controls.items()):
+            control["stop_event"].set()
+        
+        # Wait briefly for graceful shutdown
+        deadline = time.perf_counter() + 3.0
+        remaining_threads = list(self._active_threads)
+        
+        for thread in remaining_threads:
+            if time.perf_counter() >= deadline:
+                break
+            if thread.is_alive():
+                thread.join(timeout=0.5)
+            if not thread.is_alive():
+                self._active_threads.discard(thread)
+        
+        # Force kill remaining threads (Python limitation: we can't actually kill threads)
+        if self._active_threads:
+            logger.error(f"[FileHandler] {len(self._active_threads)} threads still alive, forcing process exit")
+            import os
+            os._exit(1)  # Nuclear option
+    
     
     async def generate_batches(self, file_path: str, headers: List[str], chunk_size: int = 20_000):
         """
@@ -217,10 +255,9 @@ class FileHandler:
         loop = asyncio.get_running_loop()
 
         def producer():
-            """Producer runs in a separate thread. Creates the generator here (heavy work off-loop)."""
+            """Enhanced producer with shutdown detection."""
             gen = None
             try:
-                # Create the synchronous generator in this thread (safe if heavy)
                 gen = create_batch_generator(
                     path=file_path,
                     headers=headers,
@@ -229,37 +266,65 @@ class FileHandler:
                     memory_monitor=self.memory_monitor,
                     file_format=file_format
                 )
+                import time
 
+                batch_count = 0
                 for batch in gen:
-                    # Respect stop request from consumer
-                    if stop_event.is_set():
-                        try:
-                            if hasattr(gen, "close"):
-                                gen.close()
-                        except Exception:
-                            logger.debug("[FileHandler] Failed to close generator during stop")
+                    # Check for shutdown more frequently
+                    if stop_event.is_set() or self._shutdown_requested:
+                        logger.debug(f"[FileHandler] Producer stopping after {batch_count} batches")
+                        break
+                    
+                    # Non-blocking queue put with timeout
+                    try:
+                        fut = asyncio.run_coroutine_threadsafe(
+                            asyncio.wait_for(q.put(batch), timeout=2.0), 
+                            loop
+                        )
+                        fut.result(timeout=3.0)  # Total timeout: 5s
+                        batch_count += 1
+                        
+                        # Yield CPU every 10 batches to check stop_event
+                        if batch_count % 10 == 0:
+                            time.sleep(0.001)
+                            
+                    except (asyncio.TimeoutError, concurrent.futures.TimeoutError):
+                        logger.warning(f"[FileHandler] Producer queue timeout, stopping")
+                        break
+                    except Exception as e:
+                        logger.error(f"[FileHandler] Producer queue error: {e}")
+                        asyncio.run_coroutine_threadsafe(q.put(e), loop)
                         break
 
-                    # Put batch into queue (blocks if queue is full)
-                    fut = asyncio.run_coroutine_threadsafe(q.put(batch), loop)
-                    fut.result()  # propagate errors
-
-                # Normal completion: signal sentinel
-                asyncio.run_coroutine_threadsafe(q.put(sentinel), loop).result()
+                # Signal completion only if we finished normally
+                if not (stop_event.is_set() or self._shutdown_requested):
+                    try:
+                        asyncio.run_coroutine_threadsafe(q.put(sentinel), loop).result(timeout=1.0)
+                    except Exception:
+                        pass  # Consumer may have already stopped
 
             except Exception as exc:
-                # Propagate exception into consumer
+                logger.exception(f"[FileHandler] Producer thread failed")
                 try:
-                    asyncio.run_coroutine_threadsafe(q.put(exc), loop).result()
+                    asyncio.run_coroutine_threadsafe(q.put(exc), loop).result(timeout=1.0)
                 except Exception:
-                    logger.exception("[FileHandler] Producer thread failed and couldn't notify consumer")
+                    pass
             finally:
-                # best-effort cleanup
+                # Aggressive cleanup
                 try:
                     if gen is not None and hasattr(gen, "close"):
                         gen.close()
                 except Exception:
                     pass
+                
+                # Remove from active threads
+                self._active_threads.discard(threading.current_thread())
+
+        # Create and track thread
+        t = threading.Thread(target=producer, daemon=True, name=f"FileHandler-{run_id[:8]}")
+        self._active_threads.add(t)
+        control["thread"] = t
+        t.start()
 
         # start daemon thread so it won't block process exit if something goes wrong
         # with the join during shutdown. Producer threads are short-lived for each
@@ -271,60 +336,58 @@ class FileHandler:
         # Return the async stream object (caller will `async for` on it)
         return AsyncBatchStream(self, run_id)
 
-
     async def stop(self, run_id: str, timeout: float = 5.0) -> bool:
-        """
-        Public API to stop a running producer identified by run_id.
-        Sets the stop_event and waits up to `timeout` seconds for the producer thread to join.
-        Returns True if joined, False otherwise.
-        """
+        """Enhanced stop with aggressive cleanup."""
         control = self._producer_controls.get(run_id)
         if not control:
-            return True  # already stopped/unknown -> treat as successful
+            return True
 
         stop_event: threading.Event = control["stop_event"]
         t: threading.Thread = control["thread"]
         q: asyncio.Queue = control["queue"]
-        sentinel = control["sentinel"]
 
-        # Ask producer to stop
+        # Signal stop immediately
         stop_event.set()
-
-        # If producer is blocked trying to put into queue (full), unblock it by consuming one item.
-        # We must not block the event loop here; use to_thread to try a quick get/remove if queue full.
+        
+        # Drain queue aggressively to unblock producer
+        drained_items = 0
         try:
-            # If queue appears full, try to pop one item to free space so writer can finish and detect stop_event.
-            if q.full():
+            while not q.empty() and drained_items < 20:  # Limit to prevent infinite loop
                 try:
-                    await asyncio.wait_for(q.get(), timeout=0.1)
+                    await asyncio.wait_for(q.get(), timeout=0.01)
+                    drained_items += 1
                 except asyncio.TimeoutError:
-                    pass
+                    break
         except Exception:
             pass
 
-        # Try to let the producer thread finish, but avoid blocking the event loop
-        # by polling the thread's liveness and yielding to the event loop with short sleeps.
-        try:
-            import time as _time
-            deadline = _time.perf_counter() + timeout
-            while t.is_alive() and _time.perf_counter() < deadline:
-                # Yield to the event loop to allow queued coroutine tasks to run
-                await asyncio.sleep(0.05)
-            joined = not t.is_alive()
-            if not joined:
-                logger.debug(f"[FileHandler] Producer thread did not join within timeout for run_id={run_id}")
-        except Exception:
-            joined = False
+        # Fast polling join with shorter timeout
+        deadline = time.perf_counter() + timeout
+        poll_interval = 0.02  # Poll every 20ms
+        
+        while t.is_alive() and time.perf_counter() < deadline:
+            await asyncio.sleep(poll_interval)
+            # Increase polling frequency as we approach timeout
+            if time.perf_counter() > deadline - 1.0:
+                poll_interval = 0.01
 
-        # cleanup control
-        try:
-            # drain the queue to avoid piling up memory (best-effort)
-            while not q.empty():
-                _ = q.get_nowait()
-        except Exception:
-            pass
-
+        joined = not t.is_alive()
+        
+        if not joined:
+            logger.warning(f"[FileHandler] Thread {t.name} did not join within {timeout}s")
+            # Remove from tracking anyway to prevent accumulation
+            self._active_threads.discard(t)
+        
+        # Final cleanup
         self._producer_controls.pop(run_id, None)
+        
+        # Drain remaining queue items
+        try:
+            while not q.empty():
+                q.get_nowait()
+        except Exception:
+            pass
+            
         return joined
     
     def estimate_memory_requirements(self, file_path: str, headers: List[str], chunk_size: int = 20_000) -> dict:
@@ -565,3 +628,28 @@ class FileHandler:
         except Exception as e:
             logger.error(f"Failed to optimize processing order: {e}")
             return file_paths
+
+    async def shutdown_all(self, timeout: float = 10.0) -> bool:
+        """Shutdown all active streams."""
+        if not self._producer_controls:
+            return True
+            
+        logger.info(f"[FileHandler] Shutting down {len(self._producer_controls)} active streams")
+        
+        # Stop all streams concurrently
+        stop_tasks = []
+        for run_id in list(self._producer_controls.keys()):
+            stop_tasks.append(self.stop(run_id, timeout=timeout/len(self._producer_controls)))
+        
+        if stop_tasks:
+            results = await asyncio.gather(*stop_tasks, return_exceptions=True)
+            all_stopped = all(r is True for r in results if not isinstance(r, Exception))
+        else:
+            all_stopped = True
+        
+        # Emergency cleanup for any remaining threads
+        if self._active_threads:
+            logger.warning(f"[FileHandler] {len(self._active_threads)} threads still active after shutdown")
+            self._emergency_cleanup()
+        
+        return all_stopped
