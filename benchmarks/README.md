@@ -1,52 +1,101 @@
-# CNPJ Benchmarking Suite
+# Enhanced CNPJ Benchmark Suite
 
 ## Overview
 
-This benchmarking suite compares **DuckDB** vs **Polars** for processing Brazilian Federal Revenue CNPJ data. It measures performance across ingestion, aggregation, and memory usage scenarios.
+This enhanced benchmark suite implements comprehensive performance testing for Brazilian Federal Revenue CNPJ data processing using modern data engineering practices. The suite provides:
+
+- **Multi-Engine Support**: Polars and DuckDB benchmarks with optimized configurations
+- **Memory Safety**: Real-time monitoring with automatic alerts and emergency stops
+- **Parallel Execution**: Resource-aware parallel processing with memory constraints
+- **Comprehensive Analysis**: Trend analysis, run comparisons, and detailed reporting
+- **Error Recovery**: Robust error handling with retry mechanisms and fallback strategies
+
+## Architecture
+
+### Core Components
+
+```
+benchmarks/
+├── config.py              # Centralized configuration system
+├── utils.py               # Enhanced utilities with memory safety
+├── base.py                # Abstract base classes
+├── monitoring.py          # Real-time monitoring system
+├── analysis.py            # Enhanced reporting and analysis
+├── parallel.py            # Parallel execution with resource management
+├── orchestrator.py        # Main orchestration system
+├── polars_enhanced.py     # Enhanced Polars benchmarks
+├── duckdb_enhanced.py     # Enhanced DuckDB benchmarks
+└── enhanced_runner.py     # Command-line interface
+```
+
+### Key Features
+
+#### 1. Memory Safety
+- **Real-time monitoring** with configurable thresholds
+- **Memory estimation** before benchmark execution
+- **Emergency stops** on critical memory pressure
+- **Garbage collection** optimization
+
+#### 2. Error Handling
+- **Status-based tracking** (COMPLETED, FAILED, SKIPPED, RUNNING)
+- **Recovery strategies** with retry mechanisms
+- **Graceful degradation** for failed benchmarks
+- **Comprehensive error reporting**
+
+#### 3. Configuration Management
+- **Centralized configuration** with BenchmarkConfig
+- **Brazilian CNPJ defaults** (ISO-8859-1 encoding, ';' delimiter)
+- **Auto-detection** of system resources
+- **Environment-specific** overrides
+
+#### 4. Parallel Processing
+- **Resource-aware scheduling** based on memory requirements
+- **Group-based execution** to prevent memory exhaustion
+- **Concurrent monitoring** with real-time alerts
+- **Automatic load balancing**
 
 ## Quick Start
 
-### 1. Run Quick Test (Recommended)
-Test with a small subset of your data:
+### Installation
 
 ```bash
-# Quick test with 2 files
-python3 -m benchmarks.quick_benchmark
+# Install dependencies
+pip install polars duckdb psutil
+
+# Verify installation
+python -c "import polars, duckdb, psutil; print('All dependencies available')"
 ```
 
-### 2. Full Benchmark
-Run comprehensive benchmarks on your entire dataset:
+### Basic Usage
 
 ```bash
-# Full benchmark on estabelecimento files
+# Simple benchmark on CSV files
+python benchmarks/enhanced_runner.py --files data/*.csv --engines polars duckdb
+
+# Custom memory limit and parallel execution
+python benchmarks/enhanced_runner.py --files data/*.csv --memory-limit 16 --parallel
+
+# Ingestion benchmarks only
+python benchmarks/enhanced_runner.py --files data/*.csv --ingestion-only
+
+# Query benchmarks with specific data file
+python benchmarks/enhanced_runner.py --files data/empresas.csv --queries-only
+```
+
+## Legacy Benchmarks (Still Available)
+
+The original benchmark suite is still available for compatibility:
+
+```bash
+# Quick test with original benchmarks
+python3 -m benchmarks.quick_benchmark
+
+# Full benchmark on estabelecimento files  
 python3 -m benchmarks.run_benchmarks --data-dir data --pattern "*ESTABELE*"
 
-# Benchmark with memory limit
-python3 -m benchmarks.run_benchmarks --memory-limit 6GB --max-files 5
-
-# Skip DuckDB or Polars tests
-python3 -m benchmarks.run_benchmarks --skip-duckdb
-python3 -m benchmarks.run_benchmarks --skip-polars
+# Analyze original results
+python3 -m benchmarks.analyze_results benchmark_output/benchmark_results_*.json
 ```
-
-### 3. Analyze Results
-Generate visualizations and analysis:
-
-```bash
-# Analyze results from a benchmark run
-python3 -m benchmarks.analyze_results benchmark_output/benchmark_results_YYYYMMDD_HHMMSS.json
-```
-
-## What Gets Measured
-
-### Performance Metrics
-- **Duration**: Total processing time
-- **Peak Memory**: Maximum RAM usage during processing
-- **Memory Delta**: Net memory change
-- **CPU Usage**: Average CPU utilization
-- **I/O**: Disk read/write volumes
-- **Compression Ratio**: Input vs output file size
-- **Throughput**: Rows processed per second
 
 ### Test Scenarios
 
