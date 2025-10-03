@@ -25,6 +25,38 @@ from ..memory.service import MemoryMonitor
 from ..audit.service import AuditService
 from .file_handler import FileHandler
 
+import time
+from collections import defaultdict
+from contextlib import contextmanager
+
+class PerformanceProfiler:
+    """Lightweight profiler for identifying bottlenecks."""
+    
+    def __init__(self):
+        self.timings = defaultdict(list)
+        self.call_counts = defaultdict(int)
+    
+    @contextmanager
+    def measure(self, operation: str):
+        start = time.perf_counter()
+        try:
+            yield
+        finally:
+            elapsed = time.perf_counter() - start
+            self.timings[operation].append(elapsed)
+            self.call_counts[operation] += 1
+    
+    def report(self) -> dict:
+        return {
+            op: {
+                'count': self.call_counts[op],
+                'total_ms': sum(times) * 1000,
+                'avg_ms': (sum(times) / len(times)) * 1000,
+                'max_ms': max(times) * 1000,
+            }
+            for op, times in self.timings.items()
+        }
+
 
 class FileLoadingService:
     """
@@ -45,6 +77,7 @@ class FileLoadingService:
         # Initialize service components
         self.file_handler = FileHandler(config)
         self.database_service = DatabaseService(database, self.memory_monitor)
+        self._profiler = PerformanceProfiler()
 
         self._connection_pool = None
         self._pool_lock = None
@@ -129,7 +162,7 @@ class FileLoadingService:
         logger.info(f"[LoadingService] Loading table '{table_name}'")
         
         # Memory check before processing
-        if self.memory_monitor and self.memory_monitor.should_prevent_processing():
+        if self.memory_monitor.should_prevent_processing():
             error_msg = "Insufficient memory to process table"
             logger.error(f"[LoadingService] {error_msg}")
             return False, error_msg, 0
@@ -245,7 +278,7 @@ class FileLoadingService:
             logger.info(f"[LoadingService] Successfully loaded {rows:,} rows from {csv_file.name}")
             
             # Memory cleanup between files
-            if self.memory_monitor and self.memory_monitor.is_memory_pressure_high():
+            if self.memory_monitor.is_memory_pressure_high():
                 cleanup_stats = self.memory_monitor.perform_aggressive_cleanup()
                 logger.info(f"Inter-file cleanup freed {cleanup_stats.get('freed_mb', 0):.1f}MB")
         
@@ -260,7 +293,7 @@ class FileLoadingService:
             # Get processing recommendations from FileHandler
             recommendations = self.file_handler.get_recommended_processing_params(str(file_path), table_info.columns)
             logger.debug(f"[LoadingService] Processing recommendations: {recommendations}")
-            
+        
             # Memory check before processing
             if recommendations.get('memory_info', {}).get('should_prevent', False):
                 error_msg = "Memory constraints prevent processing this file"
@@ -268,7 +301,7 @@ class FileLoadingService:
                 return False, error_msg, 0
             
             return await self._async_load_single_file(
-                table_info, file_path, table_name, recommendations
+                table_info, file_path, recommendations
             )
                 
         except Exception as e:
@@ -279,12 +312,13 @@ class FileLoadingService:
         self, 
         table_info: TableInfo, 
         file_path: Path, 
-        table_name: str,
         recommendations: dict
     ) -> Tuple[bool, Optional[str], int]:
         """
         Async implementation of single file loading.
         """
+
+        table_name=table_info.table_name
 
         # Generate batches using FileHandler
         stream  = await self.file_handler.generate_batches(
@@ -305,26 +339,28 @@ class FileLoadingService:
 
             # Create file manifest if audit service available
             file_manifest_id = None
-            if table_manifest_id and self.audit_service:
-                file_manifest_id = await asyncio.to_thread(
-                    self._create_file_manifest,
-                    str(file_path), table_name, table_manifest_id
-                )
+            if table_manifest_id:
+                with self._profiler.measure('audit_create_file_manifest'):
+                    file_manifest_id = await asyncio.to_thread(
+                        self._create_file_manifest,
+                        str(file_path), table_name, table_manifest_id
+                    )
 
             # Start a top-level batch to group all batches for this file (audit entries are sync)
             batch_id = None
-            if file_manifest_id and self.audit_service:
-                try:
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-                    batch_name = f"FileLoad_{file_path.name}_{timestamp}"
-                    batch_id = await asyncio.to_thread(
-                        self.audit_service._start_batch,
-                        table_name,
-                        batch_name,
-                        file_manifest_id
-                    )
-                except Exception:
-                    batch_id = None
+            if file_manifest_id:
+                with self._profiler.measure('batch_audit_start'):
+                    try:
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+                        batch_name = f"FileLoad_{file_path.name}_{timestamp}"
+                        batch_id = await asyncio.to_thread(
+                            self.audit_service._start_batch,
+                            table_name,
+                            batch_name,
+                            file_manifest_id
+                        )
+                    except Exception:
+                        batch_id = None
 
             # Process file with batch context management
             total_processed_rows = 0
@@ -334,57 +370,60 @@ class FileLoadingService:
                 async for batch_chunk in stream:
                     batch_num += 1
                     
-                    # Memory check before each batch
-                    if self.memory_monitor and self.memory_monitor.should_prevent_processing():
-                        error_msg = f"Memory limit exceeded at batch {batch_num}"
-                        logger.error(f"[LoadingService] {error_msg}")
+                    with self._profiler.measure('batch_total'):
+                        # Memory check before each batch
+                        if self.memory_monitor.should_prevent_processing():
+                            error_msg = f"Memory limit exceeded at batch {batch_num}"
+                            logger.error(f"[LoadingService] {error_msg}")
+                            
+                            await asyncio.to_thread(
+                                self._update_file_manifest,
+                                file_manifest_id, AuditStatus.FAILED, total_processed_rows, error_msg
+                            )
+                            
+                            return False, error_msg, total_processed_rows
                         
-                        await asyncio.to_thread(
-                            self._update_file_manifest,
-                            file_manifest_id, AuditStatus.FAILED, total_processed_rows, error_msg
-                        )
+                        # Process batch using async DatabaseService directly
+                        with self._profiler.measure('batch_database_write'):
+                            success, error, rows = await self._async_process_batch_with_context(
+                                batch_chunk=batch_chunk,
+                                pool=pool,
+                                table_info=table_info,
+                                table_name=table_name,
+                                batch_num=batch_num,
+                                file_manifest_id=file_manifest_id,
+                                table_manifest_id=table_manifest_id,
+                                batch_id=batch_id,
+                                recommendations=recommendations
+                            )
                         
-                        return False, error_msg, total_processed_rows
+                        if not success:
+                            await asyncio.to_thread(
+                                self._update_file_manifest,
+                                file_manifest_id, AuditStatus.FAILED, total_processed_rows, error
+                            )
+                            return False, error, total_processed_rows
+                        
+                        total_processed_rows += rows
+                        logger.debug(f"[LoadingService] Batch {batch_num} completed: {rows} rows")
                     
-                    # Process batch using async DatabaseService directly
-                    success, error, rows = await self._async_process_batch_with_context(
-                        batch_chunk=batch_chunk,
-                        pool=pool,
-                        table_info=table_info,
-                        table_name=table_name,
-                        batch_num=batch_num,
-                        file_manifest_id=file_manifest_id,
-                        table_manifest_id=table_manifest_id,
-                        batch_id=batch_id,
-                        recommendations=recommendations
-                    )
-                    
-                    if not success:
-                        await asyncio.to_thread(
-                            self._update_file_manifest,
-                            file_manifest_id, AuditStatus.FAILED, total_processed_rows, error
-                        )
-                        return False, error, total_processed_rows
-                    
-                    total_processed_rows += rows
-                    logger.debug(f"[LoadingService] Batch {batch_num} completed: {rows} rows")
-                
                 # Mark file as completed
-                await asyncio.to_thread(
-                    self._update_file_manifest,
-                    file_manifest_id, AuditStatus.COMPLETED, total_processed_rows
-                )
+                with self._profiler.measure('batch_audit_complete'):
+                    await asyncio.to_thread(
+                        self._update_file_manifest,
+                        file_manifest_id, AuditStatus.COMPLETED, total_processed_rows
+                    )
 
-                # Complete the top-level batch grouping this file
-                if batch_id and self.audit_service:
-                    try:
-                        await asyncio.to_thread(
-                            self.audit_service._complete_batch_with_accumulated_metrics,
-                            batch_id,
-                            AuditStatus.COMPLETED
-                        )
-                    except Exception:
-                        pass
+                    # Complete the top-level batch grouping this file
+                    if batch_id:
+                        try:
+                            await asyncio.to_thread(
+                                self.audit_service._complete_batch_with_accumulated_metrics,
+                                batch_id,
+                                AuditStatus.COMPLETED
+                            )
+                        except Exception:
+                            pass
                 
                 logger.info(f"[LoadingService] File processing complete: {total_processed_rows} total rows")
                 return True, None, total_processed_rows
@@ -399,6 +438,10 @@ class FileLoadingService:
                 return False, str(e), total_processed_rows
             
             finally:
+                # Log profiler report
+                report = self._profiler.report()
+                logger.info(f"[Profile] File {file_path.name}: {json.dumps(report, indent=2)}")
+                
                 await stream.stop()
             
                 
@@ -459,7 +502,7 @@ class FileLoadingService:
                     
                     # If we have an audit batch, create a subbatch and record metrics
                     rows_processed = len(transformed_batch)
-                    if batch_id and self.audit_service:
+                    if batch_id:
                         try:
                             subbatch_name = f"Subbatch_batch{batch_num}_rows{rows_processed}"
                             subbatch_id = await asyncio.to_thread(
@@ -498,7 +541,7 @@ class FileLoadingService:
         except Exception as e:
             # If we have batch context, try to mark a failed subbatch for diagnostics
             try:
-                if batch_id and self.audit_service:
+                if batch_id:
                     failed_subbatch = await asyncio.to_thread(
                         self.audit_service._start_subbatch,
                         batch_id,
@@ -532,7 +575,7 @@ class FileLoadingService:
         table_names = list(table_to_files.keys())
         
         # Memory pre-check
-        if self.memory_monitor and not self._perform_memory_precheck(table_to_files):
+        if not self._perform_memory_precheck(table_to_files):
             raise MemoryError("Insufficient memory to process all tables")
         
         # Optimize processing order
@@ -599,7 +642,7 @@ class FileLoadingService:
             logger.info(f"[LoadingService] Processing table '{table_name}'")
             
             # Memory check before each table
-            if self.memory_monitor and self.memory_monitor.should_prevent_processing():
+            if self.memory_monitor.should_prevent_processing():
                 error_msg = f"Memory limit exceeded before processing {table_name}"
                 logger.error(f"[LoadingService] {error_msg}")
                 results[table_name] = (False, error_msg, 0)
@@ -615,7 +658,7 @@ class FileLoadingService:
             )
             
             # Inter-table cleanup
-            if self.memory_monitor and self.memory_monitor.is_memory_pressure_high():
+            if self.memory_monitor.is_memory_pressure_high():
                 cleanup_stats = self.memory_monitor.perform_aggressive_cleanup()
                 logger.info(f"Inter-table cleanup freed {cleanup_stats.get('freed_mb', 0):.1f}MB")
         
