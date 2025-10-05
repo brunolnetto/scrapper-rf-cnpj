@@ -1,537 +1,635 @@
 #!/usr/bin/env python3
 """
-Polars benchmark implementation for CNPJ processing.
+CSV → Postgres ingestion with Polars, rich.progress, connection pooling,
+zero-copy ingestion, dynamic schema inference, resumable ingestion,
+and process/thread-based parallelism.
 """
 
-import sys
-import os
+import argparse, glob, io, json, os, time, re
 from pathlib import Path
-sys.path.append(str(Path(__file__).parent.parent))
-
-import polars as pl
-import time
-import psutil
-from typing import Optional, Dict, Any, Union
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 import logging
 
-from .utils import benchmark_context, BenchmarkResult, get_file_size_gb, cleanup_memory
+import polars as pl
+from psycopg2.extras import execute_values
+from psycopg2.pool import ThreadedConnectionPool
 
-logger = logging.getLogger(__name__)
+from rich.progress import (
+    Progress, SpinnerColumn, TextColumn, BarColumn, 
+    TimeElapsedColumn, TaskProgressColumn, MofNCompleteColumn,
+    ProgressColumn
+)
+from rich.text import Text
 
-class PolarsBenchmark:
-    """Benchmark Polars for CNPJ processing tasks."""
+# ---------------- Logging ----------------
+logging.basicConfig(filename="ingest_errors.log", level=logging.ERROR)
+
+# ---------------- Utilities ----------------
+def human_bytes(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024:
+            return f"{n:.1f}{unit}"
+        n /= 1024
+    return f"{n:.1f}PB"
+
+def sanitize_column_name(col_name: str, idx: int) -> str:
+    safe_name = col_name.lower().strip()
+    safe_name = re.sub(r'[^a-z0-9_]', '_', safe_name)
+    safe_name = re.sub(r'^_+|_+$', '', safe_name)
+    safe_name = re.sub(r'_+', '_', safe_name)
+    if safe_name and safe_name[0].isdigit():
+        safe_name = f"col_{safe_name}"
+    if not safe_name:
+        safe_name = f"col_{idx}"
+    return safe_name
+
+def strip_null_bytes_polars(batch: pl.DataFrame) -> pl.DataFrame:
+    """Strip null bytes from all string columns efficiently in Polars"""
+    string_cols = [col for col in batch.columns if batch[col].dtype == pl.Utf8]
+    if not string_cols:
+        return batch
+    return batch.with_columns([pl.col(col).str.replace_all('\x00', '') for col in string_cols])
+
+def detect_separator(file_path: str) -> str:
+    """Auto-detect CSV separator by reading first line"""
+    with open(file_path, "r", errors="replace") as f:
+        header_line = f.readline()
     
-    def __init__(self, 
-                 max_threads: Optional[int] = None,
-                 streaming: bool = True,
-                 chunk_size: int = 50000):
-        """
-        Initialize Polars benchmark.
-        
-        Args:
-            max_threads: Maximum number of threads for Polars
-            streaming: Whether to use streaming execution
-            chunk_size: Chunk size for processing
-        """
-        self.streaming = streaming
-        self.chunk_size = chunk_size
-        self.max_threads = max_threads
-        
-        # Note: Polars automatically manages thread pool size
-        # Manual thread pool configuration is deprecated in modern versions
-        if max_threads:
-            logger.info(f"Note: max_threads parameter set to {max_threads} but Polars manages threads automatically")
-            
-        logger.info(f"Polars setup: streaming={streaming}, chunk_size={chunk_size}")
+    # Try different separators and count columns
+    candidates = []
+    for sep in [",", ";", "\t", "|"]:
+        col_count = len(header_line.split(sep))
+        if col_count > 1:
+            candidates.append((sep, col_count))
     
-    def benchmark_csv_ingestion(self, 
-                               csv_files: list[Path], 
-                               output_path: Path,
-                               delimiter: str = ";",
-                               encoding: str = "utf8-lossy",
-                               memory_limit_gb: float = 8.0) -> BenchmarkResult:
-        """
-        Benchmark CSV ingestion with Polars.
-        
-        Args:
-            csv_files: List of CSV files to ingest
-            output_path: Output parquet file path
-            delimiter: CSV delimiter
-            encoding: File encoding
-            
-        Returns:
-            BenchmarkResult with performance metrics
-        """
-        if not csv_files:
-            raise ValueError("No CSV files provided")
-            
-        # Calculate input size
-        input_size_gb = sum(get_file_size_gb(f) for f in csv_files)
-        
-        with benchmark_context(f"Polars CSV Ingestion ({input_size_gb:.2f}GB)") as monitor:
-            try:
-                # Memory safety: Check if file is too large for available memory
-                available_memory_gb = psutil.virtual_memory().available / (1024**3)
-                if input_size_gb > (memory_limit_gb * 0.8):  # 80% safety margin
-                    logger.warning(f"Input size ({input_size_gb:.1f}GB) exceeds memory limit ({memory_limit_gb:.1f}GB), falling back to chunked processing")
-                    return self._fallback_to_chunked_processing(csv_files, output_path, delimiter, encoding, monitor)
-                
-                # Strategy 1: Try lazy scan with streaming
-                # CNPJ files don't have .csv extension, so we need to pass actual file paths
-                if len(csv_files) == 1:
-                    file_pattern = str(csv_files[0])
-                else:
-                    # For multiple files, Polars can accept a list of paths
-                    file_pattern = [str(f) for f in csv_files]
-                
-                logger.info(f"Starting Polars lazy scan: {len(csv_files)} file(s)")
-                
-                # Create lazy frame with memory-friendly settings
-                lazy_df = pl.scan_csv(
-                    file_pattern,
-                    separator=delimiter,
-                    encoding=encoding,
-                    infer_schema_length=min(1000, 100),  # Limit schema inference
-                    ignore_errors=True,  # Handle malformed rows
-                    has_header=False,  # CNPJ files typically don't have headers
-                    low_memory=True  # Enable low memory mode
-                )
-                
-                monitor.update_peak_memory()
-                
-                # Monitor memory during collection
-                memory_before_collect = monitor.get_current_stats()['current_memory_gb']
-                
-                # Process and collect with streaming
-                logger.info("Collecting data with streaming execution")
-                
-                if self.streaming:
-                    # Use streaming with memory monitoring
-                    df = lazy_df.collect(streaming=True)
-                else:
-                    # Check memory before eager collection
-                    if memory_before_collect > (memory_limit_gb * 0.6):
-                        logger.warning("Memory usage high, switching to streaming mode")
-                        df = lazy_df.collect(streaming=True)
-                    else:
-                        df = lazy_df.collect()
-                
-                monitor.update_peak_memory()
-                
-                rows_processed = len(df)
-                logger.info(f"Processed {rows_processed:,} rows")
-                
-                # Write to parquet with memory monitoring
-                output_size_gb = None
-                compression_ratio = None
-                
-                if output_path:
-                    logger.info(f"Writing to parquet: {output_path}")
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    
-                    # Monitor memory during write
-                    memory_before_write = monitor.get_current_stats()['current_memory_gb']
-                    
-                    df.write_parquet(
-                        output_path, 
-                        compression="zstd",
-                        compression_level=3,  # Balance compression vs speed
-                        statistics=True,
-                        use_pyarrow=False  # Use Polars native writer
-                    )
-                    
-                    monitor.update_peak_memory()
-                    output_size_gb = get_file_size_gb(output_path)
-                    compression_ratio = input_size_gb / output_size_gb if output_size_gb > 0 else None
-                
-                # Clean up DataFrame and force garbage collection
-                del df
-                cleanup_memory()
-                
-                # Get final stats
-                stats = monitor.finish()
-                
-                return BenchmarkResult(
-                    name=f"Polars_CSV_Ingestion_{'streaming' if self.streaming else 'eager'}",
-                    duration_seconds=stats['duration_seconds'],
-                    peak_memory_gb=stats['peak_memory_gb'],
-                    start_memory_gb=stats['start_memory_gb'],
-                    end_memory_gb=stats['end_memory_gb'],
-                    memory_delta_gb=stats['memory_delta_gb'],
-                    cpu_percent=stats['cpu_percent'],
-                    io_read_gb=stats['io_read_gb'],
-                    io_write_gb=stats['io_write_gb'],
-                    output_size_gb=output_size_gb,
-                    compression_ratio=compression_ratio,
-                    rows_processed=rows_processed,
-                    metadata={
-                        'input_size_gb': input_size_gb,
-                        'input_files': len(csv_files),
-                        'streaming': self.streaming,
-                        'chunk_size': self.chunk_size,
-                        'threads': pl.threadpool_size(),
-                        'delimiter': delimiter,
-                        'encoding': encoding,
-                        'memory_limit_gb': memory_limit_gb,
-                        'memory_safety_used': False
-                    }
-                )
-                
-            except MemoryError as e:
-                logger.error(f"Polars memory error: {e}")
-                # Fallback to chunked processing
-                return self._fallback_to_chunked_processing(csv_files, output_path, delimiter, encoding, monitor)
-                
-            except Exception as e:
-                stats = monitor.finish()
-                logger.error(f"Polars benchmark failed: {e}")
-                
-                return BenchmarkResult(
-                    name=f"Polars_CSV_Ingestion_{'streaming' if self.streaming else 'eager'}_FAILED",
-                    duration_seconds=stats['duration_seconds'],
-                    peak_memory_gb=stats['peak_memory_gb'],
-                    start_memory_gb=stats['start_memory_gb'],
-                    end_memory_gb=stats['end_memory_gb'],
-                    memory_delta_gb=stats['memory_delta_gb'],
-                    cpu_percent=stats['cpu_percent'],
-                    io_read_gb=stats['io_read_gb'],
-                    io_write_gb=stats['io_write_gb'],
-                    errors=str(e),
-                    metadata={
-                        'input_size_gb': input_size_gb,
-                        'streaming': self.streaming,
-                        'chunk_size': self.chunk_size,
-                        'threads': pl.threadpool_size(),
-                        'memory_limit_gb': memory_limit_gb
-                    }
-                )
+    # Return separator with most columns
+    if candidates:
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        return candidates[0][0]
+    return ","
+
+def validate_batch_columns(batch: pl.DataFrame, expected_count: int, file_path: str) -> pl.DataFrame:
+    """Validate and fix batch column count to match table schema"""
+    actual_count = len(batch.columns)
     
-    def _fallback_to_chunked_processing(self, 
-                                       csv_files: list[Path], 
-                                       output_path: Path, 
-                                       delimiter: str, 
-                                       encoding: str, 
-                                       monitor) -> BenchmarkResult:
-        """Fallback to chunked processing when memory is constrained."""
-        logger.info("Using chunked processing fallback due to memory constraints")
-        
+    if actual_count == expected_count:
+        return batch
+    
+    if actual_count < expected_count:
+        # Add missing columns with empty strings
+        missing = expected_count - actual_count
+        for i in range(missing):
+            batch = batch.with_columns(pl.lit("").alias(f"_padding_{i}"))
+        logging.warning(f"{file_path}: Added {missing} padding columns ({actual_count} -> {expected_count})")
+    else:
+        # Too many columns - truncate
+        batch = batch.select(batch.columns[:expected_count])
+        logging.warning(f"{file_path}: Truncated {actual_count - expected_count} extra columns ({actual_count} -> {expected_count})")
+    
+    return batch
+
+def create_table_from_df(cursor, pg_table: str, sample_df: pl.DataFrame):
+    col_defs = [f'"{sanitize_column_name(c, i)}" text' for i, c in enumerate(sample_df.columns)]
+    create_sql = f"CREATE UNLOGGED TABLE IF NOT EXISTS {pg_table} (\n  {',\n  '.join(col_defs)}\n);"
+    print(create_sql)
+    cursor.execute(create_sql)
+
+# ---------------- Custom Rich Column ----------------
+from rich.progress import ProgressColumn
+
+class FilesCompleteColumn(ProgressColumn):
+    """Display files completed out of total"""
+    def render(self, task):
+        files_done = task.fields.get('files_done', 0)
+        total_files = task.fields.get('total_files', 0)
+        return Text(f"files: {files_done}/{total_files}", style="cyan")
+
+class ThroughputColumn(ProgressColumn):
+    """Display average throughput"""
+    def render(self, task):
+        avg = task.fields.get('avg', 0)
+        return Text(f"{avg:,.0f} rows/s", style="green")
+
+# ---------------- Progress ----------------
+class RichProgressManager:
+    """Thread-safe Rich.Progress manager"""
+    def __init__(self, min_update_interval=0.25):
+        self.lock = Lock()
+        self.stats = {}
+        self.total_rows_completed = 0
+        self.files_done = 0
+        self.last_update = 0.0
+        self.min_update_interval = min_update_interval
+        self.overall_start = time.perf_counter()
+
+        self.progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]{task.description}", justify="left"),
+            BarColumn(bar_width=40),
+            TaskProgressColumn(),
+            ThroughputColumn(),
+            FilesCompleteColumn(),
+            TimeElapsedColumn(),
+            refresh_per_second=4,
+            transient=False,
+        )
+        self.global_task = None
+
+    def __enter__(self):
+        self.progress.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
         try:
-            # Use the existing chunked processing method
-            return self.benchmark_chunked_processing(
-                csv_files=csv_files,
-                output_path=output_path,
-                delimiter=delimiter,
-                encoding=encoding
-            )
-        except Exception as e:
-            stats = monitor.finish()
-            return BenchmarkResult(
-                name="Polars_CSV_Ingestion_CHUNKED_FALLBACK_FAILED",
-                duration_seconds=stats['duration_seconds'],
-                peak_memory_gb=stats['peak_memory_gb'],
-                start_memory_gb=stats['start_memory_gb'],
-                end_memory_gb=stats['end_memory_gb'],
-                memory_delta_gb=stats['memory_delta_gb'],
-                cpu_percent=stats['cpu_percent'],
-                io_read_gb=stats['io_read_gb'],
-                io_write_gb=stats['io_write_gb'],
-                errors=f"Chunked fallback failed: {str(e)}",
-                metadata={'fallback_used': True}
-            )
-    
-    def benchmark_chunked_processing(self, 
-                                   csv_files: list[Path], 
-                                   output_path: Path,
-                                   delimiter: str = ";",
-                                   encoding: str = "utf8-lossy") -> BenchmarkResult:
-        """
-        Benchmark chunked CSV processing (fallback strategy).
-        
-        Args:
-            csv_files: List of CSV files to process
-            output_path: Output parquet file path
-            delimiter: CSV delimiter
-            encoding: File encoding
-            
-        Returns:
-            BenchmarkResult with performance metrics
-        """
-        input_size_gb = sum(get_file_size_gb(f) for f in csv_files)
-        
-        with benchmark_context(f"Polars Chunked Processing ({input_size_gb:.2f}GB)") as monitor:
-            try:
-                total_rows = 0
-                chunk_files = []
-                
-                # Process each file in chunks
-                for i, csv_file in enumerate(csv_files):
-                    logger.info(f"Processing file {i+1}/{len(csv_files)}: {csv_file.name}")
-                    
-                    # Read file in batches
-                    batch_reader = pl.read_csv_batched(
-                        csv_file,
-                        separator=delimiter,
-                        encoding=encoding,
-                        batch_size=self.chunk_size,
-                        ignore_errors=True,
-                        has_header=False
-                    )
-                    
-                    file_chunks = []
-                    batch_idx = 0
-                    
-                    # Use next_batches() method to iterate over batches
-                    while True:
-                        batches = batch_reader.next_batches(1)
-                        if not batches:
-                            break
-                        
-                        for batch_df in batches:
-                            monitor.update_peak_memory()
-                            
-                            # Simple processing (you can add transformations here)
-                            processed_df = batch_df
-                            
-                            # Write chunk to temporary parquet
-                            chunk_path = output_path.parent / f"chunk_{i}_{batch_idx}.parquet"
-                            processed_df.write_parquet(chunk_path, compression="zstd")
-                            file_chunks.append(chunk_path)
-                            
-                            total_rows += len(processed_df)
-                            batch_idx += 1
-                            
-                            # Clean up batch
-                            del processed_df
-                        
-                    chunk_files.extend(file_chunks)
-                
-                monitor.update_peak_memory()
-                
-                # Combine chunks into final parquet
-                logger.info(f"Combining {len(chunk_files)} chunks into final parquet")
-                
-                # Read all chunks and combine
-                combined_df = pl.concat([
-                    pl.read_parquet(chunk_path) 
-                    for chunk_path in chunk_files
-                ])
-                
-                monitor.update_peak_memory()
-                
-                # Write final output
-                if output_path:
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    combined_df.write_parquet(output_path, compression="zstd")
-                    
-                    # Clean up chunk files
-                    for chunk_path in chunk_files:
-                        chunk_path.unlink()
-                
-                output_size_gb = get_file_size_gb(output_path) if output_path else None
-                compression_ratio = input_size_gb / output_size_gb if output_size_gb and output_size_gb > 0 else None
-                
-                # Clean up
-                del combined_df
-                cleanup_memory()
-                
-                # Get final stats
-                stats = monitor.finish()
-                
-                return BenchmarkResult(
-                    name="Polars_Chunked_Processing",
-                    duration_seconds=stats['duration_seconds'],
-                    peak_memory_gb=stats['peak_memory_gb'],
-                    start_memory_gb=stats['start_memory_gb'],
-                    end_memory_gb=stats['end_memory_gb'],
-                    memory_delta_gb=stats['memory_delta_gb'],
-                    cpu_percent=stats['cpu_percent'],
-                    io_read_gb=stats['io_read_gb'],
-                    io_write_gb=stats['io_write_gb'],
-                    output_size_gb=output_size_gb,
-                    compression_ratio=compression_ratio,
-                    rows_processed=total_rows,
-                    metadata={
-                        'input_size_gb': input_size_gb,
-                        'input_files': len(csv_files),
-                        'chunk_size': self.chunk_size,
-                        'total_chunks': len(chunk_files),
-                        'threads': pl.threadpool_size()
-                    }
-                )
-                
-            except Exception as e:
-                stats = monitor.finish()
-                logger.error(f"Polars chunked processing failed: {e}")
-                
-                # Clean up chunk files on error
-                for chunk_path in chunk_files:
-                    try:
-                        chunk_path.unlink()
-                    except:
-                        pass
-                
-                return BenchmarkResult(
-                    name="Polars_Chunked_Processing_FAILED",
-                    duration_seconds=stats['duration_seconds'],
-                    peak_memory_gb=stats['peak_memory_gb'],
-                    start_memory_gb=stats['start_memory_gb'],
-                    end_memory_gb=stats['end_memory_gb'],
-                    memory_delta_gb=stats['memory_delta_gb'],
-                    cpu_percent=stats['cpu_percent'],
-                    io_read_gb=stats['io_read_gb'],
-                    io_write_gb=stats['io_write_gb'],
-                    errors=str(e),
-                    metadata={
-                        'input_size_gb': input_size_gb,
-                        'chunk_size': self.chunk_size
-                    }
-                )
-    
-    def benchmark_parquet_aggregation(self, 
-                                    parquet_path: Path,
-                                    result_name: str) -> BenchmarkResult:
-        """
-        Benchmark aggregation operations on parquet data.
-        
-        Args:
-            parquet_path: Path to parquet file
-            result_name: Name for the benchmark
-            
-        Returns:
-            BenchmarkResult with performance metrics
-        """
-        with benchmark_context(f"Polars Parquet Aggregation ({result_name})") as monitor:
-            try:
-                # Lazy scan parquet
-                lazy_df = pl.scan_parquet(parquet_path)
-                
-                # Example aggregation - adapt based on your actual columns
-                agg_query = (lazy_df
-                    .group_by("column_2")  # Assuming this is UF or similar
-                    .agg([
-                        pl.count().alias("count"),
-                        pl.col("column_1").n_unique().alias("unique_values")
-                    ])
-                    .sort("count", descending=True)
-                )
-                
-                monitor.update_peak_memory()
-                
-                # Execute with streaming
-                result_df = agg_query.collect(streaming=self.streaming)
-                
-                monitor.update_peak_memory()
-                
-                rows_processed = len(result_df)
-                
-                # Clean up
-                del result_df
-                cleanup_memory()
-                
-                # Get final stats
-                stats = monitor.finish()
-                
-                return BenchmarkResult(
-                    name=f"Polars_Parquet_Aggregation_{result_name}",
-                    duration_seconds=stats['duration_seconds'],
-                    peak_memory_gb=stats['peak_memory_gb'],
-                    start_memory_gb=stats['start_memory_gb'],
-                    end_memory_gb=stats['end_memory_gb'],
-                    memory_delta_gb=stats['memory_delta_gb'],
-                    cpu_percent=stats['cpu_percent'],
-                    io_read_gb=stats['io_read_gb'],
-                    io_write_gb=stats['io_write_gb'],
-                    rows_processed=rows_processed,
-                    metadata={
-                        'parquet_size_gb': get_file_size_gb(parquet_path),
-                        'streaming': self.streaming,
-                        'threads': pl.threadpool_size()
-                    }
-                )
-                
-            except Exception as e:
-                stats = monitor.finish()
-                logger.error(f"Polars parquet aggregation failed: {e}")
-                
-                return BenchmarkResult(
-                    name=f"Polars_Parquet_Aggregation_{result_name}_FAILED",
-                    duration_seconds=stats['duration_seconds'],
-                    peak_memory_gb=stats['peak_memory_gb'],
-                    start_memory_gb=stats['start_memory_gb'],
-                    end_memory_gb=stats['end_memory_gb'],
-                    memory_delta_gb=stats['memory_delta_gb'],
-                    cpu_percent=stats['cpu_percent'],
-                    io_read_gb=stats['io_read_gb'],
-                    io_write_gb=stats['io_write_gb'],
-                    errors=str(e),
-                    metadata={
-                        'streaming': self.streaming
-                    }
-                )
+            self.progress.stop()
+        except Exception:
+            pass
 
-def run_polars_benchmarks(csv_files: list[Path], 
-                         output_dir: Path,
-                         max_threads: Optional[int] = None,
-                         memory_limit_gb: float = 8.0) -> list[BenchmarkResult]:
-    """
-    Run comprehensive Polars benchmarks with memory safety.
+    def init_global_task(self, total_files):
+        with self.lock:
+            self.global_task = self.progress.add_task(
+                "TOTAL PROGRESS", 
+                total=None,  # Indeterminate total (we don't know total rows upfront)
+                avg=0, 
+                files_done=0, 
+                total_files=total_files
+            )
+            self.overall_start = time.perf_counter()
+
+    def start_file(self, filename: str, total_rows=None):
+        with self.lock:
+            task_id = self.progress.add_task(
+                filename, 
+                total=total_rows,  # May be None if unknown
+                avg=0,
+                files_done=self.files_done,
+                total_files=0  # Not used for file tasks
+            )
+            self.stats[task_id] = {"rows": 0, "start": time.perf_counter()}
+            return task_id
+
+    def update_file(self, task_id, rows_delta: int):
+        now = time.perf_counter()
+        with self.lock:
+            s = self.stats.get(task_id)
+            if not s:
+                return
+            s["rows"] += rows_delta
+            self.total_rows_completed += rows_delta
+
+            elapsed = max(1e-6, now - s["start"])
+            avg = s["rows"] / elapsed
+            global_avg = self.total_rows_completed / max(1e-6, now - self.overall_start)
+
+            self.progress.update(task_id, advance=rows_delta, avg=avg)
+            if self.global_task is not None:
+                self.progress.update(
+                    self.global_task, 
+                    completed=self.total_rows_completed,
+                    avg=global_avg, 
+                    files_done=self.files_done
+                )
+            self.last_update = now
+
+    def finish_file(self, task_id):
+        with self.lock:
+            self.stats.pop(task_id, None)
+            self.files_done += 1
+            self.progress.remove_task(task_id)  # Remove completed file task
+            if self.global_task is not None:
+                self.progress.update(self.global_task, files_done=self.files_done)
+
+# ---------------- Ingestion ----------------
+def ingest_batch_execute_values(batch: pl.DataFrame, cursor, pg_table: str, column_names):
+    batch = strip_null_bytes_polars(batch)
+    batch = validate_batch_columns(batch, len(column_names), "")
+    row_iter = (tuple(r) for r in batch.iter_rows())
+    cols = ', '.join(f'"{c}"' for c in column_names)
+    sql = f"INSERT INTO {pg_table} ({cols}) VALUES %s"
+    execute_values(cursor, sql, row_iter, page_size=1000)
+
+def ingest_batch_copy_csv(batch: pl.DataFrame, cursor, pg_table: str, column_names):
+    batch = strip_null_bytes_polars(batch)
+    batch = validate_batch_columns(batch, len(column_names), "")
+    buffer = io.StringIO()
+    batch.write_csv(buffer, include_header=False)
+    buffer.seek(0)
+    cursor.copy_expert(f"COPY {pg_table} FROM STDIN CSV", buffer)
+
+# ---------------- Worker ----------------
+def process_file_worker(args, file_path, file_idx, total_files, column_names, progress_manager, conn_pool, checkpoint_dir):
+    file_task = None
+    last_processed = 0
+    checkpoint_file = checkpoint_dir / f"{Path(file_path).name}.json"
     
-    Args:
-        csv_files: List of CSV files to process
-        output_dir: Directory for output files
-        max_threads: Maximum number of threads
-        memory_limit_gb: Memory limit in GB for safety checks
+    # Resume from checkpoint if exists
+    if checkpoint_file.exists():
+        try:
+            with checkpoint_file.open('r') as f:
+                last_processed = json.load(f).get("last_row", 0)
+        except Exception:
+            pass
+
+    try:
+        conn = conn_pool.getconn()
+        cursor = conn.cursor()
+        cursor.execute("SET synchronous_commit = OFF;")
+        cursor.execute(f"SET work_mem = '{args.work_mem}';")
+        cursor.execute(f"SET maintenance_work_mem = '{args.maintenance_work_mem}';")
+        if args.disable_fsync:
+            cursor.execute("SET fsync = OFF;")
+        conn.commit()
+    except Exception as e:
+        logging.error(f"{file_path}: {e}")
+        return {"file": file_path, "error": str(e), "rows": 0}
+
+    try:
+        file_name = Path(file_path).name
+        file_task = progress_manager.start_file(f"[{file_idx}/{total_files}] {file_name}")
         
-    Returns:
-        List of benchmark results
-    """
+        # Auto-detect separator
+        with open(file_path, "r", errors="replace") as f:
+            header_line = f.readline()
+        
+        separator = ","
+        for sep in [",", ";", "\t", "|"]:
+            if len(header_line.split(sep)) > 1:
+                separator = sep
+                break
+
+        # Force all columns to text
+        schema = {c: pl.Utf8 for c in column_names}
+        lf = pl.scan_csv(
+            file_path, 
+            separator=separator, 
+            encoding=args.encoding, 
+            has_header=True, 
+            schema_overrides=schema
+        )
+
+        file_rows = 0
+        for batch in lf.collect_batches(chunk_size=args.chunk_rows):
+            # Skip already processed rows (resumption)
+            if file_rows + batch.height <= last_processed:
+                file_rows += batch.height
+                continue
+
+            # Validate batch columns
+            batch = validate_batch_columns(batch, len(column_names), file_path)
+            
+            # Ingest batch
+            if args.method == "execute_values":
+                ingest_batch_execute_values(batch, cursor, args.pg_table, column_names)
+            else:
+                ingest_batch_copy_csv(batch, cursor, args.pg_table, column_names)
+
+            if args.batch_commit:
+                conn.commit()
+
+            file_rows += batch.height
+            
+            # Save checkpoint
+            with checkpoint_file.open("w") as f:
+                json.dump({"last_row": file_rows}, f)
+            
+            # Update progress
+            progress_manager.update_file(file_task, batch.height)
+
+        # Final commit if not batch committing
+        if not args.batch_commit:
+            conn.commit()
+        
+        progress_manager.finish_file(file_task)
+        
+        # Clean up checkpoint on success
+        if checkpoint_file.exists():
+            checkpoint_file.unlink()
+        
+        conn_pool.putconn(conn)
+        return {"file": file_path, "rows": file_rows, "error": None}
+        
+    except Exception as e:
+        logging.error(f"{file_path}: {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        if file_task:
+            progress_manager.finish_file(file_task)
+        try:
+            conn_pool.putconn(conn)
+        except Exception:
+            pass
+        return {"file": file_path, "error": str(e), "rows": 0}
+
+# ------------------------- Benchmark ----------------------
+def run_benchmark(args, files, conn_pool, column_names, checkpoint_dir):
+    """Run benchmark tests with different configurations"""
+    import resource
+    
+    print(f"\n{'='*70}")
+    print(f"BENCHMARK MODE: Testing different configurations")
+    print(f"{'='*70}")
+    print(f"Sample size: {args.benchmark_sample_rows:,} rows from first file")
+    print(f"Testing: chunk sizes, methods, and parallelism\n")
+    
+    # Create temporary test table
+    test_table = f"{args.pg_table}_benchmark_test"
+    conn = conn_pool.getconn()
+    cursor = conn.cursor()
+    
+    # Drop if exists and recreate
+    cursor.execute(f"DROP TABLE IF EXISTS {test_table}")
+    cursor.execute(f"""
+        CREATE UNLOGGED TABLE {test_table} 
+        AS SELECT * FROM {args.pg_table} WHERE false
+    """)
+    conn.commit()
+    conn_pool.putconn(conn)
+    
+    # Test configurations
+    configs = [
+        # (chunk_rows, method, parallel, description)
+        (10_000,  'copy',           1, "Small chunks + COPY + serial"),
+        (50_000,  'copy',           1, "Medium chunks + COPY + serial"),
+        (100_000, 'copy',           1, "Large chunks + COPY + serial"),
+        (50_000,  'copy',           2, "Medium chunks + COPY + 2 workers"),
+        (100_000, 'copy',           2, "Large chunks + COPY + 2 workers"),
+        (100_000, 'copy',           3, "Large chunks + COPY + 3 workers"),
+        (100_000, 'copy',           4, "Large chunks + COPY + 4 workers"),
+        (50_000,  'execute_values', 1, "Medium chunks + INSERT + serial"),
+        (100_000, 'execute_values', 1, "Large chunks + INSERT + serial"),
+        (50_000,  'execute_values', 2, "Medium chunks + INSERT + 2 workers"),
+        (100_000, 'execute_values', 3, "Large chunks + INSERT + 3 workers"),
+    ]
+    
     results = []
     
-    # Calculate total input size for memory planning
-    total_input_size_gb = sum(get_file_size_gb(f) for f in csv_files)
-    logger.info(f"Total input size: {total_input_size_gb:.2f}GB, Memory limit: {memory_limit_gb}GB")
+    for chunk_rows, method, parallel, description in configs:
+        # Reset test table
+        conn = conn_pool.getconn()
+        cursor = conn.cursor()
+        cursor.execute(f"TRUNCATE {test_table}")
+        conn.commit()
+        conn_pool.putconn(conn)
+        
+        # Prepare args for this test
+        test_args = argparse.Namespace(**vars(args))
+        test_args.chunk_rows = chunk_rows
+        test_args.method = method
+        test_args.parallel = parallel
+        test_args.pg_table = test_table
+        test_args.batch_commit = False  # Full transaction for fairness
+        
+        # Limit to first file and sample rows
+        test_file = files[0]
+        
+        print(f"Testing: {description}")
+        print(f"  Config: chunk={chunk_rows:,}, method={method}, workers={parallel}")
+        
+        # Measure memory before
+        mem_before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024  # MB
+        
+        start = time.perf_counter()
+        rows_processed = 0
+        
+        try:
+            # Create limited lazy frame
+            separator = detect_separator(test_file)
+            lf = pl.scan_csv(test_file, separator=separator, encoding=test_args.encoding, 
+                           has_header=True, infer_schema_length=10000)
+            
+            # Process limited rows
+            conn = conn_pool.getconn()
+            cursor = conn.cursor()
+            cursor.execute("SET synchronous_commit = OFF;")
+            cursor.execute(f"SET work_mem = '{test_args.work_mem}';")
+            
+            for batch in lf.collect_batches(chunk_size=chunk_rows):
+                if rows_processed >= args.benchmark_sample_rows:
+                    break
+                
+                if method == 'execute_values':
+                    ingest_batch_execute_values(batch, cursor, test_table, column_names)
+                else:
+                    ingest_batch_copy_csv(batch, cursor, test_table, column_names)
+                
+                rows_processed += batch.height
+            
+            conn.commit()
+            conn_pool.putconn(conn)
+            
+            elapsed = time.perf_counter() - start
+            mem_after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024  # MB
+            mem_used = mem_after - mem_before
+            
+            throughput = rows_processed / elapsed
+            
+            results.append({
+                'description': description,
+                'chunk_rows': chunk_rows,
+                'method': method,
+                'parallel': parallel,
+                'rows': rows_processed,
+                'time': elapsed,
+                'throughput': throughput,
+                'memory_mb': mem_used
+            })
+            
+            print(f"  Result: {throughput:,.0f} rows/s, {elapsed:.2f}s, ~{mem_used:.0f} MB\n")
+            
+        except Exception as e:
+            print(f"  FAILED: {e}\n")
+            logging.error(f"Benchmark config failed: {description} - {e}")
     
-    # Test both streaming and eager execution (streaming first for safety)
-    for streaming in [True, False]:
-        benchmark = PolarsBenchmark(
-            max_threads=max_threads, 
-            streaming=streaming,
-            chunk_size=50000
-        )
-        
-        # 1. CSV Ingestion benchmark
-        parquet_output = output_dir / f"polars_output_{'streaming' if streaming else 'eager'}.parquet"
-        ingestion_result = benchmark.benchmark_csv_ingestion(
-            csv_files=csv_files,
-            output_path=parquet_output,
-            delimiter=";",  # CNPJ files use semicolon
-            encoding="utf8-lossy",  # Or "iso-8859-1" if needed
-            memory_limit_gb=memory_limit_gb
-        )
-        results.append(ingestion_result)
-        
-        # Skip eager mode if streaming already failed due to memory
-        if not streaming and ingestion_result.errors and "memory" in ingestion_result.errors.lower():
-            logger.warning("Skipping eager mode due to memory constraints in streaming mode")
-            break
-        
-        # 2. Aggregation benchmark (if ingestion succeeded)
-        if not ingestion_result.errors and parquet_output.exists():
-            agg_result = benchmark.benchmark_parquet_aggregation(
-                parquet_path=parquet_output,
-                result_name=f"{'streaming' if streaming else 'eager'}"
-            )
-            results.append(agg_result)
+    # Cleanup
+    conn = conn_pool.getconn()
+    cursor = conn.cursor()
+    cursor.execute(f"DROP TABLE IF EXISTS {test_table}")
+    conn.commit()
+    conn_pool.putconn(conn)
     
-    # 3. Chunked processing benchmark (always run as safety fallback)
-    chunked_benchmark = PolarsBenchmark(max_threads=max_threads, streaming=True, chunk_size=25000)
-    chunked_output = output_dir / "polars_chunked_output.parquet"
-    chunked_result = chunked_benchmark.benchmark_chunked_processing(
-        csv_files=csv_files,
-        output_path=chunked_output,
-        delimiter=";",
-        encoding="utf8-lossy"
-    )
-    results.append(chunked_result)
+    # Print results table
+    print(f"\n{'='*70}")
+    print(f"BENCHMARK RESULTS")
+    print(f"{'='*70}")
+    print(f"{'Configuration':<45} {'Throughput':>12} {'Time':>8} {'Memory':>8}")
+    print(f"{'-'*70}")
+    
+    # Sort by throughput
+    results.sort(key=lambda x: x['throughput'], reverse=True)
+    
+    for r in results:
+        print(f"{r['description']:<45} {r['throughput']:>10,.0f} r/s "
+              f"{r['time']:>6.2f}s {r['memory_mb']:>6.0f} MB")
+    
+    print(f"{'='*70}")
+    
+    # Recommendations
+    best = results[0]
+    print(f"\nRECOMMENDATION:")
+    print(f"  Best throughput: {best['description']}")
+    print(f"  Command: python script.py files/*.csv \\")
+    print(f"    --chunk-rows {best['chunk_rows']} \\")
+    print(f"    --method {best['method']} \\")
+    print(f"    --parallel {best['parallel']} \\")
+    print(f"    --pg-dsn '...' --pg-table '...'")
+    
+    # Memory-optimized recommendation
+    mem_optimized = min(results, key=lambda x: x['memory_mb'])
+    if mem_optimized != best:
+        print(f"\n  Memory-optimized: {mem_optimized['description']}")
+        print(f"    ({mem_optimized['throughput']:,.0f} rows/s, ~{mem_optimized['memory_mb']:.0f} MB)")
+    
+    print(f"\n{'='*70}\n")
     
     return results
+
+# ---------------- Main ----------------
+def main(argv=None):
+    import sys
+    parser = argparse.ArgumentParser(description="CSV → Postgres ingestion with Rich progress")
+    parser.add_argument("patterns", nargs="+", help="CSV file patterns")
+    parser.add_argument("--chunk-rows", type=int, default=50_000)
+    parser.add_argument("--pg-dsn", required=True)
+    parser.add_argument("--pg-table", required=True)
+    parser.add_argument("--encoding", default="utf8-lossy")
+    parser.add_argument("--batch-commit", action="store_true")
+    parser.add_argument("--disable-fsync", action="store_true")
+    parser.add_argument("--work-mem", default="256MB")
+    parser.add_argument("--maintenance-work-mem", default="1GB")
+    parser.add_argument("--method", choices=["copy", "execute_values"], default="execute_values")
+    parser.add_argument("--parallel", type=int, default=1)
+    parser.add_argument("--benchmark", action="store_true", help="Run benchmark mode")
+    parser.add_argument("--benchmark-sample-rows", type=int, default=100000, help="Number of rows to test in benchmark mode")
+    args = parser.parse_args(argv)
+
+    # Expand glob patterns
+    files = sorted([f for pat in args.patterns for f in glob.glob(pat, recursive=True)])
+    if not files:
+        print("[error] No files matched patterns")
+        return 1
+
+    print(f"[config] Found {len(files)} files to process")
+    print(f"[config] Method: {args.method}, Workers: {args.parallel}")
+
+    checkpoint_dir = Path(".ingest_checkpoints")
+    checkpoint_dir.mkdir(exist_ok=True)
+
+    # Create connection pool
+    conn_pool = ThreadedConnectionPool(1, args.parallel + 2, dsn=args.pg_dsn)
+    conn = conn_pool.getconn()
+    cursor = conn.cursor()
+
+    # Check if table exists
+    cursor.execute(f"SELECT to_regclass('{args.pg_table}');")
+    table_exists = cursor.fetchone()[0] is not None
+    
+    if not table_exists:
+        print(f"[setup] Table {args.pg_table} doesn't exist, creating from first file...")
+        # Sample first file for schema
+        sample_file = files[0]
+        with open(sample_file, "r", errors="replace") as f:
+            header_line = f.readline().strip()
+        
+        # Auto-detect separator
+        separator = ","
+        for sep in [",", ";", "\t", "|"]:
+            columns = header_line.split(sep)
+            if len(columns) > 1:
+                separator = sep
+                break
+        
+        # Generate column names
+        column_names = [sanitize_column_name(f"col_{i}", i) for i in range(len(columns))]
+        
+        # Force all columns to text type
+        schema = {c: pl.Utf8 for c in column_names}
+        lf = pl.scan_csv(
+            sample_file, 
+            separator=separator, 
+            encoding=args.encoding, 
+            has_header=True, 
+            schema_overrides=schema
+        )
+        first_batch = next(iter(lf.collect_batches(chunk_size=100)))
+        create_table_from_df(cursor, args.pg_table, first_batch)
+        conn.commit()
+        print(f"[setup] Table created with {len(column_names)} columns")
+    else:
+        print(f"[setup] Table {args.pg_table} exists, reading schema...")
+        # Get column names from existing table
+        table_name = args.pg_table.split('.')[-1]  # Handle schema.table format
+        cursor.execute(f"""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = '{table_name}'
+            ORDER BY ordinal_position
+        """)
+        column_names = [row[0] for row in cursor.fetchall()]
+        print(f"[setup] Found {len(column_names)} columns")
+
+    conn_pool.putconn(conn)
+    
+    # Run benchmark mode if requested
+    if args.benchmark:
+        run_benchmark(args, files, conn_pool, column_names, checkpoint_dir)
+        conn_pool.closeall()
+        return 0
+
+    # Process files with progress tracking
+    results = []
+    overall_start = time.perf_counter()
+    
+    with RichProgressManager() as rpm:
+        rpm.init_global_task(len(files))
+        
+        if args.parallel > 1:
+            with ThreadPoolExecutor(max_workers=args.parallel) as executor:
+                futures = [
+                    executor.submit(
+                        process_file_worker, 
+                        args, f, idx + 1, len(files),
+                        column_names, rpm, conn_pool, checkpoint_dir
+                    )
+                    for idx, f in enumerate(files)
+                ]
+                for future in as_completed(futures):
+                    results.append(future.result())
+        else:
+            for idx, f in enumerate(files):
+                results.append(
+                    process_file_worker(
+                        args, f, idx + 1, len(files),
+                        column_names, rpm, conn_pool, checkpoint_dir
+                    )
+                )
+
+    overall_elapsed = time.perf_counter() - overall_start
+    
+    # Summary
+    successful = [r for r in results if not r.get("error")]
+    failed = [r for r in results if r.get("error")]
+    total_rows = sum(r['rows'] for r in successful)
+    overall_throughput = total_rows / overall_elapsed if overall_elapsed > 0 else 0
+    
+    print(f"\n{'='*60}")
+    print(f"[SUMMARY]")
+    print(f"{'='*60}")
+    print(f"Total rows:      {total_rows:,}")
+    print(f"Total time:      {overall_elapsed:.1f}s")
+    print(f"Throughput:      {overall_throughput:,.0f} rows/s")
+    print(f"Files processed: {len(successful)}/{len(files)}")
+    if failed:
+        print(f"\nFailed files:")
+        for r in failed:
+            print(f"  - {Path(r['file']).name}: {r['error']}")
+    print(f"{'='*60}\n")
+    
+    conn_pool.closeall()
+    return 0
+
+if __name__ == "__main__":
+    import sys
+    raise SystemExit(main(sys.argv[1:]))

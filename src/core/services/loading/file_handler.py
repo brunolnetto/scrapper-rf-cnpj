@@ -3,7 +3,7 @@ FileHandler - Consolidated file operations.
 Combines FileLoader + FileProcessor functionality with bug fixes.
 """
 import os
-from typing import Iterable, List, Tuple, Optional, Any, Dict
+from typing import Iterable, List, Tuple, Optional, Any, Dict, Set
 from pathlib import Path
 import asyncio
 import concurrent.futures

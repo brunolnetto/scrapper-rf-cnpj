@@ -1,297 +1,270 @@
 #!/usr/bin/env python3
 """
-Main benchmark runner comparing DuckDB vs Polars for CNPJ processing.
+Benchmark comparison script for CSV → Postgres ingestion
+Compares Polars vs DuckDB implementations using their built-in --benchmark modes
 """
 
-import sys
-import os
-from pathlib import Path
 import argparse
-import logging
-from datetime import datetime
+import subprocess
+import sys
+import time
 import json
+import re
+from pathlib import Path
+from typing import Dict, List
 
-# Add project root to path
-project_root = Path(__file__).parent.parent
-sys.path.append(str(project_root))
+def parse_benchmark_output(output: str) -> List[Dict]:
+    """Parse benchmark results from script output"""
+    results = []
+    
+    lines = output.split('\n')
+    
+    # Look for "Result:" lines in the output
+    for i, line in enumerate(lines):
+        if "Result:" in line:
+            # Find the preceding "Testing:" line
+            description = "Unknown"
+            for j in range(i-1, max(i-10, -1), -1):
+                if "Testing:" in lines[j]:
+                    description = lines[j].replace("Testing:", "").strip()
+                    break
+            
+            # Parse the result line: "Result: 33,920 rows/s, 0.16s, ~3 MB"
+            match = re.search(r'Result:\s*(\d[\d,]*)\s*rows/s,\s*([\d.]+)s,\s*~?([\d.]+)\s*MB', line)
+            if match:
+                results.append({
+                    'description': description,
+                    'throughput': float(match.group(1).replace(',', '')),
+                    'time': float(match.group(2)),
+                    'memory_mb': float(match.group(3))
+                })
+    
+    return results
 
-from .utils import BenchmarkResult, save_benchmark_results, cleanup_memory
-from .duckdb_benchmark import run_duckdb_benchmarks
-from .polars_benchmark import run_polars_benchmarks
-
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('benchmark.log')
+def run_script_benchmark(script_path: str, csv_files: List[str], 
+                        pg_dsn: str, pg_table: str, sample_rows: int) -> Dict:
+    """Run a single script's benchmark mode"""
+    
+    cmd = [
+        sys.executable, script_path,
+        *csv_files,
+        "--pg-dsn", pg_dsn,
+        "--pg-table", pg_table,
+        "--benchmark",
+        "--benchmark-sample-rows", str(sample_rows)
     ]
-)
-logger = logging.getLogger(__name__)
+    
+    print(f"Running: {' '.join(cmd)}\n")
+    
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=600
+        )
+        
+        if result.returncode != 0:
+            print(f"Error running benchmark:")
+            print("STDOUT:", result.stdout)
+            print("STDERR:", result.stderr)
+            return {"error": result.stderr, "results": []}
+        
+        # Parse the output
+        parsed_results = parse_benchmark_output(result.stdout)
+        
+        print(f"Parsed {len(parsed_results)} benchmark results")
+        if not parsed_results:
+            print("DEBUG: No results found. Sample output:")
+            print(result.stdout[:1000] + "..." if len(result.stdout) > 1000 else result.stdout)
+        
+        return {
+            "success": True,
+            "results": parsed_results,
+            "stdout": result.stdout
+        }
+        
+    except subprocess.TimeoutExpired:
+        return {"error": "Timeout after 600s", "results": []}
+    except Exception as e:
+        return {"error": str(e), "results": []}
 
-def find_cnpj_files(data_dir: Path, pattern: str = "*ESTABELE*") -> list[Path]:
-    """
-    Find CNPJ CSV files in the data directory.
+def print_side_by_side_comparison(polars_data: Dict, duckdb_data: Dict):
+    """Print side-by-side comparison of benchmark results"""
     
-    Args:
-        data_dir: Directory containing CNPJ data files
-        pattern: File pattern to match
+    print(f"\n{'='*120}")
+    print(f"POLARS vs DUCKDB BENCHMARK COMPARISON")
+    print(f"{'='*120}")
+    
+    polars_results = polars_data.get('results', [])
+    duckdb_results = duckdb_data.get('results', [])
+    
+    if not polars_results and not duckdb_results:
+        print("No results to compare")
+        return
+    
+    # Match configurations by description
+    config_map = {}
+    
+    for pr in polars_results:
+        desc = pr['description']
+        if desc not in config_map:
+            config_map[desc] = {}
+        config_map[desc]['polars'] = pr
+    
+    for dr in duckdb_results:
+        desc = dr['description']
+        if desc not in config_map:
+            config_map[desc] = {}
+        config_map[desc]['duckdb'] = dr
+    
+    # Print header
+    print(f"{'Configuration':<45} {'Polars':>18} {'DuckDB':>18} {'Winner':>12} {'Speedup':>10}")
+    print(f"{'-'*120}")
+    
+    polars_wins = 0
+    duckdb_wins = 0
+    
+    for config, data in sorted(config_map.items()):
+        polars = data.get('polars')
+        duckdb = data.get('duckdb')
         
-    Returns:
-        List of CSV file paths
-    """
-    csv_files = []
-    
-    # Look in EXTRACTED_FILES directory (recursively)
-    extracted_dir = data_dir / "EXTRACTED_FILES"
-    if extracted_dir.exists():
-        csv_files.extend(list(extracted_dir.rglob(pattern)))
-    
-    # Also look directly in data_dir (recursively)
-    csv_files.extend(list(data_dir.rglob(pattern)))
-    
-    # Filter to only CSV-like files (exclude .zip, .parquet files)
-    csv_files = [f for f in csv_files if not f.suffix.lower() in ['.zip', '.parquet']]
-    
-    # Remove duplicates and sort
-    csv_files = sorted(list(set(csv_files)))
-    
-    logger.info(f"Found {len(csv_files)} CNPJ files matching pattern '{pattern}'")
-    for f in csv_files[:5]:  # Show first 5 files
-        logger.info(f"  - {f.name} ({f.stat().st_size / (1024**3):.2f}GB)")
-    
-    if len(csv_files) > 5:
-        logger.info(f"  ... and {len(csv_files) - 5} more files")
-    
-    return csv_files
-
-def generate_benchmark_report(results: list[BenchmarkResult], output_path: Path):
-    """Generate a summary report of benchmark results."""
-    
-    # Group results by type
-    duckdb_results = [r for r in results if r.name.startswith("DuckDB")]
-    polars_results = [r for r in results if r.name.startswith("Polars")]
-    
-    report = []
-    report.append("# CNPJ Processing Benchmark Report")
-    report.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    report.append("")
-    
-    # Summary table
-    report.append("## Summary")
-    report.append("")
-    report.append("| Tool | Operation | Duration (s) | Peak Memory (GB) | Compression Ratio | Rows Processed | Status |")
-    report.append("|------|-----------|--------------|------------------|-------------------|----------------|--------|")
-    
-    for result in results:
-        status = "✅ Success" if not result.errors else "❌ Failed"
-        compression = f"{result.compression_ratio:.2f}x" if result.compression_ratio else "N/A"
-        rows = f"{result.rows_processed:,}" if result.rows_processed else "N/A"
+        p_throughput = f"{polars['throughput']:>10,.0f} r/s" if polars else "N/A".rjust(15)
+        d_throughput = f"{duckdb['throughput']:>10,.0f} r/s" if duckdb else "N/A".rjust(15)
         
-        report.append(f"| {result.name} | {result.name.split('_')[-1]} | "
-                     f"{result.duration_seconds:.2f} | {result.peak_memory_gb:.2f} | "
-                     f"{compression} | {rows} | {status} |")
-    
-    report.append("")
-    
-    # Detailed results
-    report.append("## Detailed Results")
-    report.append("")
-    
-    for result in results:
-        report.append(f"### {result.name}")
-        report.append("")
-        
-        if result.errors:
-            report.append(f"**Status**: FAILED - {result.errors}")
+        if polars and duckdb:
+            if polars['throughput'] > duckdb['throughput']:
+                winner = "Polars"
+                speedup = f"{polars['throughput']/duckdb['throughput']:.2f}x"
+                polars_wins += 1
+            else:
+                winner = "DuckDB"
+                speedup = f"{duckdb['throughput']/polars['throughput']:.2f}x"
+                duckdb_wins += 1
         else:
-            report.append("**Status**: SUCCESS")
+            winner = "N/A"
+            speedup = "N/A"
         
-        report.append("")
-        report.append(f"- **Duration**: {result.duration_seconds:.2f} seconds")
-        report.append(f"- **Peak Memory**: {result.peak_memory_gb:.2f} GB")
-        report.append(f"- **Memory Delta**: {result.memory_delta_gb:.2f} GB")
-        report.append(f"- **CPU Usage**: {result.cpu_percent:.1f}%")
-        report.append(f"- **I/O Read**: {result.io_read_gb:.2f} GB")
-        report.append(f"- **I/O Write**: {result.io_write_gb:.2f} GB")
-        
-        if result.rows_processed:
-            report.append(f"- **Rows Processed**: {result.rows_processed:,}")
-        
-        if result.compression_ratio:
-            report.append(f"- **Compression Ratio**: {result.compression_ratio:.2f}x")
-        
-        if result.output_size_gb:
-            report.append(f"- **Output Size**: {result.output_size_gb:.2f} GB")
-        
-        # Metadata
-        if result.metadata:
-            report.append("")
-            report.append("**Configuration**:")
-            for key, value in result.metadata.items():
-                report.append(f"- {key}: {value}")
-        
-        report.append("")
-        report.append("---")
-        report.append("")
+        print(f"{config:<45} {p_throughput:>18} {d_throughput:>18} {winner:>12} {speedup:>10}")
     
-    # Performance comparison
-    if duckdb_results and polars_results:
-        report.append("## Performance Comparison")
-        report.append("")
-        
-        # Find comparable operations
-        duckdb_ingestion = [r for r in duckdb_results if "Ingestion" in r.name and not r.errors]
-        polars_ingestion = [r for r in polars_results if "Ingestion" in r.name and not r.errors]
-        
-        if duckdb_ingestion and polars_ingestion:
-            duckdb_best = min(duckdb_ingestion, key=lambda x: x.duration_seconds)
-            polars_best = min(polars_ingestion, key=lambda x: x.duration_seconds)
-            
-            speed_ratio = polars_best.duration_seconds / duckdb_best.duration_seconds
-            memory_ratio = polars_best.peak_memory_gb / duckdb_best.peak_memory_gb
-            
-            report.append("### Ingestion Performance")
-            report.append("")
-            report.append(f"- **DuckDB Best**: {duckdb_best.duration_seconds:.2f}s, {duckdb_best.peak_memory_gb:.2f}GB")
-            report.append(f"- **Polars Best**: {polars_best.duration_seconds:.2f}s, {polars_best.peak_memory_gb:.2f}GB")
-            report.append("")
-            
-            speed_ratio_winner = "Polars" if speed_ratio < 1 else "DuckDB"
-            speed_ratio_loser = "DuckDB" if speed_ratio < 1 else "Polars"
-            
-            report.append(f"[SPEED_RATIO] **{speed_ratio_winner} is {(1/speed_ratio):.2f}x faster** than {speed_ratio_loser}")
-            
-            memory_ratio_winner = "Polars" if memory_ratio < 1 else "DuckDB"
-            memory_ratio_loser = "DuckDB" if memory_ratio < 1 else "Polars"
-
-            report.append(f"[MEMORY_RATIO] **{memory_ratio_winner} uses {(1/memory_ratio):.2f}x less memory** than {memory_ratio_loser}")
+    print(f"{'='*120}")
     
-    # Write report
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(report))
+    # Summary statistics
+    print(f"\nSUMMARY:")
+    print(f"{'-'*120}")
     
-    logger.info(f"Benchmark report generated: {output_path}")
+    if polars_results:
+        polars_avg = sum(r['throughput'] for r in polars_results) / len(polars_results)
+        polars_max = max(r['throughput'] for r in polars_results)
+        polars_best = max(polars_results, key=lambda x: x['throughput'])
+        print(f"Polars:  Avg: {polars_avg:>12,.0f} r/s  |  Max: {polars_max:>12,.0f} r/s  |  Wins: {polars_wins}/{len(config_map)}")
+        print(f"         Best: {polars_best['description']}")
+    
+    if duckdb_results:
+        duckdb_avg = sum(r['throughput'] for r in duckdb_results) / len(duckdb_results)
+        duckdb_max = max(r['throughput'] for r in duckdb_results)
+        duckdb_best = max(duckdb_results, key=lambda x: x['throughput'])
+        print(f"DuckDB:  Avg: {duckdb_avg:>12,.0f} r/s  |  Max: {duckdb_max:>12,.0f} r/s  |  Wins: {duckdb_wins}/{len(config_map)}")
+        print(f"         Best: {duckdb_best['description']}")
+    
+    if polars_results and duckdb_results:
+        overall_speedup = duckdb_avg / polars_avg
+        print(f"\nOverall: DuckDB is {overall_speedup:.2f}x {'faster' if overall_speedup > 1 else 'slower'} on average")
+    
+    print(f"{'='*120}\n")
 
 def main():
-    parser = argparse.ArgumentParser(description="Benchmark DuckDB vs Polars for CNPJ processing")
-    parser.add_argument("--data-dir", type=Path, default=Path("data"),
-                       help="Directory containing CNPJ data files")
-    parser.add_argument("--output-dir", type=Path, default=Path("benchmark_output"),
-                       help="Directory for benchmark outputs")
-    parser.add_argument("--pattern", default="*ESTABELE*",
-                       help="File pattern to match (default: *ESTABELE*)")
-    parser.add_argument("--memory-limit", default="8GB",
-                       help="Memory limit for DuckDB (default: 8GB)")
-    parser.add_argument("--max-files", type=int, default=None,
-                       help="Maximum number of files to process (for testing)")
-    parser.add_argument("--skip-duckdb", action="store_true",
-                       help="Skip DuckDB benchmarks")
-    parser.add_argument("--skip-polars", action="store_true",
-                       help="Skip Polars benchmarks")
+    parser = argparse.ArgumentParser(
+        description="Compare Polars vs DuckDB CSV ingestion benchmarks"
+    )
+    parser.add_argument("csv_files", nargs="+", help="CSV files to benchmark with")
+    parser.add_argument("--polars-script", default="polars_benchmark.py",
+                       help="Path to Polars script")
+    parser.add_argument("--duckdb-script", default="duckdb_benchmark.py",
+                       help="Path to DuckDB script")
+    parser.add_argument("--pg-dsn", required=True, help="PostgreSQL connection string")
+    parser.add_argument("--pg-table", default="benchmark_test",
+                       help="Test table name")
+    parser.add_argument("--sample-rows", type=int, default=100000,
+                       help="Number of rows to benchmark (default: 100000)")
+    parser.add_argument("--output-json", help="Save results to JSON file")
     
     args = parser.parse_args()
     
-    logger.info("Starting CNPJ processing benchmarks")
-    logger.info(f"Data directory: {args.data_dir}")
-    logger.info(f"Output directory: {args.output_dir}")
-    logger.info(f"Memory limit: {args.memory_limit}")
-    
-    # Find CNPJ files
-    csv_files = find_cnpj_files(args.data_dir, args.pattern)
-    
-    if not csv_files:
-        logger.error(f"No CNPJ files found in {args.data_dir} with pattern '{args.pattern}'")
+    # Verify scripts exist
+    if not Path(args.polars_script).exists():
+        print(f"Error: Polars script not found: {args.polars_script}")
         return 1
     
-    # Limit files for testing
-    if args.max_files:
-        csv_files = csv_files[:args.max_files]
-        logger.info(f"Limited to {len(csv_files)} files for testing")
+    if not Path(args.duckdb_script).exists():
+        print(f"Error: DuckDB script not found: {args.duckdb_script}")
+        return 1
     
-    # Calculate total input size
-    total_size_gb = sum(f.stat().st_size for f in csv_files) / (1024**3)
-    logger.info(f"Total input size: {total_size_gb:.2f} GB")
+        # Run Polars benchmark
+    print(f"\n{'#'*120}")
+    print(f"RUNNING POLARS BENCHMARK (--benchmark mode)")
+    print(f"{'#'*120}\n")
     
-    # Create output directory
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    polars_table = f"{args.pg_table}_polars_{int(time.time())}"
+    polars_data = run_script_benchmark(
+        args.polars_script, args.csv_files, args.pg_dsn, 
+        polars_table, args.sample_rows
+    )
     
-    # Run benchmarks
-    all_results = []
+    if not polars_data.get('success'):
+        print(f"Polars benchmark failed: {polars_data.get('error', 'Unknown error')}")
     
+    # Clean up Polars table to avoid conflicts
     try:
-        # DuckDB benchmarks
-        if not args.skip_duckdb:
-            logger.info("[DuckDB] Running DuckDB benchmarks...")
-            cleanup_memory()
-            
-            duckdb_output_dir = args.output_dir / "duckdb"
-            duckdb_output_dir.mkdir(exist_ok=True)
-            
-            duckdb_results = run_duckdb_benchmarks(
-                csv_files=csv_files,
-                output_dir=duckdb_output_dir,
-                memory_limit=args.memory_limit
-            )
-            all_results.extend(duckdb_results)
-            
-            logger.info(f"DuckDB benchmarks completed: {len(duckdb_results)} results")
-        
-        # Polars benchmarks
-        if not args.skip_polars:
-            logger.info("[Polars] Running Polars benchmarks...")
-            cleanup_memory()
-            
-            polars_output_dir = args.output_dir / "polars"
-            polars_output_dir.mkdir(exist_ok=True)
-            
-            # Calculate memory limit for Polars (more conservative)
-            memory_limit_for_polars = float(args.memory_limit.replace('GB', ''))
-            
-            polars_results = run_polars_benchmarks(
-                csv_files=csv_files,
-                output_dir=polars_output_dir,
-                max_threads=8,  # Adjust based on your system
-                memory_limit_gb=memory_limit_for_polars
-            )
-            all_results.extend(polars_results)
-            
-            logger.info(f"Polars benchmarks completed: {len(polars_results)} results")
-        
-        # Save results
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        results_file = args.output_dir / f"benchmark_results_{timestamp}.json"
-        save_benchmark_results(all_results, results_file)
-        
-        # Generate report
-        report_file = args.output_dir / f"benchmark_report_{timestamp}.md"
-        generate_benchmark_report(all_results, report_file)
-        
-        # Print summary
-        logger.info("[SUCCESS] Benchmarks completed successfully!")
-        logger.info(f"Results saved to: {results_file}")
-        logger.info(f"Report generated: {report_file}")
-        
-        # Quick summary
-        successful_results = [r for r in all_results if not r.errors]
-        failed_results = [r for r in all_results if r.errors]
-        
-        logger.info(f"Summary: {len(successful_results)} successful, {len(failed_results)} failed")
-        
-        if successful_results:
-            fastest = min(successful_results, key=lambda x: x.duration_seconds)
-            most_memory_efficient = min(successful_results, key=lambda x: x.peak_memory_gb)
-            
-            logger.info(f"🏃 Fastest: {fastest.name} ({fastest.duration_seconds:.2f}s)")
-            logger.info(f"🧠 Most memory efficient: {most_memory_efficient.name} ({most_memory_efficient.peak_memory_gb:.2f}GB)")
-        
-        return 0
-        
+        import psycopg2
+        with psycopg2.connect(args.pg_dsn) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(f"DROP TABLE IF EXISTS {polars_table}")
+                cursor.execute(f"DROP TABLE IF EXISTS {polars_table}_benchmark_test")
+                conn.commit()
     except Exception as e:
-        logger.error(f"Benchmark failed: {e}")
-        return 1
+        print(f"Warning: Could not clean up Polars tables: {e}")
+    
+    # Run DuckDB benchmark
+    print(f"\n{'#'*120}")
+    print(f"RUNNING DUCKDB BENCHMARK (--benchmark mode)")
+    print(f"{'#'*120}\n")
+    
+    duckdb_table = f"{args.pg_table}_duckdb_{int(time.time())}"
+    duckdb_data = run_script_benchmark(
+        args.duckdb_script, args.csv_files, args.pg_dsn,
+        duckdb_table, args.sample_rows
+    )
+    
+    if not duckdb_data.get('success'):
+        print(f"DuckDB benchmark failed: {duckdb_data.get('error', 'Unknown error')}")
+    
+    # Clean up DuckDB table
+    try:
+        import psycopg2
+        with psycopg2.connect(args.pg_dsn) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(f"DROP TABLE IF EXISTS {duckdb_table}")
+                cursor.execute(f"DROP TABLE IF EXISTS {duckdb_table}_benchmark_test")
+                conn.commit()
+    except Exception as e:
+        print(f"Warning: Could not clean up DuckDB tables: {e}")
+    
+    # Print comparison
+    print_side_by_side_comparison(polars_data, duckdb_data)
+    
+    # Save to JSON if requested
+    if args.output_json:
+        output = {
+            "polars": polars_data,
+            "duckdb": duckdb_data,
+            "sample_rows": args.sample_rows
+        }
+        with open(args.output_json, 'w') as f:
+            json.dump(output, f, indent=2)
+        print(f"Full results saved to: {args.output_json}")
+    
+    return 0
 
 if __name__ == "__main__":
     sys.exit(main())

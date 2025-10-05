@@ -189,7 +189,7 @@ class DatabaseService:
         try:
             for batch in batch_generator:
                 # Memory check before each batch
-                if self.memory_monitor and self.memory_monitor.should_prevent_processing():
+                if self.memory_monitor.should_prevent_processing():
                     logger.error(f"[DatabaseService] Memory limit exceeded at batch {batch_idx}")
                     raise MemoryError(f"Memory limit exceeded at batch {batch_idx}")
                 
@@ -227,7 +227,7 @@ class DatabaseService:
             
         finally:
             # Final cleanup only if memory pressure exists
-            if self.memory_monitor and self.memory_monitor.is_memory_pressure_high():
+            if self.memory_monitor.is_memory_pressure_high():
                 gc.collect()
                 final_cleanup = self.memory_monitor.perform_aggressive_cleanup()
                 logger.info(f"[DatabaseService] Final cleanup freed {final_cleanup.get('freed_mb', 0):.1f}MB")
