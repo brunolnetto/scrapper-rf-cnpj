@@ -123,20 +123,34 @@ class DatabaseService:
             return False, str(e), 0
 
     async def cleanup_temp_tables(self, conn: asyncpg.Connection):
-        """Cleanup temp tables without complex locking."""
+        """
+        Cleanup temp tables without complex locking.
+        CRITICAL FIX: Must execute DROP TABLE inside transaction to prevent implicit transaction
+        corruption of connection pool.
+        """
         tables_to_cleanup = list(self.temp_tables_created)
-        for temp_table in tables_to_cleanup:
-            try:
-                await conn.execute(f'DROP TABLE IF EXISTS {base.quote_ident(temp_table)};')
-                self.temp_tables_created.discard(temp_table)
-            except Exception as e:
-                logger.warning(f"Failed to cleanup temp table {temp_table}: {e}")
+        if not tables_to_cleanup:
+            return
+            
+        try:
+            async with conn.transaction():
+                for temp_table in tables_to_cleanup:
+                    try:
+                        await conn.execute(f'DROP TABLE IF EXISTS {base.quote_ident(temp_table)};')
+                        self.temp_tables_created.discard(temp_table)
+                    except Exception as e:
+                        logger.warning(f"Failed to cleanup temp table {temp_table}: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to start cleanup transaction: {e}")
 
     @asynccontextmanager
     async def managed_connection(self, pool: asyncpg.Pool):
         """
         Simplified connection lifecycle management.
         FIX: Removed complex locking that could cause deadlocks.
+        CRITICAL FIX: Removed SET statement_timeout - it creates implicit transaction outside
+        explicit transaction blocks, corrupting the entire connection pool.
+        PostgreSQL default timeout or server-level config should be used instead.
         """
         conn = None
         try:
@@ -144,8 +158,10 @@ class DatabaseService:
             conn_id = id(conn)
             self.active_connections.add(conn_id)
             
-            # FIX: Set a reasonable timeout for operations
-            await conn.execute("SET statement_timeout = '300s';")  # 5 minutes
+            # REMOVED: await conn.execute("SET statement_timeout = '300s';")
+            # This executes outside transaction, PostgreSQL starts implicit transaction,
+            # connection returned to pool with uncommitted transaction,
+            # ALL subsequent operations fail: "another operation is in progress"
             
             yield conn
             

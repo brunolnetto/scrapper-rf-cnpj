@@ -78,7 +78,10 @@ def upsert_from_temp_sql(
 
 
 def apply_transforms_to_batch(table_info: TableInfo, batch: List[Tuple], headers: List[str]) -> List[Tuple]:
-    """Apply row-level transforms to a batch of data."""
+    """
+    Apply row-level transforms to a batch of data.
+    CRITICAL FIX: In-place transformation to prevent memory duplication.
+    """
     transform_func = getattr(table_info, 'transform_map', None)
 
     # Import default transform for proper identity comparison
@@ -88,32 +91,35 @@ def apply_transforms_to_batch(table_info: TableInfo, batch: List[Tuple], headers
         # No transforms needed, return batch as-is
         return batch
 
-    # Apply transforms to each row
-    logger.debug(f"[TransformUtil] Applying {transform_func.__name__} transforms to batch")
-    transformed_batch = []
+    # CRITICAL FIX: IN-PLACE transformation to avoid memory duplication
+    # Before: created new list (2-3x memory usage)
+    # After: modify existing list (1x memory usage)
+    logger.debug(f"[TransformUtil] Applying {transform_func.__name__} transforms to batch (in-place)")
 
-    for row_tuple in batch:
+    for i in range(len(batch)):
         try:
             # Convert tuple to dictionary
-            row_dict = dict(zip(headers, row_tuple))
+            row_dict = dict(zip(headers, batch[i]))
 
             # Apply transform function
             transformed_dict = transform_func(row_dict)
 
-            # Convert back to tuple in correct order
-            transformed_tuple = tuple(
-                transformed_dict.get(header, row_tuple[i])
-                for i, header in enumerate(headers)
+            # Convert back to tuple in correct order and UPDATE IN PLACE
+            batch[i] = tuple(
+                transformed_dict.get(header, batch[i][j])
+                for j, header in enumerate(headers)
             )
-
-            transformed_batch.append(transformed_tuple)
+            
+            # CRITICAL: Delete intermediate dicts immediately to free memory
+            del row_dict
+            del transformed_dict
 
         except Exception as e:
-            # On transform error, use original row and log warning
+            # On transform error, keep original row and log warning
             logger.warning(f"[TransformUtil] Transform failed for row in {table_info.table_name}: {e}")
-            transformed_batch.append(row_tuple)
+            # Row already in batch[i], no action needed
 
-    return transformed_batch
+    return batch  # Same list object - no duplication!
 
 
 def get_table_model(table_name: str, base=None):

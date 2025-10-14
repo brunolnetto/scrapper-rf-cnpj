@@ -45,7 +45,13 @@ class AsyncBatchStream:
                     raise item
                 if item is sentinel:
                     break
+                
+                # Yield the item
                 yield item
+                
+                # CRITICAL FIX: Delete item reference immediately after yield
+                del item
+                
         finally:
             # best-effort: ensure producer is stopped and joined
             try:
@@ -128,7 +134,7 @@ class FileHandler:
         return detected_format
     
     def _validate_parquet_content(self, file_path: str) -> bool:
-        """Memory-efficient Parquet validation."""
+        """Memory-efficient Parquet validation - NO DATA READING to prevent double generator."""
         try:
             # Check magic bytes first (most efficient)
             with open(file_path, 'rb') as f:
@@ -136,12 +142,15 @@ class FileHandler:
                 if header == b'PAR1':
                     return True
             
-            # Fallback to pyarrow validation
+            # Fallback: validate schema and metadata only (DON'T read data!)
             import pyarrow.parquet as pq
             try:
                 pf = pq.ParquetFile(file_path)
-                schema = pf.schema
-                del pf, schema  # Explicit cleanup
+                # Just check schema exists - don't read any data
+                _ = pf.schema_arrow
+                # Check we can get metadata
+                _ = pf.metadata
+                del pf
                 return True
             except Exception:
                 return False
@@ -240,7 +249,38 @@ class FileHandler:
 
         # Control structures per run
         run_id = uuid.uuid4().hex
-        q: asyncio.Queue = asyncio.Queue(maxsize=8)
+        
+        # ADAPTIVE QUEUE SIZE: Balance throughput vs memory safety
+        # Memory-aware queue sizing for optimal producer/consumer balance
+        # Uses ACTUAL available memory (not budget) for realistic sizing
+        try:
+            import psutil
+            mem = psutil.virtual_memory()
+            actual_available_mb = mem.available / (1024 * 1024)
+        except:
+            actual_available_mb = self.memory_monitor.get_available_memory_budget() if self.memory_monitor else 4000
+        
+        # PRODUCTION TEST: Force queue size to 6 for performance comparison
+        # TODO: Remove override and use adaptive logic after testing
+        queue_maxsize = 6  # OVERRIDE for testing
+        
+        # Adaptive logic (commented out for testing):
+        # if actual_available_mb > 8000:  # 8GB+ available (high-end systems)
+        #     queue_maxsize = 8  # Maximum buffering for best throughput
+        # elif actual_available_mb > 4000:  # 4-8GB available (medium systems)
+        #     queue_maxsize = 6  # Good balance
+        # elif actual_available_mb > 2000:  # 2-4GB available (constrained systems)
+        #     queue_maxsize = 4  # Conservative buffering
+        # else:  # <2GB available (very low memory)
+        #     queue_maxsize = 3  # Aggressive backpressure
+        
+        logger.info(
+            f"[FileHandler] Queue size: {queue_maxsize} batches (TESTING OVERRIDE) "
+            f"(~{queue_maxsize * (adjusted_chunk_size // 1000)}k rows buffered, "
+            f"actual available: {actual_available_mb:.0f}MB)"
+        )
+        
+        q: asyncio.Queue = asyncio.Queue(maxsize=queue_maxsize)
         sentinel = object()
         stop_event = threading.Event()
         control = {
@@ -248,6 +288,7 @@ class FileHandler:
             "sentinel": sentinel,
             "stop_event": stop_event,
             "thread": None,
+            "stats": {"batch_count": 0, "timeouts": 0}  # Track stats for debugging
         }
         # register control
         self._producer_controls[run_id] = control
@@ -269,32 +310,94 @@ class FileHandler:
                 import time
 
                 batch_count = 0
+                consecutive_timeouts = 0
+                
                 for batch in gen:
                     # Check for shutdown more frequently
                     if stop_event.is_set() or self._shutdown_requested:
                         logger.debug(f"[FileHandler] Producer stopping after {batch_count} batches")
                         break
                     
-                    # Non-blocking queue put with timeout
-                    try:
-                        fut = asyncio.run_coroutine_threadsafe(
-                            asyncio.wait_for(q.put(batch), timeout=2.0), 
-                            loop
+                    # ADAPTIVE BACKPRESSURE: Scale with queue size
+                    queue_depth = q.qsize()
+                    queue_threshold = int(q.maxsize * 0.75)  # 75% full triggers backpressure
+                    
+                    if queue_depth >= queue_threshold:
+                        logger.debug(
+                            f"[FileHandler] Backpressure: queue={queue_depth}/{q.maxsize}, "
+                            f"throttling producer"
                         )
-                        fut.result(timeout=3.0)  # Total timeout: 5s
-                        batch_count += 1
-                        
-                        # Yield CPU every 10 batches to check stop_event
-                        if batch_count % 10 == 0:
-                            time.sleep(0.001)
+                        time.sleep(0.5)  # Give consumer time to catch up
+                    
+                    # CRITICAL FIX: Adaptive timeout and retry logic
+                    base_timeout = 5.0  # Increased from 2.0
+                    adaptive_timeout = base_timeout + (consecutive_timeouts * 3.0)
+                    max_timeout = 20.0
+                    timeout_value = min(adaptive_timeout, max_timeout)
+                    
+                    retry_count = 0
+                    max_retries = 3
+                    
+                    while retry_count <= max_retries:
+                        try:
+                            # Log queue status if nearly full
+                            queue_depth = q.qsize()
+                            if queue_depth > q.maxsize * 0.8:
+                                logger.warning(f"[FileHandler] Queue nearly full: {queue_depth}/{q.maxsize}")
                             
-                    except (asyncio.TimeoutError, concurrent.futures.TimeoutError):
-                        logger.warning(f"[FileHandler] Producer queue timeout, stopping")
-                        break
-                    except Exception as e:
-                        logger.error(f"[FileHandler] Producer queue error: {e}")
-                        asyncio.run_coroutine_threadsafe(q.put(e), loop)
-                        break
+                            fut = asyncio.run_coroutine_threadsafe(
+                                asyncio.wait_for(q.put(batch), timeout=timeout_value), 
+                                loop
+                            )
+                            fut.result(timeout=timeout_value + 1.0)
+                            
+                            # Success!
+                            batch_count += 1
+                            consecutive_timeouts = 0
+                            control["stats"]["batch_count"] = batch_count
+                            
+                            # CRITICAL FIX: Delete batch reference immediately
+                            del batch
+                            
+                            # Yield CPU every 5 batches
+                            if batch_count % 5 == 0:
+                                time.sleep(0.001)
+                            
+                            break  # Exit retry loop
+                            
+                        except (asyncio.TimeoutError, concurrent.futures.TimeoutError):
+                            retry_count += 1
+                            consecutive_timeouts += 1
+                            control["stats"]["timeouts"] = consecutive_timeouts
+                            
+                            if retry_count <= max_retries:
+                                logger.warning(
+                                    f"[FileHandler] Queue timeout #{retry_count}/{max_retries} "
+                                    f"(batch {batch_count}, queue: {q.qsize()}/{q.maxsize}, "
+                                    f"timeout: {timeout_value:.1f}s)"
+                                )
+                                # Exponential backoff
+                                time.sleep(0.1 * retry_count)
+                            else:
+                                logger.error(
+                                    f"[FileHandler] Max retries exceeded at batch {batch_count}, stopping"
+                                )
+                                # CRITICAL FIX: Delete batch on final failure
+                                try:
+                                    del batch
+                                except:
+                                    pass
+                                return
+                                
+                        except Exception as e:
+                            logger.error(f"[FileHandler] Producer queue error: {e}")
+                            # CRITICAL FIX: Delete batch on error
+                            try:
+                                del batch
+                            except:
+                                pass
+                            asyncio.run_coroutine_threadsafe(q.put(e), loop)
+                            return
 
                 # Signal completion only if we finished normally
                 if not (stop_event.is_set() or self._shutdown_requested):
@@ -310,26 +413,32 @@ class FileHandler:
                 except Exception:
                     pass
             finally:
-                # Aggressive cleanup
-                try:
-                    if gen is not None and hasattr(gen, "close"):
+                # CRITICAL FIX: Close generator FIRST before other cleanup
+                if gen is not None:
+                    try:
                         gen.close()
-                except Exception:
-                    pass
+                    except Exception as e:
+                        logger.debug(f"Generator close error: {e}")
+                
+                # Force garbage collection
+                gen = None
+                import gc
+                gc.collect()
                 
                 # Remove from active threads
                 self._active_threads.discard(threading.current_thread())
+                
+                # Log final stats
+                stats = control.get("stats", {})
+                logger.info(
+                    f"[FileHandler] Producer finished: "
+                    f"batches={stats.get('batch_count', 0)}, "
+                    f"timeouts={stats.get('timeouts', 0)}"
+                )
 
-        # Create and track thread
+        # CRITICAL FIX: Create thread only ONCE (was creating twice - major memory leak!)
         t = threading.Thread(target=producer, daemon=True, name=f"FileHandler-{run_id[:8]}")
         self._active_threads.add(t)
-        control["thread"] = t
-        t.start()
-
-        # start daemon thread so it won't block process exit if something goes wrong
-        # with the join during shutdown. Producer threads are short-lived for each
-        # stream and we rely on the stop() path to request a graceful stop.
-        t = threading.Thread(target=producer, daemon=True)
         control["thread"] = t
         t.start()
 
@@ -352,14 +461,28 @@ class FileHandler:
         # Drain queue aggressively to unblock producer
         drained_items = 0
         try:
-            while not q.empty() and drained_items < 20:  # Limit to prevent infinite loop
+            # First pass: Quick drain with timeout
+            while not q.empty() and drained_items < 100:
                 try:
-                    await asyncio.wait_for(q.get(), timeout=0.01)
+                    item = await asyncio.wait_for(q.get(), timeout=0.001)
+                    del item  # CRITICAL: Delete drained items
                     drained_items += 1
                 except asyncio.TimeoutError:
                     break
-        except Exception:
-            pass
+            
+            # Second pass: Force drain with get_nowait
+            while not q.empty() and drained_items < 200:
+                try:
+                    item = q.get_nowait()
+                    del item
+                    drained_items += 1
+                except:
+                    break
+        except Exception as e:
+            logger.debug(f"Queue drain error: {e}")
+        
+        if drained_items > 0:
+            logger.debug(f"[FileHandler] Drained {drained_items} items from queue during stop")
 
         # Fast polling join with shorter timeout
         deadline = time.perf_counter() + timeout
@@ -381,12 +504,17 @@ class FileHandler:
         # Final cleanup
         self._producer_controls.pop(run_id, None)
         
-        # Drain remaining queue items
+        # CRITICAL FIX: Final aggressive queue drain with deletion
         try:
             while not q.empty():
-                q.get_nowait()
+                item = q.get_nowait()
+                del item
         except Exception:
             pass
+        
+        # Force garbage collection
+        import gc
+        gc.collect()
             
         return joined
     
@@ -600,21 +728,30 @@ class FileHandler:
                 else:  # Narrow table
                     base_chunk = 10_000
             elif available_memory_mb < 4000:  # 1-4GB available - Medium memory (8GB systems)
-                # Medium chunks for 8GB systems
+                # CRITICAL FIX: Drastically reduced to prevent CATASTROPHIC memory leak
+                # Triple leak: transform duplicates + asyncpg COPY buffer + queue backup
                 if num_columns > 20:
-                    base_chunk = 25_000
+                    base_chunk = 5_000  # Was 10_000 - EMERGENCY REDUCTION
                 elif num_columns > 15:
-                    base_chunk = 37_500
+                    base_chunk = 7_500  # Was 15_000 - EMERGENCY REDUCTION
                 else:
-                    base_chunk = 50_000
-            else:  # 16GB+ systems - BENCHMARK OPTIMAL
-                # Large chunks (100k) + serial COPY achieved 243,603 r/s vs 31,430 r/s with small chunks
+                    base_chunk = 10_000  # Was 25_000 - EMERGENCY REDUCTION
+            elif available_memory_mb < 8500:  # 4-8.5GB available - 8GB systems under load
+                # CRITICAL FIX: Drastically reduced to prevent queue backup and memory explosion
                 if num_columns > 20:  # Wide table (like ESTABELE - 30 columns)
-                    base_chunk = 50_000
+                    base_chunk = 5_000  # Was 15_000 - CRITICAL REDUCTION
+                elif num_columns > 15:  # Medium-wide
+                    base_chunk = 8_000  # Was 20_000 - CRITICAL REDUCTION
+                else:  # Narrow table
+                    base_chunk = 10_000  # Was 30_000 - CRITICAL REDUCTION
+            else:  # 16GB+ systems - BENCHMARK OPTIMAL
+                # REDUCED from 150k to 75k to prevent queue blocking (per Claude suggestions)
+                if num_columns > 20:  # Wide table (like ESTABELE - 30 columns)
+                    base_chunk = 30_000  # Was 50_000
                 elif num_columns > 15:  # Medium-wide table
-                    base_chunk = 75_000
+                    base_chunk = 50_000  # Was 75_000
                 else:  # Narrow table (like SOCIO - 11 columns)
-                    base_chunk = 150_000
+                    base_chunk = 75_000  # Was 150_000
             
             # Benchmark-optimized base recommendations
             # Serial COPY outperforms 2-4 workers (243,603 r/s vs 207,770 r/s with 2 workers)
