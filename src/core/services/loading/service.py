@@ -231,16 +231,9 @@ class FileLoadingService:
         if not parquet_file or not parquet_file.exists():
             return None
             
-        # Apply development filtering if available
-        try:
-            from ....core.utils.development_filter import DevelopmentFilter
-            dev_filter = DevelopmentFilter(self.config.pipeline.development)
-            
-            if not dev_filter.check_blob_size_limit(parquet_file):
-                return True, "Skipped large file in development mode", 0
-        except (ImportError, AttributeError):
-            # Development filter not available or configured
-            pass
+        # Note: File size filtering is NOT applied during loading
+        # Loading phase should limit by number of files and rows sampled, not file size
+        # File size limits are only relevant during download/extraction
         
         logger.info(f"[LoadingService] Loading Parquet file: {parquet_file.name}")
         return await self._load_single_file(table_info, parquet_file, table_name)
@@ -699,6 +692,13 @@ class FileLoadingService:
             logger.info(f"[LoadingService] Pre-processing memory status: "
                        f"Usage: {status['usage_above_baseline_mb']:.1f}MB, "
                        f"Budget: {status['budget_remaining_mb']:.1f}MB")
+            
+            # In development mode with low memory systems, allow processing to start
+            # The memory monitor will still check during actual processing
+            # This prevents the pre-check from being overly aggressive
+            if self.config.is_development_mode():
+                logger.info("[LoadingService] Development mode: Skipping aggressive pre-check")
+                return True
             
             return not self.memory_monitor.should_prevent_processing()
             

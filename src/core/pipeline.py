@@ -380,12 +380,13 @@ class ReceitaCNPJPipeline(Pipeline):
         from ..database.models.audit import TableAuditManifestSchema, AuditStatus
         from datetime import datetime
 
-        # Development mode filtering
+        # Development mode filtering - NOTE: File size limits do NOT apply during loading
+        # Loading phase should only limit by number of files, not file size
+        # File size limits are only relevant during download/extraction phase
         if self.config.is_development_mode():
             from .utils.development_filter import DevelopmentFilter
-            original_count = len(parquet_files)
-            parquet_files = [f for f in parquet_files if self.dev_filter.check_blob_size_limit(f)]
-            self.dev_filter.log_simple_filtering(original_count, len(parquet_files), "Parquet files")
+            # No size filtering for Parquet files during loading - they're already converted
+            # Development limits are applied later via max_files_per_blob at the loading service level
 
         # Map Parquet files to table names (e.g., cnae.parquet -> cnae)
         tablename_to_files = {}
@@ -433,11 +434,12 @@ class ReceitaCNPJPipeline(Pipeline):
         from datetime import datetime
         from uuid import uuid4
 
-        # Development mode filtering
+        # Development mode filtering - NOTE: File size limits do NOT apply during loading
+        # CSV files should also not be filtered by size during loading, only by file count
+        # Size limits are only relevant during download/extraction
         if self.config.is_development_mode():
-            original_count = len(csv_files)
-            csv_files = [f for f in csv_files if self.dev_filter.check_blob_size_limit(f)]
-            self.dev_filter.log_simple_filtering(original_count, len(csv_files), "CSV files")
+            # No size filtering - let the loading service handle file count limits
+            pass
 
         for csv_file in csv_files:
             logger.debug(f"Detected CSV file: {csv_file.name}")

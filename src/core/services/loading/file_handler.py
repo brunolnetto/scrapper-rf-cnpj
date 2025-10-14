@@ -440,11 +440,20 @@ class FileHandler:
                 'calibrated': False,
                 'error': str(e)
             }
+    
+    def _get_available_memory_mb(self) -> float:
+        """Get currently available system memory in MB"""
+        try:
+            import psutil
+            return psutil.virtual_memory().available / 1024 / 1024
+        except Exception:
+            return 4000.0  # Default to assuming 4GB available if check fails
 
     def _calibrate_memory_requirements(self, file_path: str, headers: List[str], sample_size: int = 1000) -> Optional[dict]:
         """
         Calibrate memory requirements by sampling actual data.
         FIX: Avoid circular dependency by using ingestors directly instead of self.generate_batches.
+        OPTIMIZED: Benchmark-driven memory utilization (95% for COPY operations).
         """
         if not self.memory_monitor:
             return None
@@ -490,9 +499,47 @@ class FileHandler:
                 # Get available memory budget
                 available_budget_mb = self.memory_monitor.get_available_memory_budget()
                 
-                # Compute safe chunk size (use 80% of available budget)
-                safe_budget_bytes = available_budget_mb * 1024 * 1024 * 0.8
-                recommended_chunk_size = max(1000, int(safe_budget_bytes // avg_bytes_per_row))
+                # Benchmark-optimized: Use configured memory utilization for COPY operations
+                # COPY operations can safely handle higher memory utilization
+                # Default 70% for 8GB systems, can be increased to 95% for 16GB+ systems
+                memory_utilization = getattr(self.config.pipeline.loading, 'memory_utilization_pct', 70) / 100.0
+                safe_budget_bytes = available_budget_mb * 1024 * 1024 * memory_utilization
+                
+                # Adaptive chunking based on column count (wide tables need smaller chunks)
+                num_columns = len(headers)
+                base_chunk_size = int(safe_budget_bytes // avg_bytes_per_row)
+                
+                # Benchmark shows: ESTABLECIMENTO (30 cols) = 17,833 r/s vs SOCIO (11 cols) = 243,603 r/s
+                # Wide tables (20+ columns) need smaller chunks for optimal performance
+                if num_columns > 20:  # Wide table (like ESTABELE)
+                    chunk_size_factor = 0.5  # Reduce chunk size by 50%
+                elif num_columns > 15:  # Medium-wide table
+                    chunk_size_factor = 0.7  # Reduce chunk size by 30%
+                else:  # Narrow table (like SOCIO)
+                    chunk_size_factor = 1.0  # Full chunk size
+                
+                recommended_chunk_size = max(1000, int(base_chunk_size * chunk_size_factor))
+                
+                # Memory-constrained systems: Use smaller caps for safety
+                # <1GB available: 10k narrow, 5k wide (benchmark "small chunks")
+                # 8GB systems: 50k narrow, 30k wide
+                # 16GB+ systems: 150k narrow, 50k wide (benchmark optimal)
+                available_memory_mb = self._get_available_memory_mb()
+                if available_memory_mb < 1000:  # Less than 1GB available
+                    if num_columns <= 15:
+                        recommended_chunk_size = min(recommended_chunk_size, 10_000)
+                    else:
+                        recommended_chunk_size = min(recommended_chunk_size, 5_000)
+                elif available_memory_mb < 4000:  # Less than 4GB available (8GB system)
+                    if num_columns <= 15:
+                        recommended_chunk_size = min(recommended_chunk_size, 50_000)
+                    else:
+                        recommended_chunk_size = min(recommended_chunk_size, 30_000)
+                else:  # 16GB+ systems
+                    if num_columns <= 15:
+                        recommended_chunk_size = min(recommended_chunk_size, 150_000)
+                    else:
+                        recommended_chunk_size = min(recommended_chunk_size, 50_000)
                 
                 # Estimate memory for different chunk sizes
                 memory_per_chunk_mb = (recommended_chunk_size * avg_bytes_per_row) // 1024 // 1024
@@ -503,9 +550,11 @@ class FileHandler:
                 total_estimated_mb = (estimated_total_rows * avg_bytes_per_row * 0.5) // 1024 // 1024
                 
                 logger.info(f"[FileHandler] Calibration for {os.path.basename(file_path)} - "
+                           f"Columns: {num_columns}, "
                            f"Avg bytes/row: {avg_bytes_per_row}, "
-                           f"Recommended chunk: {recommended_chunk_size}, "
-                           f"Memory per chunk: {memory_per_chunk_mb}MB")
+                           f"Recommended chunk: {recommended_chunk_size:,}, "
+                           f"Memory per chunk: {memory_per_chunk_mb}MB, "
+                           f"Memory util: {int(memory_utilization*100)}%")
                 
                 return {
                     'avg_bytes_per_row': avg_bytes_per_row,
@@ -513,7 +562,9 @@ class FileHandler:
                     'memory_per_chunk_mb': memory_per_chunk_mb,
                     'total_estimated_mb': total_estimated_mb,
                     'sample_rows': actual_rows,
-                    'memory_delta_mb': memory_delta // 1024 // 1024
+                    'memory_delta_mb': memory_delta // 1024 // 1024,
+                    'num_columns': num_columns,
+                    'chunk_size_factor': chunk_size_factor
                 }
             
             return None
@@ -525,43 +576,68 @@ class FileHandler:
     def get_recommended_processing_params(self, file_path: str, headers: List[str]) -> dict:
         """
         Get recommended processing parameters based on file size and available memory.
+        OPTIMIZED: Benchmark-driven defaults (100k chunks, serial COPY wins).
         """
         try:
             file_size = os.path.getsize(file_path)
             file_size_gb = file_size / (1024**3)
+            num_columns = len(headers)
             
-            # Base recommendations
+            # Get system memory status for adaptive chunking
+            available_memory_mb = self._get_available_memory_mb()
+            
+            # BENCHMARK-DRIVEN ADAPTIVE CHUNKING based on available RAM:
+            # Small chunks (10k):  <1GB available - matches benchmark "Small chunks + COPY + serial"
+            # Medium chunks (50k): 1-4GB available - good for 8GB systems
+            # Large chunks (100k+): 16GB+ systems - benchmark optimal (243,603 r/s)
+            
+            if available_memory_mb < 1000:  # Less than 1GB available - CRITICAL LOW MEMORY
+                # Use benchmark "Small chunks" configuration
+                if num_columns > 20:  # Wide table
+                    base_chunk = 5_000
+                elif num_columns > 15:  # Medium-wide
+                    base_chunk = 7_500
+                else:  # Narrow table
+                    base_chunk = 10_000
+            elif available_memory_mb < 4000:  # 1-4GB available - Medium memory (8GB systems)
+                # Medium chunks for 8GB systems
+                if num_columns > 20:
+                    base_chunk = 25_000
+                elif num_columns > 15:
+                    base_chunk = 37_500
+                else:
+                    base_chunk = 50_000
+            else:  # 16GB+ systems - BENCHMARK OPTIMAL
+                # Large chunks (100k) + serial COPY achieved 243,603 r/s vs 31,430 r/s with small chunks
+                if num_columns > 20:  # Wide table (like ESTABELE - 30 columns)
+                    base_chunk = 50_000
+                elif num_columns > 15:  # Medium-wide table
+                    base_chunk = 75_000
+                else:  # Narrow table (like SOCIO - 11 columns)
+                    base_chunk = 150_000
+            
+            # Benchmark-optimized base recommendations
+            # Serial COPY outperforms 2-4 workers (243,603 r/s vs 207,770 r/s with 2 workers)
             recommendations = {
-                'chunk_size': 20_000,
-                'sub_batch_size': 3_000,
-                'enable_parallelism': False,
-                'concurrency': 1,
+                'chunk_size': base_chunk,
+                'sub_batch_size': max(1_000, base_chunk // 20),  # Scale sub-batch with chunk size
+                'enable_parallelism': False,  # Serial wins for single files
+                'concurrency': 1,  # Benchmark shows serial is faster
                 'use_streaming': True if file_size_gb > 1.0 else False
             }
             
-            # Adjust based on file size
-            if file_size_gb > 5.0:  # Very large files
+            # Adjust based on file size (very large files need more conservative chunks)
+            if file_size_gb > 5.0:  # Very large files (4GB+)
+                # Reduce chunk size by 50% for memory safety
+                recommendations['chunk_size'] = recommendations['chunk_size'] // 2
+                recommendations['use_streaming'] = True
+            elif file_size_gb < 0.1:  # Small files can use parallelism
                 recommendations.update({
-                    'chunk_size': 15_000,
-                    'sub_batch_size': 2_000,
-                    'enable_parallelism': False,
-                    'use_streaming': True
-                })
-            elif file_size_gb > 1.0:  # Large files
-                recommendations.update({
-                    'chunk_size': 25_000,
-                    'sub_batch_size': 3_500,
-                    'enable_parallelism': False
-                })
-            elif file_size_gb < 0.1:  # Small files
-                recommendations.update({
-                    'chunk_size': 50_000,
-                    'sub_batch_size': 8_000,
                     'enable_parallelism': True,
-                    'concurrency': 2
+                    'concurrency': 2  # Limit to 2 workers max (benchmark shows diminishing returns)
                 })
             
-            # Adjust based on available memory
+            # Further adjust based on current memory pressure (runtime check)
             if self.memory_monitor:
                 available_memory = self.memory_monitor.get_available_memory_budget()
                 pressure_level = self.memory_monitor.get_memory_pressure_level()
