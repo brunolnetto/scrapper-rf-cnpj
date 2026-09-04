@@ -1,14 +1,25 @@
 import time
+import uuid
 from datetime import datetime
 
 from ..setup.logging import logger
 from .interfaces import Pipeline, OrchestrationStrategy
+from sqldim.lineage import (
+    ConsoleLineageEmitter,
+    LineageEvent,
+    RunState,
+)
+from sqldim.lineage.events import DatasetRef
+from sqldim.notifications import NotificationEvent, Severity
+from sqldim.medallion import Layer
+from .services.notifications.router import make_notification_router
 
 class PipelineOrchestrator:
     def __init__(self, pipeline: Pipeline, strategy: OrchestrationStrategy, config_service):
         self.pipeline = pipeline
         self.strategy = strategy
         self.config_service = config_service
+        self._router = make_notification_router(config_service)
 
     def run(self, **kwargs):
         """
@@ -51,16 +62,70 @@ class PipelineOrchestrator:
         if not self.strategy.validate_parameters(**kwargs):
             logger.error(f"[ERROR] Invalid parameters for strategy: {self.strategy.get_name()}")
             return None
-        
+
+        # --- Lineage ---
+        emitter = ConsoleLineageEmitter()
+        run_id = uuid.uuid4().hex
+        _lineage_inputs  = [DatasetRef(namespace="scrapper-rf-cnpj.bronze", name="cnpj_raw_files")]
+        _lineage_outputs = [DatasetRef(namespace="scrapper-rf-cnpj.gold",   name="cnpj_dimensions")]
+        _lineage_facets: dict = {}
+        if year is not None:
+            _lineage_facets["year"] = year
+        if month is not None:
+            _lineage_facets["month"] = month
+        emitter.emit(LineageEvent(
+            run_id=run_id,
+            job_name=self.pipeline.get_name(),
+            namespace="scrapper-rf-cnpj",
+            state=RunState.START,
+            inputs=_lineage_inputs,
+            outputs=_lineage_outputs,
+            facets=_lineage_facets,
+        ))
+
         try:
             # Execute using strategy
             result = self.strategy.execute(self.pipeline, self.config_service, **kwargs)
             
+            emitter.emit(LineageEvent(
+                run_id=run_id,
+                job_name=self.pipeline.get_name(),
+                namespace="scrapper-rf-cnpj",
+                state=RunState.COMPLETE,
+                inputs=_lineage_inputs,
+                outputs=_lineage_outputs,
+                facets=_lineage_facets,
+            ))
             logger.info(f"[SUCCESS] {self.strategy.get_name()} strategy completed successfully")
             return result
             
         except Exception as e:
+            emitter.emit(LineageEvent(
+                run_id=run_id,
+                job_name=self.pipeline.get_name(),
+                namespace="scrapper-rf-cnpj",
+                state=RunState.FAIL,
+                inputs=_lineage_inputs,
+                outputs=_lineage_outputs,
+                facets={**_lineage_facets, "error": str(e)},
+            ))
             logger.error(f"[ERROR] {self.strategy.get_name()} strategy failed: {e}")
+
+            # P1 alert — pipeline crash requires immediate on-call response.
+            try:
+                self._router.route(NotificationEvent(
+                    event_type="pipeline_crash",
+                    severity=Severity.P1,
+                    layer=Layer.GOLD,
+                    details={
+                        "pipeline": self.pipeline.get_name(),
+                        "strategy": self.strategy.get_name(),
+                        "error": str(e)[:500],
+                    },
+                ))
+            except Exception as notif_err:
+                logger.debug(f"[Notifications] P1 dispatch failed: {notif_err}")
+
             raise
         finally:
             # Calculate and log execution time

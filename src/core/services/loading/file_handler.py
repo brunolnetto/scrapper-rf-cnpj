@@ -3,65 +3,55 @@ FileHandler - Consolidated file operations.
 Combines FileLoader + FileProcessor functionality with bug fixes.
 """
 import os
-from typing import Iterable, List, Tuple, Optional, Any, Dict, Set
+from typing import List, Optional, Any, Dict
 from pathlib import Path
 import asyncio
-import concurrent.futures
-import threading
 import uuid
-import time
 
 from ....setup.logging import logger
 from .ingestors import create_batch_generator
 from ..memory.service import MemoryMonitor
 from ....setup.config.loader import ConfigLoader
 
+def _run_next(iterable: Any) -> tuple[bool, Optional[Any]]:
+    try:
+        return True, next(iterable)
+    except StopIteration:
+        return False, None
+
+
 class AsyncBatchStream:
-    """
-    Returned by FileHandler.generate_batches().
-    Is an async iterable (supports `async for`) and exposes .stop(timeout) to cancel producer.
-    """
+    """Async wrapper around the synchronous batch generator."""
+
     def __init__(self, file_handler, run_id):
         self._fh = file_handler
         self._run_id = run_id
+        self._closed = False
 
     def __aiter__(self):
-        # return the async generator that yields items from the queue
-        return self._iter_impl()
-
-    async def _iter_impl(self):
-        control = self._fh._producer_controls.get(self._run_id)
-        if not control:
-            raise RuntimeError("Stream control not found (already stopped or invalid run_id)")
-
-        q = control["queue"]
-        sentinel = control["sentinel"]
-
-        try:
-            while True:
-                item = await q.get()
-                # Propagate producer exception if any
-                if isinstance(item, Exception):
-                    raise item
-                if item is sentinel:
-                    break
-                
-                # Yield the item
-                yield item
-                
-                # CRITICAL FIX: Delete item reference immediately after yield
-                del item
-                
-        finally:
-            # best-effort: ensure producer is stopped and joined
+        async def _generator():
             try:
-                await self.stop(timeout=5.0)
+                while True:
+                    try:
+                        batch = await self._fh._next_batch(self._run_id)
+                    except StopAsyncIteration:
+                        self._closed = True
+                        break
+                    yield batch
             except Exception:
-                # swallow — caller may already be in shutdown path
-                pass
+                self._closed = True
+                raise
+            finally:
+                if not self._closed:
+                    self._closed = True
+                    await self._fh.stop(self._run_id, timeout=0.0)
 
-    async def stop(self, timeout: float = 5.0) -> bool:
-        """Ask the background producer to stop; wait up to `timeout` seconds for join."""
+        return _generator()
+
+    async def stop(self, timeout: float = 0.0) -> bool:
+        if self._closed:
+            return True
+        self._closed = True
         return await self._fh.stop(self._run_id, timeout=timeout)
 
 class FileHandler:
@@ -73,11 +63,7 @@ class FileHandler:
         self.config = config
         self.memory_monitor = MemoryMonitor(config.pipeline.memory)
 
-        self._producer_controls = {}
-        self._producer_controls_lock = threading.Lock()
-
-        self._active_threads: Set[threading.Thread] = set()
-        self._shutdown_requested = False
+        self._producer_controls: Dict[str, Dict[str, Any]] = {}
 
         # Register cleanup on process exit
         import atexit
@@ -197,42 +183,31 @@ class FileHandler:
     
     def _emergency_cleanup(self):
         """Emergency cleanup for process shutdown."""
-        if not self._active_threads:
+        if not self._producer_controls:
             return
-            
-        logger.warning(f"[FileHandler] Emergency cleanup: {len(self._active_threads)} active threads")
-        
-        # Signal all threads to stop
-        self._shutdown_requested = True
+
+        logger.warning(f"[FileHandler] Emergency cleanup: {len(self._producer_controls)} active streams")
+
         for run_id, control in list(self._producer_controls.items()):
-            control["stop_event"].set()
-        
-        # Wait briefly for graceful shutdown
-        deadline = time.perf_counter() + 3.0
-        remaining_threads = list(self._active_threads)
-        
-        for thread in remaining_threads:
-            if time.perf_counter() >= deadline:
-                break
-            if thread.is_alive():
-                thread.join(timeout=0.5)
-            if not thread.is_alive():
-                self._active_threads.discard(thread)
-        
-        # Force kill remaining threads (Python limitation: we can't actually kill threads)
-        if self._active_threads:
-            logger.error(f"[FileHandler] {len(self._active_threads)} threads still alive, forcing process exit")
-            import os
-            os._exit(1)  # Nuclear option
+            generator = control.get("generator")
+            if not generator:
+                continue
+
+            close_method = getattr(generator, "close", None)
+            if not close_method:
+                continue
+
+            try:
+                close_method()
+            except Exception as exc:
+                logger.debug(f"[FileHandler] Emergency generator close failed for {run_id}: {exc}")
+
+        self._producer_controls.clear()
     
     
     async def generate_batches(self, file_path: str, headers: List[str], chunk_size: int = 20_000):
-        """
-        Async wrapper that runs the synchronous create_batch_generator inside a background non-daemon thread,
-        streaming batches into an asyncio.Queue. Returns an AsyncBatchStream instance which is both an
-        async iterable and has a .stop(timeout) coroutine method.
-        """
-        # decide file_format & adjusted_chunk_size using thread-safe calls
+        """Create an async-friendly wrapper over the batch generator."""
+
         file_format = await asyncio.to_thread(self.detect_format, file_path)
 
         adjusted_chunk_size = chunk_size
@@ -243,280 +218,124 @@ class FileHandler:
                 logger.warning(f"[FileHandler] Severely reduced chunk size to {adjusted_chunk_size}")
             elif available_memory < 500:
                 adjusted_chunk_size = min(chunk_size, 15_000)
-                logger.warning(f"[FileHandler] Reduced chunk size to {adjusted_chunk_size} due to memory constraints")
+                logger.warning(
+                    f"[FileHandler] Reduced chunk size to {adjusted_chunk_size} due to memory constraints"
+                )
 
         logger.info(f"[FileHandler] Using chunk size: {adjusted_chunk_size} for {file_format} file")
 
-        # Control structures per run
-        run_id = uuid.uuid4().hex
-        
-        # ADAPTIVE QUEUE SIZE: Balance throughput vs memory safety
-        # Memory-aware queue sizing for optimal producer/consumer balance
-        # Uses ACTUAL available memory (not budget) for realistic sizing
-        try:
-            import psutil
-            mem = psutil.virtual_memory()
-            actual_available_mb = mem.available / (1024 * 1024)
-        except:
-            actual_available_mb = self.memory_monitor.get_available_memory_budget() if self.memory_monitor else 4000
-        
-        # PRODUCTION TEST: Force queue size to 6 for performance comparison
-        # TODO: Remove override and use adaptive logic after testing
-        queue_maxsize = 6  # OVERRIDE for testing
-        
-        # Adaptive logic (commented out for testing):
-        # if actual_available_mb > 8000:  # 8GB+ available (high-end systems)
-        #     queue_maxsize = 8  # Maximum buffering for best throughput
-        # elif actual_available_mb > 4000:  # 4-8GB available (medium systems)
-        #     queue_maxsize = 6  # Good balance
-        # elif actual_available_mb > 2000:  # 2-4GB available (constrained systems)
-        #     queue_maxsize = 4  # Conservative buffering
-        # else:  # <2GB available (very low memory)
-        #     queue_maxsize = 3  # Aggressive backpressure
-        
-        logger.info(
-            f"[FileHandler] Queue size: {queue_maxsize} batches (TESTING OVERRIDE) "
-            f"(~{queue_maxsize * (adjusted_chunk_size // 1000)}k rows buffered, "
-            f"actual available: {actual_available_mb:.0f}MB)"
+        generator = await asyncio.to_thread(
+            create_batch_generator,
+            path=file_path,
+            headers=headers,
+            chunk_size=adjusted_chunk_size,
+            encoding=getattr(self.config.pipeline.data_source, 'encoding', 'utf-8'),
+            memory_monitor=self.memory_monitor,
+            file_format=file_format,
         )
-        
-        q: asyncio.Queue = asyncio.Queue(maxsize=queue_maxsize)
-        sentinel = object()
-        stop_event = threading.Event()
-        control = {
-            "queue": q,
-            "sentinel": sentinel,
-            "stop_event": stop_event,
-            "thread": None,
-            "stats": {"batch_count": 0, "timeouts": 0}  # Track stats for debugging
+
+        run_id = uuid.uuid4().hex
+        self._producer_controls[run_id] = {
+            "generator": generator,
+            "lock": asyncio.Lock(),
+            "closed": False,
+            "file_path": file_path,
+            "stats": {"batch_count": 0},
         }
-        # register control
-        self._producer_controls[run_id] = control
 
-        loop = asyncio.get_running_loop()
-
-        def producer():
-            """Enhanced producer with shutdown detection."""
-            gen = None
-            try:
-                gen = create_batch_generator(
-                    path=file_path,
-                    headers=headers,
-                    chunk_size=adjusted_chunk_size,
-                    encoding=getattr(self.config.pipeline.data_source, 'encoding', 'utf-8'),
-                    memory_monitor=self.memory_monitor,
-                    file_format=file_format
-                )
-                import time
-
-                batch_count = 0
-                consecutive_timeouts = 0
-                
-                for batch in gen:
-                    # Check for shutdown more frequently
-                    if stop_event.is_set() or self._shutdown_requested:
-                        logger.debug(f"[FileHandler] Producer stopping after {batch_count} batches")
-                        break
-                    
-                    # ADAPTIVE BACKPRESSURE: Scale with queue size
-                    queue_depth = q.qsize()
-                    queue_threshold = int(q.maxsize * 0.75)  # 75% full triggers backpressure
-                    
-                    if queue_depth >= queue_threshold:
-                        logger.debug(
-                            f"[FileHandler] Backpressure: queue={queue_depth}/{q.maxsize}, "
-                            f"throttling producer"
-                        )
-                        time.sleep(0.5)  # Give consumer time to catch up
-                    
-                    # CRITICAL FIX: Adaptive timeout and retry logic
-                    base_timeout = 5.0  # Increased from 2.0
-                    adaptive_timeout = base_timeout + (consecutive_timeouts * 3.0)
-                    max_timeout = 20.0
-                    timeout_value = min(adaptive_timeout, max_timeout)
-                    
-                    retry_count = 0
-                    max_retries = 3
-                    
-                    while retry_count <= max_retries:
-                        try:
-                            # Log queue status if nearly full
-                            queue_depth = q.qsize()
-                            if queue_depth > q.maxsize * 0.8:
-                                logger.warning(f"[FileHandler] Queue nearly full: {queue_depth}/{q.maxsize}")
-                            
-                            fut = asyncio.run_coroutine_threadsafe(
-                                asyncio.wait_for(q.put(batch), timeout=timeout_value), 
-                                loop
-                            )
-                            fut.result(timeout=timeout_value + 1.0)
-                            
-                            # Success!
-                            batch_count += 1
-                            consecutive_timeouts = 0
-                            control["stats"]["batch_count"] = batch_count
-                            
-                            # CRITICAL FIX: Delete batch reference immediately
-                            del batch
-                            
-                            # Yield CPU every 5 batches
-                            if batch_count % 5 == 0:
-                                time.sleep(0.001)
-                            
-                            break  # Exit retry loop
-                            
-                        except (asyncio.TimeoutError, concurrent.futures.TimeoutError):
-                            retry_count += 1
-                            consecutive_timeouts += 1
-                            control["stats"]["timeouts"] = consecutive_timeouts
-                            
-                            if retry_count <= max_retries:
-                                logger.warning(
-                                    f"[FileHandler] Queue timeout #{retry_count}/{max_retries} "
-                                    f"(batch {batch_count}, queue: {q.qsize()}/{q.maxsize}, "
-                                    f"timeout: {timeout_value:.1f}s)"
-                                )
-                                # Exponential backoff
-                                time.sleep(0.1 * retry_count)
-                            else:
-                                logger.error(
-                                    f"[FileHandler] Max retries exceeded at batch {batch_count}, stopping"
-                                )
-                                # CRITICAL FIX: Delete batch on final failure
-                                try:
-                                    del batch
-                                except:
-                                    pass
-                                return
-                                
-                        except Exception as e:
-                            logger.error(f"[FileHandler] Producer queue error: {e}")
-                            # CRITICAL FIX: Delete batch on error
-                            try:
-                                del batch
-                            except:
-                                pass
-                            asyncio.run_coroutine_threadsafe(q.put(e), loop)
-                            return
-
-                # Signal completion only if we finished normally
-                if not (stop_event.is_set() or self._shutdown_requested):
-                    try:
-                        asyncio.run_coroutine_threadsafe(q.put(sentinel), loop).result(timeout=1.0)
-                    except Exception:
-                        pass  # Consumer may have already stopped
-
-            except Exception as exc:
-                logger.exception(f"[FileHandler] Producer thread failed")
-                try:
-                    asyncio.run_coroutine_threadsafe(q.put(exc), loop).result(timeout=1.0)
-                except Exception:
-                    pass
-            finally:
-                # CRITICAL FIX: Close generator FIRST before other cleanup
-                if gen is not None:
-                    try:
-                        gen.close()
-                    except Exception as e:
-                        logger.debug(f"Generator close error: {e}")
-                
-                # Force garbage collection
-                gen = None
-                import gc
-                gc.collect()
-                
-                # Remove from active threads
-                self._active_threads.discard(threading.current_thread())
-                
-                # Log final stats
-                stats = control.get("stats", {})
-                logger.info(
-                    f"[FileHandler] Producer finished: "
-                    f"batches={stats.get('batch_count', 0)}, "
-                    f"timeouts={stats.get('timeouts', 0)}"
-                )
-
-        # CRITICAL FIX: Create thread only ONCE (was creating twice - major memory leak!)
-        t = threading.Thread(target=producer, daemon=True, name=f"FileHandler-{run_id[:8]}")
-        self._active_threads.add(t)
-        control["thread"] = t
-        t.start()
-
-        # Return the async stream object (caller will `async for` on it)
         return AsyncBatchStream(self, run_id)
 
-    async def stop(self, run_id: str, timeout: float = 5.0) -> bool:
-        """Enhanced stop with aggressive cleanup."""
+    async def _next_batch(self, run_id: str):
+        control = self._producer_controls.get(run_id)
+        if not control:
+            raise StopAsyncIteration
+
+        lock: asyncio.Lock = control["lock"]
+        generator_to_close: Optional[Any] = None
+        finalize_reason: Any = "eof"
+        async with lock:
+            if control.get("closed"):
+                raise StopAsyncIteration
+
+            generator = control.get("generator")
+            if generator is None:
+                control["closed"] = True
+                raise StopAsyncIteration
+
+            try:
+                has_batch, batch = await asyncio.to_thread(_run_next, generator)
+            except Exception as exc:  # pragma: no cover - defensive
+                control["closed"] = True
+                control["generator"] = None
+                finalize_reason = exc
+                generator_to_close = generator
+            else:
+                if has_batch:
+                    control["stats"]["batch_count"] += 1
+                    return batch
+
+                control["closed"] = True
+                control["generator"] = None
+                generator_to_close = generator
+
+        await self._close_generator(generator_to_close)
+        await self._finalize_stream(run_id, control)
+
+        if finalize_reason == "eof":
+            raise StopAsyncIteration
+        raise finalize_reason
+
+    async def stop(self, run_id: str, timeout: float = 0.0) -> bool:  # pragma: no cover - timeout reserved for future use
         control = self._producer_controls.get(run_id)
         if not control:
             return True
 
-        stop_event: threading.Event = control["stop_event"]
-        t: threading.Thread = control["thread"]
-        q: asyncio.Queue = control["queue"]
+        generator = None
+        lock: asyncio.Lock = control["lock"]
 
-        # Signal stop immediately
-        stop_event.set()
-        
-        # Drain queue aggressively to unblock producer
-        drained_items = 0
+        async with lock:
+            if control.get("closed"):
+                generator = control.get("generator")
+            else:
+                control["closed"] = True
+                generator = control.get("generator")
+            control["generator"] = None
+
+        await self._close_generator(generator)
+        await self._finalize_stream(run_id, control)
+
+        return True
+
+    async def _close_generator(self, generator: Optional[Any]) -> None:
+        if not generator:
+            return
+
+        close_method = getattr(generator, "close", None)
+        if not close_method:
+            return
+
         try:
-            # First pass: Quick drain with timeout
-            while not q.empty() and drained_items < 100:
-                try:
-                    item = await asyncio.wait_for(q.get(), timeout=0.001)
-                    del item  # CRITICAL: Delete drained items
-                    drained_items += 1
-                except asyncio.TimeoutError:
-                    break
-            
-            # Second pass: Force drain with get_nowait
-            while not q.empty() and drained_items < 200:
-                try:
-                    item = q.get_nowait()
-                    del item
-                    drained_items += 1
-                except:
-                    break
-        except Exception as e:
-            logger.debug(f"Queue drain error: {e}")
-        
-        if drained_items > 0:
-            logger.debug(f"[FileHandler] Drained {drained_items} items from queue during stop")
+            await asyncio.to_thread(close_method)
+        except Exception as exc:
+            logger.debug(f"[FileHandler] Generator close failed: {exc}")
 
-        # Fast polling join with shorter timeout
-        deadline = time.perf_counter() + timeout
-        poll_interval = 0.02  # Poll every 20ms
-        
-        while t.is_alive() and time.perf_counter() < deadline:
-            await asyncio.sleep(poll_interval)
-            # Increase polling frequency as we approach timeout
-            if time.perf_counter() > deadline - 1.0:
-                poll_interval = 0.01
+    async def _finalize_stream(self, run_id: str, control: Dict[str, Any]) -> None:
+        if control.get("finalized"):
+            return
 
-        joined = not t.is_alive()
-        
-        if not joined:
-            logger.warning(f"[FileHandler] Thread {t.name} did not join within {timeout}s")
-            # Remove from tracking anyway to prevent accumulation
-            self._active_threads.discard(t)
-        
-        # Final cleanup
+        control["finalized"] = True
         self._producer_controls.pop(run_id, None)
-        
-        # CRITICAL FIX: Final aggressive queue drain with deletion
-        try:
-            while not q.empty():
-                item = q.get_nowait()
-                del item
-        except Exception:
-            pass
-        
-        # Force garbage collection
+
+        stats = control.get("stats", {})
+        batch_count = stats.get("batch_count", 0)
+        logger.info(
+            f"[FileHandler] Stream finished for {Path(control.get('file_path', 'unknown')).name}:"
+            f" batches={batch_count}"
+        )
+
         import gc
+
         gc.collect()
-            
-        return joined
     
     def estimate_memory_requirements(self, file_path: str, headers: List[str], chunk_size: int = 20_000) -> dict:
         """
@@ -753,6 +572,14 @@ class FileHandler:
                 else:  # Narrow table (like SOCIO - 11 columns)
                     base_chunk = 75_000  # Was 150_000
             
+            # Classify column profile (helps downstream logging/metrics)
+            if num_columns <= 14:
+                column_profile = 'narrow'
+            elif num_columns <= 19:
+                column_profile = 'medium'
+            else:
+                column_profile = 'wide'
+
             # Benchmark-optimized base recommendations
             # Serial COPY outperforms 2-4 workers (243,603 r/s vs 207,770 r/s with 2 workers)
             recommendations = {
@@ -760,7 +587,8 @@ class FileHandler:
                 'sub_batch_size': max(1_000, base_chunk // 20),  # Scale sub-batch with chunk size
                 'enable_parallelism': False,  # Serial wins for single files
                 'concurrency': 1,  # Benchmark shows serial is faster
-                'use_streaming': True if file_size_gb > 1.0 else False
+                'use_streaming': True if file_size_gb > 1.0 else False,
+                'column_profile': column_profile,
             }
             
             # Adjust based on file size (very large files need more conservative chunks)
@@ -801,10 +629,20 @@ class FileHandler:
                     'should_prevent': self.memory_monitor.should_prevent_processing()
                 }
             
+            # Normalize strategy/concurrency after all adjustments
+            if recommendations.get('enable_parallelism'):
+                recommendations['concurrency'] = max(2, recommendations.get('concurrency', 2))
+                recommendations['strategy'] = f"parallel x{recommendations['concurrency']}"
+            else:
+                recommendations['enable_parallelism'] = False
+                recommendations['concurrency'] = 1
+                recommendations['strategy'] = 'serial'
+            
             recommendations['file_size_gb'] = file_size_gb
             logger.info(f"[FileHandler] Recommended params for {os.path.basename(file_path)}: "
                        f"chunk={recommendations['chunk_size']}, "
-                       f"parallel={recommendations['enable_parallelism']}")
+                       f"parallel={recommendations['enable_parallelism']}, "
+                       f"strategy={recommendations['strategy']}")
             
             return recommendations
             
@@ -846,23 +684,21 @@ class FileHandler:
         """Shutdown all active streams."""
         if not self._producer_controls:
             return True
-            
-        logger.info(f"[FileHandler] Shutting down {len(self._producer_controls)} active streams")
-        
-        # Stop all streams concurrently
-        stop_tasks = []
-        for run_id in list(self._producer_controls.keys()):
-            stop_tasks.append(self.stop(run_id, timeout=timeout/len(self._producer_controls)))
-        
-        if stop_tasks:
-            results = await asyncio.gather(*stop_tasks, return_exceptions=True)
-            all_stopped = all(r is True for r in results if not isinstance(r, Exception))
-        else:
-            all_stopped = True
-        
-        # Emergency cleanup for any remaining threads
-        if self._active_threads:
-            logger.warning(f"[FileHandler] {len(self._active_threads)} threads still active after shutdown")
-            self._emergency_cleanup()
-        
-        return all_stopped
+
+        count = len(self._producer_controls)
+        logger.info(f"[FileHandler] Shutting down {count} active streams")
+
+        denominator = count if count else 1
+        stop_tasks = [self.stop(run_id, timeout=timeout / denominator) for run_id in list(self._producer_controls.keys())]
+
+        if not stop_tasks:
+            return True
+
+        results = await asyncio.gather(*stop_tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception):
+                logger.error(f"[FileHandler] Stream shutdown error: {result}")
+                return False
+
+        return all(result is True for result in results)
+

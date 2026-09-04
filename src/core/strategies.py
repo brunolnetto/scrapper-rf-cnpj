@@ -81,7 +81,6 @@ class DownloadAndLoadStrategy:
                 return None
             
             # Create audit metadata for loading
-            from pathlib import Path
             year = kwargs.get('year', config_service.year)
             month = kwargs.get('month', config_service.month)
             download_path = str(config_service.pipeline.get_temporal_download_path(year, month))
@@ -325,7 +324,6 @@ class FullETLStrategy:
                 return None
                 
             # Create audit metadata
-            from pathlib import Path
             download_path = str(config_service.pipeline.get_temporal_download_path(year, month))
 
             # If there are already converted Parquet files for this period, prefer
@@ -446,7 +444,6 @@ class FullETLStrategy:
         self, audit_metadata, initial_row_counts, final_row_counts, config_service, pipeline=None
     ):
         """Update audit metadata with comprehensive column metrics and row count changes."""
-        from pathlib import Path
         
         # Only process tables that have audit entries (were actually processed in this ETL run)
         processed_tables = {audit.entity_name for audit in audit_metadata.audit_list}

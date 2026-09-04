@@ -5,9 +5,8 @@ This module handles loading configuration from environment variables
 and provides backward compatibility with the legacy system.
 """
 
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 import os
-from pathlib import Path
 from dotenv import load_dotenv
 
 from .models import (
@@ -108,7 +107,7 @@ class ConfigLoader:
         temp_audit_config = self._load_audit_config()
         
         # Import needed for creating nested configs
-        from .models import DataSourceConfig, PipelineConfig
+        from .models import PipelineConfig
         
         # Create data source config
         data_source = DataSourceConfig(
@@ -240,7 +239,11 @@ class ConfigLoader:
             # Async operations and connection pooling
             internal_concurrency=int(os.getenv("ETL_INTERNAL_CONCURRENCY", "3")),
             async_pool_min_size=1,
-            async_pool_max_size=pool_size
+            async_pool_max_size=pool_size,
+            # DuckDB zero-copy streaming loader
+            use_duckdb=os.getenv("ETL_USE_DUCKDB", "false").lower() == "true",
+            duckdb_memory_limit_mb=int(os.getenv("ETL_DUCKDB_MEMORY_LIMIT_MB", "512")),
+            duckdb_threads=int(os.getenv("ETL_DUCKDB_THREADS", "2")),
         )
         
         try:
@@ -309,7 +312,7 @@ class ConfigLoader:
     def _load_url_config(self):
         """Load URL configuration (now embedded in DataSourceConfig)."""
         return {
-            'base_url': os.getenv("URL_RF_BASE", "https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj"),
+            'base_url': os.getenv("URL_RF_BASE", "https://dadosabertos.rfb.gov.br/CNPJ/dados_abertos_cnpj"),
             'layout_url': os.getenv("URL_RF_LAYOUT", "https://www.gov.br/receitafederal/dados/cnpj-metadados.pdf")
         }
     

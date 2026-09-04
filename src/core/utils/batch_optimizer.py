@@ -4,7 +4,7 @@ Calculates optimal batch sizes based on file characteristics, memory availabilit
 """
 
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Optional
 from dataclasses import dataclass
 import math
 

@@ -10,7 +10,6 @@ import os
 import uuid
 import time
 from datetime import datetime
-import json
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Generator
 from typing import Union
@@ -18,10 +17,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from threading import Lock, Event, Timer
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import asyncio
 
 from sqlalchemy import text
-import sqlalchemy.exc
 
 from ....setup.logging import logger
 from ....setup.config import get_config, ConfigurationService
@@ -132,7 +129,7 @@ class BatchAccumulator:
             
         def watchdog_check():
             if self.is_expired() and not self.is_cancelled():
-                logger.warning(f"Batch watchdog triggered - operation timeout or idle")
+                logger.warning("Batch watchdog triggered - operation timeout or idle")
                 callback(self)
             elif not self.is_cancelled():
                 # Schedule next check
@@ -683,6 +680,25 @@ class AuditService:
             logger.error(f"Error updating file manifest {file_manifest_id}: {e}")
             raise
 
+    def update_file_manifest_metadata(
+        self,
+        file_manifest_id: str,
+        checksum: Optional[str] = None,
+        filesize: Optional[int] = None,
+        notes: Optional[str] = None
+    ) -> None:
+        """Update checksum/filesize details without affecting status."""
+        try:
+            self.repository.update_file_manifest_metadata(
+                file_manifest_id=file_manifest_id,
+                checksum=checksum,
+                filesize=filesize,
+                notes=notes
+            )
+            logger.debug(f"Updated manifest metadata for {file_manifest_id}")
+        except Exception as e:
+            logger.warning(f"Failed to update manifest metadata for {file_manifest_id}: {e}")
+
     def _calculate_file_checksum(self, file_path: Path, algorithm: str = 'sha256') -> str:
         """Calculate file checksum for integrity verification."""
         try:
@@ -961,16 +977,17 @@ class AuditService:
                                                error_message: str = None) -> None:
         """Complete batch with accumulated metrics - single DB update."""
         completed_at = datetime.now()
+        completion_perf = time.perf_counter()
         
         # Get accumulated metrics
         with self._metrics_lock:
             accumulator = self._active_batches.get(str(batch_id), BatchAccumulator())
-            duration = completed_at.timestamp() - accumulator.start_time
+            duration = max(completion_perf - accumulator.start_time, 0.0)
             
             # Build comprehensive batch statistics
             batch_stats = {
                 "start_time": accumulator.start_time,
-                "end_time": completed_at.timestamp(),
+                "end_time": accumulator.start_time + duration,
                 "files_processed": accumulator.files_completed,
                 "files_failed": accumulator.files_failed,
                 "total_rows": accumulator.total_rows,
@@ -1005,7 +1022,7 @@ class AuditService:
                 'status': status.value,
                 'completed_at': completed_at,
                 'error_message': error_message,
-                'metrics_summary': f"Files: {accumulator.files_completed + accumulator.files_failed}, Rows: {accumulator.total_rows:,}, Duration: {duration:.1f}s"
+                'metrics_summary': f"Files: {accumulator.files_completed + accumulator.files_failed}, Rows: {accumulator.total_rows:,}, Duration: {duration:.3f}s"
             }
 
             with self.database.engine.begin() as conn:
@@ -1019,7 +1036,7 @@ class AuditService:
                     WHERE batch_audit_id = :batch_id
                 '''), update_data)
 
-            logger.info(f"Completed batch {batch_id} with status: {status.value} in {duration:.1f}s")
+            logger.info(f"Completed batch {batch_id} with status: {status.value} in {duration:.3f}s")
 
         except Exception as e:
             logger.error(f"Failed to complete batch {batch_id}: {e}")
@@ -1028,16 +1045,17 @@ class AuditService:
                                                   error_message: str = None) -> None:
         """Complete subbatch with accumulated metrics - single DB update."""
         completed_at = datetime.now()
+        completion_perf = time.perf_counter()
         
         # Get accumulated metrics
         with self._metrics_lock:
             accumulator = self._active_subbatches.get(str(subbatch_id), BatchAccumulator())
-            duration = completed_at.timestamp() - accumulator.start_time
+            duration = max(completion_perf - accumulator.start_time, 0.0)
             
             # Build comprehensive subbatch statistics
             subbatch_stats = {
                 "start_time": accumulator.start_time,
-                "end_time": completed_at.timestamp(),
+                "end_time": accumulator.start_time + duration,
                 "rows_processed": accumulator.total_rows,
                 "table_name": getattr(accumulator, 'table_name', 'unknown'),
                 "processing_stage": getattr(accumulator, 'processing_stage', 'data_loading'),
@@ -1094,7 +1112,7 @@ class AuditService:
                     WHERE subbatch_audit_id = :subbatch_id
                 '''), update_data)
 
-            logger.info(f"Completed subbatch {subbatch_id} with status: {status.value} in {duration:.1f}s")
+            logger.info(f"Completed subbatch {subbatch_id} with status: {status.value} in {duration:.3f}s")
 
         except Exception as e:
             logger.error(f"Failed to complete subbatch {subbatch_id}: {e}")

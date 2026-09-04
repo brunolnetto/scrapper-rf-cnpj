@@ -1,165 +1,114 @@
-from sqlalchemy import (
-    Column, 
-    BigInteger, 
-    String, 
-    TIMESTAMP, 
-    JSON, 
-    Text,  
-    Integer,
-    Index, 
-    ForeignKey,
-    Enum
-)
-from sqlalchemy.orm import relationship
-from sqlalchemy.dialects.postgresql import UUID
-from typing import Optional, Generic, TypeVar, List, Any
-from pydantic import BaseModel, Field
+from sqlalchemy import Column, Text, Index, Boolean, TIMESTAMP, JSON, String
+from sqlalchemy.orm import foreign, remote
 from datetime import datetime
-from uuid import uuid4
-from functools import reduce
-from sqlalchemy.ext.declarative import declarative_base
-import enum
+from typing import Optional, List, Dict, Any
+from sqlmodel import Field as SQLModelField, Relationship
+from sqldim import DimensionModel, SCD2Mixin, Field as DimField
 
-MainBase = declarative_base()
+class MainBase(DimensionModel):
+    """Base for all business models with Kimball support.
+
+    Declares ``checksum`` with an explicit ``sa_column`` that remaps the DB
+    column to ``row_hash`` — the name ``LazySCDMetadataProcessor`` generates
+    via ``md5(cast(metadata AS varchar))``.  Using ``sa_column`` here is
+    intentional: it overrides ``SCD2Mixin.checksum`` through MRO (MainBase
+    precedes SCD2Mixin in every business model) and makes the remapping
+    explicit rather than relying on opaque ``sa_column_kwargs`` passthrough.
+    """
+    checksum: Optional[str] = DimField(
+        default=None,
+        sa_column=Column(String, name="row_hash", index=True, nullable=True),
+    )
 
 # =============================================================================
-# MAIN CNPJ/SOURCE TABLES - Production Data Models
+# MAIN DIMENSIONS (Hybrid SCD Type 6 - Metadata Bag Pattern)
 # =============================================================================
 
-class Empresa(MainBase):
+class Empresa(MainBase, SCD2Mixin, table=True):
     __tablename__ = "empresa"
-    cnpj_basico = Column(Text, nullable=False, primary_key=True)
-    razao_social = Column(Text, nullable=True)
-    natureza_juridica = Column(Text, nullable=True)
-    qualificacao_responsavel = Column(Text, nullable=True)
-    capital_social = Column(Text, nullable=True)
-    porte_empresa = Column(Text, nullable=True)
-    ente_federativo_responsavel = Column(Text, nullable=True)
-    __table_args__ = (
-        Index("empresa_cnpj_basico", "cnpj_basico"),
-    )
+    __scd_type__ = 6
+    __natural_key__ = ["cnpj_basico"]
 
-    # Relationships
-    estabelecimentos = relationship("Estabelecimento", back_populates="empresa")
-    socios = relationship("Socios", back_populates="empresa")
-    simples = relationship("SimplesNacional", back_populates="empresa")
+    sk: Optional[int] = DimField(default=None, primary_key=True)
+    cnpj_basico: str = DimField(index=True)
 
+    # DB column must stay 'metadata' — LazySCDMetadataProcessor queries it by
+    # that name.  Python field is 'attributes' to avoid SQLModel's reserved
+    # 'metadata' attribute on the declarative base class.
+    attributes: Dict[str, Any] = SQLModelField(default_factory=dict, sa_column=Column(JSON, name="metadata", info={"scd": 2}))
+    metadata_diff: Optional[Dict[str, Any]] = SQLModelField(default=None, sa_column=Column(JSON))
 
-class SimplesNacional(MainBase):
-    __tablename__ = "simples"
-    cnpj_basico = Column(Text, nullable=True, primary_key=True)
-    opcao_pelo_simples = Column(Text, nullable=True)
-    data_opcao_simples = Column(Text, nullable=True)
-    data_exclusao_simples = Column(Text, nullable=True)
-    opcao_mei = Column(Text, nullable=True)
-    data_opcao_mei = Column(Text, nullable=True)
-    data_exclusao_mei = Column(Text, nullable=True)
-    __table_args__ = (
-        Index("simples_cnpj_basico", "cnpj_basico"),
-    )
+    estabelecimentos: List["Estabelecimento"] = Relationship(sa_relationship_kwargs={"primaryjoin": "remote(Estabelecimento.cnpj_basico) == foreign(Empresa.cnpj_basico)", "viewonly": True})
+    socios: List["Socios"] = Relationship(sa_relationship_kwargs={"primaryjoin": "remote(Socios.cnpj_basico) == foreign(Empresa.cnpj_basico)", "viewonly": True})
+    simples: Optional["SimplesNacional"] = Relationship(sa_relationship_kwargs={"primaryjoin": "remote(SimplesNacional.cnpj_basico) == foreign(Empresa.cnpj_basico)", "uselist": False, "viewonly": True})
 
-    # Relationship to Empresa
-    empresa = relationship("Empresa", back_populates="simples", primaryjoin="Empresa.cnpj_basico==SimplesNacional.cnpj_basico")
-
-
-class Socios(MainBase):
-    __tablename__ = "socios"
-    cnpj_basico = Column(Text, nullable=False, primary_key=True)
-    identificador_socio = Column(Text, nullable=True)
-    nome_socio_razao_social = Column(Text, nullable=True)
-    cpf_cnpj_socio = Column(Text, nullable=False, primary_key=True)
-    qualificacao_socio = Column(Text, nullable=True)
-    data_entrada_sociedade = Column(Text, nullable=True)
-    pais = Column(Text, nullable=True)
-    representante_legal = Column(Text, nullable=True)
-    nome_do_representante = Column(Text, nullable=True)
-    qualificacao_representante_legal = Column(Text, nullable=True)
-    faixa_etaria = Column(Text, nullable=True)
-    __table_args__ = (
-        Index("socios_cnpj_basico", "cnpj_basico"),
-    )
-
-    # Relationship to Empresa
-    empresa = relationship("Empresa", back_populates="socios", primaryjoin="Empresa.cnpj_basico==Socios.cnpj_basico")
-
-
-class Estabelecimento(MainBase):
+class Estabelecimento(MainBase, SCD2Mixin, table=True):
     __tablename__ = "estabelecimento"
-    cnpj_basico = Column(Text, nullable=False, primary_key=True)
-    cnpj_ordem = Column(Text, nullable=True, primary_key=True)
-    cnpj_dv = Column(Text, nullable=True, primary_key=True)
-    identificador_matriz_filial = Column(Text, nullable=True)
-    nome_fantasia = Column(Text, nullable=True)
-    situacao_cadastral = Column(Text, nullable=True)
-    data_situacao_cadastral = Column(Text, nullable=True)
-    motivo_situacao_cadastral = Column(Text, nullable=True)
-    nome_cidade_exterior = Column(Text, nullable=True)
-    pais = Column(Text, nullable=True)
-    data_inicio_atividade = Column(Text, nullable=True)
-    cnae_fiscal_principal = Column(Text, nullable=True)
-    cnae_fiscal_secundaria = Column(Text, nullable=True)
-    tipo_logradouro = Column(Text, nullable=True)
-    logradouro = Column(Text, nullable=True)
-    numero = Column(Text, nullable=True)
-    complemento = Column(Text, nullable=True)
-    bairro = Column(Text, nullable=True)
-    cep = Column(Text, nullable=True)
-    uf = Column(Text, nullable=True)
-    municipio = Column(Text, nullable=True)
-    ddd_1 = Column(Text, nullable=True)
-    telefone_1 = Column(Text, nullable=True)
-    ddd_2 = Column(Text, nullable=True)
-    telefone_2 = Column(Text, nullable=True)
-    ddd_fax = Column(Text, nullable=True)
-    fax = Column(Text, nullable=True)
-    correio_eletronico = Column(Text, nullable=True)
-    situacao_especial = Column(Text, nullable=True)
-    data_situacao_especial = Column(Text, nullable=True)
-    __table_args__ = (
-        Index("estabelecimento_cnpj_basico", "cnpj_basico"),
-        Index("estabelecimento_cnpj_ordem", "cnpj_ordem"),
-        Index("estabelecimento_cnpj_dv", "cnpj_dv"),
-        Index("estabelecimento_cnae_principal", "cnae_fiscal_principal"),
-        Index("estabelecimento_cnae_secundaria", "cnae_fiscal_secundaria"),
-        Index("estabelecimento_cep", "cep"),
-        Index("estabelecimento_uf", "uf"),
-    )
+    __scd_type__ = 6
+    __natural_key__ = ["cnpj_basico", "cnpj_ordem", "cnpj_dv"]
 
-    # Relationship to Empresa
-    empresa = relationship("Empresa", back_populates="estabelecimentos", primaryjoin="Empresa.cnpj_basico==Estabelecimento.cnpj_basico")
+    sk: Optional[int] = DimField(default=None, primary_key=True)
+    cnpj_basico: str = DimField(index=True)
+    cnpj_ordem: str = DimField(index=True)
+    cnpj_dv: str = DimField(index=True)
 
+    attributes: Dict[str, Any] = SQLModelField(default_factory=dict, sa_column=Column(JSON, name="metadata", info={"scd": 2}))
+    metadata_diff: Optional[Dict[str, Any]] = SQLModelField(default=None, sa_column=Column(JSON))
 
-class Qualificacoes(MainBase):
+class Socios(MainBase, SCD2Mixin, table=True):
+    __tablename__ = "socios"
+    __scd_type__ = 6
+    __natural_key__ = ["cnpj_basico", "cpf_cnpj_socio", "nome_socio_razao_social"]
+
+    sk: Optional[int] = DimField(default=None, primary_key=True)
+    cnpj_basico: str = DimField(index=True)
+    cpf_cnpj_socio: str = DimField(index=True)
+    nome_socio_razao_social: str = DimField(index=True)
+
+    attributes: Dict[str, Any] = SQLModelField(default_factory=dict, sa_column=Column(JSON, name="metadata", info={"scd": 2}))
+    metadata_diff: Optional[Dict[str, Any]] = SQLModelField(default=None, sa_column=Column(JSON))
+
+class SimplesNacional(MainBase, SCD2Mixin, table=True):
+    __tablename__ = "simples"
+    __scd_type__ = 6
+    __natural_key__ = ["cnpj_basico"]
+
+    sk: Optional[int] = DimField(default=None, primary_key=True)
+    cnpj_basico: str = DimField(index=True)
+
+    attributes: Dict[str, Any] = SQLModelField(default_factory=dict, sa_column=Column(JSON, name="metadata", info={"scd": 2}))
+    metadata_diff: Optional[Dict[str, Any]] = SQLModelField(default=None, sa_column=Column(JSON))
+
+# =============================================================================
+# LOOKUP DIMENSIONS (SCD Type 1)
+# =============================================================================
+
+class Qualificacoes(MainBase, table=True):
     __tablename__ = "quals"
-    codigo = Column(Text, nullable=True, primary_key=True)
-    descricao = Column(Text, nullable=True)
+    codigo: str = DimField(primary_key=True)
+    descricao: Optional[str] = DimField(default=None)
 
-
-class MotivoCadastral(MainBase):
+class MotivoCadastral(MainBase, table=True):
     __tablename__ = "moti"
-    codigo = Column(Text, nullable=True, primary_key=True)
-    descricao = Column(Text, nullable=True)
+    codigo: str = DimField(primary_key=True)
+    descricao: Optional[str] = DimField(default=None)
 
-
-class NaturezaJuridica(MainBase):
+class NaturezaJuridica(MainBase, table=True):
     __tablename__ = "natju"
-    codigo = Column(Text, nullable=True, primary_key=True)
-    descricao = Column(Text, nullable=True)
+    codigo: str = DimField(primary_key=True)
+    descricao: Optional[str] = DimField(default=None)
 
-
-class Municipio(MainBase):
+class Municipio(MainBase, table=True):
     __tablename__ = "munic"
-    codigo = Column(Text, nullable=True, primary_key=True)
-    descricao = Column(Text, nullable=True)
+    codigo: str = DimField(primary_key=True)
+    descricao: Optional[str] = DimField(default=None)
 
-
-class Cnae(MainBase):
+class Cnae(MainBase, table=True):
     __tablename__ = "cnae"
-    codigo = Column(Text, nullable=True, primary_key=True)
-    descricao = Column(Text, nullable=True)
+    codigo: str = DimField(primary_key=True)
+    descricao: Optional[str] = DimField(default=None)
 
-
-class Pais(MainBase):
+class Pais(MainBase, table=True):
     __tablename__ = "pais"
-    codigo = Column(Text, nullable=True, primary_key=True)
-    descricao = Column(Text, nullable=True)
+    codigo: str = DimField(primary_key=True)
+    descricao: Optional[str] = DimField(default=None)

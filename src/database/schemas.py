@@ -344,6 +344,12 @@ def create_table_info_from_dict(table_name: str, config_dict: Dict[str, Any]) ->
             except Exception:
                 pass
         
+        # Inject SCD2 columns if defined in configuration
+        scd2_cols = config_dict.get('scd2_columns', [])
+        for col in scd2_cols:
+            if col not in columns:
+                columns.append(col)
+        
         # Create TableInfo instance
         table_info = TableInfo(
             label=config_dict.get('label', table_name),

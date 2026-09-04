@@ -53,10 +53,13 @@ class ReceitaCNPJPipeline(Pipeline):
         """Lazy data loader initialization."""
         from .services.loading.service import FileLoadingService
 
+        # Ensure databases (and sqldim engine) are initialised first
+        _ = self.database
+
         self._data_loader = FileLoadingService(
-            self.database,  
+            self.database,
             self.config,
-            self._audit_service
+            self._audit_service,
         )
         return self._data_loader
 
@@ -384,7 +387,7 @@ class ReceitaCNPJPipeline(Pipeline):
         # Loading phase should only limit by number of files, not file size
         # File size limits are only relevant during download/extraction phase
         if self.config.is_development_mode():
-            from .utils.development_filter import DevelopmentFilter
+            pass
             # No size filtering for Parquet files during loading - they're already converted
             # Development limits are applied later via max_files_per_blob at the loading service level
 
@@ -395,7 +398,8 @@ class ReceitaCNPJPipeline(Pipeline):
             if table_name in TABLES_INFO_DICT:
                 # Create synthetic zip filename for consistency
                 synthetic_zip = f"{table_name.title()}.zip"
-                tablename_to_files[table_name] = {synthetic_zip: [parquet_file.name]}
+                # Store full path (not bare filename) so loaders can resolve it
+                tablename_to_files[table_name] = {synthetic_zip: [str(parquet_file)]}
                 logger.debug(f"Mapped Parquet file: {parquet_file.name} -> table '{table_name}'")
             else:
                 logger.debug(f"Skipping unknown table: {table_name} (from {parquet_file.name})")
@@ -431,7 +435,6 @@ class ReceitaCNPJPipeline(Pipeline):
         from .constants import TABLES_INFO_DICT
         from .schemas import AuditMetadata  
         from ..database.models.audit import TableAuditManifestSchema
-        from datetime import datetime
         from uuid import uuid4
 
         # Development mode filtering - NOTE: File size limits do NOT apply during loading
@@ -532,7 +535,6 @@ class ReceitaCNPJPipeline(Pipeline):
         from .schemas import AuditMetadata
         from ..database.models.audit import TableAuditManifestSchema
         from datetime import datetime
-        from uuid import uuid4
 
         # Use configured temporal values or current time
         data_year = self.config.year

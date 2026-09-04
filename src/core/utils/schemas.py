@@ -1,6 +1,6 @@
 from typing import List
 
-from ...utils.misc import normalize_filenames, get_date_range
+from ...utils.misc import normalize_filenames
 from ..schemas import FileInfo, FileGroupInfo
 from ..constants import TABLES_INFO_DICT
 from ...setup.logging import logger

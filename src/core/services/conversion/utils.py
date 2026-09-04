@@ -12,11 +12,6 @@ import gc
 import os
 from typing import Optional, Dict, List 
 
-from pathlib import Path
-import pyarrow as pa
-import pyarrow.parquet as pq
-import polars as pl
-import os
 
 from ....setup.logging import logger
 

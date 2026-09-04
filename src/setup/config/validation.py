@@ -8,7 +8,6 @@ and relationships between different configuration sections.
 from typing import List, Tuple, Optional
 import logging
 import os
-import re
 
 from .models import AppConfig, Environment
 

@@ -2,16 +2,27 @@ from sqlalchemy import inspect
 from typing import List, Tuple, Dict, Set
 from sqlalchemy.ext.declarative import DeclarativeMeta
 
-from ..core.constants import TABLES_INFO_DICT
 from ..setup.logging import logger
 
 
 from .models.business import MainBase
 from .schemas import TableInfo, create_table_info_from_dict
 
+
+def _get_all_model_classes():
+    """Walk all SQLModel subclasses of MainBase that have a __tablename__."""
+    seen = set()
+    stack = [MainBase]
+    while stack:
+        cls = stack.pop()
+        for sub in cls.__subclasses__():
+            if sub not in seen:
+                seen.add(sub)
+                stack.append(sub)
+    return [c for c in seen if hasattr(c, '__tablename__')]
+
 import re
 import asyncpg
-from typing import List, Dict
 
 def quote_ident(ident: str) -> str:
     IDENTIFIER_REGEX = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
@@ -46,6 +57,48 @@ def ensure_table_sql(target_table: str, headers: List[str], types: Dict[str, str
         cols.append(f'{quote_ident(h)} {typ}')
     pk_clause = f', PRIMARY KEY ({", ".join(quote_ident(pk) for pk in primary_keys)})' if primary_keys else ''
     return f'CREATE TABLE IF NOT EXISTS {quote_ident(target_table)} ({", ".join(cols)}{pk_clause});'
+
+def scd2_upsert_from_temp_sql(
+    target_table: str,
+    tmp_table: str,
+    headers: List[str],
+    primary_keys: List[str],
+    batch_date: str = None
+) -> str:
+    """
+    High-performance SCD2 merge for 30GB+ datasets.
+    Handles expiring old records and inserting new versions in a single atomic block.
+    """
+    if not primary_keys:
+        raise ValueError(f"No primary keys for SCD2 on {target_table}")
+    
+    batch_date = batch_date or "NOW()"
+    pk_join = " AND ".join(f"t.{quote_ident(pk)} = s.{quote_ident(pk)}" for pk in primary_keys)
+    col_list = ", ".join(quote_ident(c) for c in headers)
+    
+    # We assume 'row_hash' is pre-computed in Polars for efficiency
+    sql = f"""
+    DO $$ 
+    BEGIN
+        -- 1. Expire existing records that changed
+        UPDATE {quote_ident(target_table)} t
+        SET valid_to = {batch_date}, is_current = FALSE
+        FROM {quote_ident(tmp_table)} s
+        WHERE {pk_join}
+          AND t.is_current = TRUE
+          AND t.row_hash != s.row_hash;
+
+        -- 2. Insert new versions (only if they don't exist as 'current' or have changed)
+        INSERT INTO {quote_ident(target_table)} ({col_list}, valid_from, is_current)
+        SELECT s.{col_list.replace(', ', ', s.')}, {batch_date}, TRUE
+        FROM {quote_ident(tmp_table)} s
+        WHERE NOT EXISTS (
+            SELECT 1 FROM {quote_ident(target_table)} t
+            WHERE {pk_join} AND t.is_current = TRUE AND t.row_hash = s.row_hash
+        );
+    END $$;
+    """
+    return sql
 
 def upsert_from_temp_sql(
     target_table: str,
@@ -208,9 +261,9 @@ def get_model_by_table_name(table_name: str) -> DeclarativeMeta:
     Raises:
         ValueError: If table not found
     """
-    for mapper in MainBase.registry.mappers:
-        if mapper.class_.__tablename__ == table_name:
-            return mapper.class_
+    for cls in _get_all_model_classes():
+        if cls.__tablename__ == table_name:
+            return cls
     
     raise ValueError(f"Table '{table_name}' not found in SQLAlchemy models")
 
@@ -263,8 +316,8 @@ def get_tables_to_indices() -> Dict[str, Set[str]]:
     """
     tables_to_indices = {}
     
-    for mapper in MainBase.registry.mappers:
-        table_name = mapper.class_.__tablename__
+    for cls in _get_all_model_classes():
+        table_name = cls.__tablename__
         index_columns = get_table_index_columns(table_name)
         if index_columns:
             tables_to_indices[table_name] = set(index_columns)

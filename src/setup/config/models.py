@@ -35,9 +35,8 @@ from pydantic import (
     PrivateAttr
 )
 from enum import Enum
-from typing import Literal, Optional, Dict, Any
+from typing import Literal, Optional
 from pathlib import Path
-import os
 
 
 class Environment(str, Enum):
@@ -319,6 +318,26 @@ class LoadingConfig(BaseModel):
                 raise ValueError('Min batch size cannot exceed max batch size')
         return v
 
+    # ------------------------------------------------------------------
+    # DuckDB streaming loader (long-term memory-safe strategy)
+    # ------------------------------------------------------------------
+    use_duckdb: bool = Field(
+        default=False,
+        description="Use DuckDB postgres_scanner for zero-copy Parquet→PostgreSQL loading"
+    )
+    duckdb_memory_limit_mb: int = Field(
+        default=512,
+        ge=128,
+        le=8192,
+        description="Hard memory cap enforced by DuckDB (MB)"
+    )
+    duckdb_threads: int = Field(
+        default=2,
+        ge=1,
+        le=8,
+        description="DuckDB worker threads (keep low to avoid RAM spikes)"
+    )
+
 
 class DataSourceConfig(BaseModel):
     """Brazilian Federal Revenue data source configuration."""
@@ -339,7 +358,7 @@ class DataSourceConfig(BaseModel):
     
     # Data source URLs
     base_url: str = Field(
-        default="https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj",
+        default="https://dadosabertos.rfb.gov.br/CNPJ/dados_abertos_cnpj",
         description="Base URL for Brazilian Federal Revenue CNPJ data files"
     )
     layout_url: str = Field(
@@ -409,7 +428,7 @@ class DevelopmentConfig(BaseModel):
         description="Enable development mode optimizations"
     )
     file_size_limit_mb: int = Field(
-        default=70,
+        default=500,
         ge=1,
         le=1000,
         description="File size limit in MB for development mode"
@@ -545,6 +564,44 @@ class DataSinkConfig(BaseModel):
         self.paths.ensure_temporal_directories_exist(year, month)
 
 
+class NotificationsConfig(BaseModel):
+    """Optional e-mail alert-routing credentials (SMTP / STARTTLS).
+
+    All fields are optional.  When absent the NotificationRouter is still
+    constructed but no channels are registered, so ``router.route()`` is a
+    silent no-op in development environments.
+    """
+
+    smtp_host: Optional[str] = Field(
+        default=None,
+        description="SMTP server hostname (e.g. smtp.gmail.com)",
+    )
+    smtp_port: int = Field(
+        default=587,
+        description="SMTP server port (587 for STARTTLS, 465 for SSL)",
+    )
+    smtp_user: Optional[str] = Field(
+        default=None,
+        description="SMTP authentication username / sender address",
+    )
+    smtp_password: Optional[str] = Field(
+        default=None,
+        description="SMTP authentication password",
+    )
+    smtp_from: Optional[str] = Field(
+        default=None,
+        description="From address (defaults to smtp_user when absent)",
+    )
+    smtp_to: list[str] = Field(
+        default_factory=list,
+        description="Recipient e-mail addresses (P2+ events)",
+    )
+    use_tls: bool = Field(
+        default=True,
+        description="Enable STARTTLS after connection (recommended)",
+    )
+
+
 class PipelineConfig(BaseModel):
     """Main pipeline configuration with nested components."""
     
@@ -571,6 +628,7 @@ class PipelineConfig(BaseModel):
     download: DownloadConfig = Field(default_factory=DownloadConfig, description="File download and verification settings")
     conversion: ConversionConfig = Field(default_factory=ConversionConfig, description="CSV to Parquet conversion settings")
     loading: LoadingConfig = Field(default_factory=LoadingConfig, description="Database loading and batching settings")
+    notifications: NotificationsConfig = Field(default_factory=NotificationsConfig, description="SMTP e-mail alert routing")
     
     # Direct access properties for clean architecture
     @property

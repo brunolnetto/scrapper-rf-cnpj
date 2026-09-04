@@ -1,7 +1,6 @@
 # Project: ETL - CNPJs da Receita Federal do Brasil
 # Objective: Download, transform, and load Brazilian Federal Revenue CNPJ data
 import argparse
-import sys
 
 # Find time bottleneck between calls
 from .setup.config import get_config
@@ -9,6 +8,8 @@ from .core.orchestrator import PipelineOrchestrator
 from .core.pipeline import ReceitaCNPJPipeline
 from .core.strategies import StrategyFactory
 from .core.utils.cli import validate_cli_arguments
+
+from .setup.logging import logger as _logger
 
 def main():
     parser = argparse.ArgumentParser(
@@ -71,6 +72,10 @@ If no year/month specified: Auto-discovers latest available period from Federal 
     db_group.add_argument(
         "--clear-tables", type=str, default="", help="Comma-separated tables to clear"
     )
+    db_group.add_argument(
+        "--force-reload", action="store_true",
+        help="Delete audit entries for the target year/month before running (allows clean re-run)"
+    )
 
     args = parser.parse_args()
 
@@ -98,6 +103,47 @@ If no year/month specified: Auto-discovers latest available period from Federal 
     orchestrator = PipelineOrchestrator(pipeline, strategy, config_service)
 
     # Run with parameters
+    # Force-reload: wipe audit entries for the period so the run is idempotent
+    if getattr(args, "force_reload", False) and args.year and args.month:
+        from .database.models.audit import AuditBase
+        from .setup.base import init_database
+        _adb = init_database(config_service.audit.database, AuditBase)
+        with _adb.engine.begin() as _conn:
+            _t = __import__("sqlalchemy").text
+            # Delete leaf → root: subbatch → batch → file → table
+            _conn.execute(_t(
+                "DELETE FROM subbatch_audit_manifest WHERE parent_batch_audit_id IN ("
+                "  SELECT batch_audit_id FROM batch_audit_manifest"
+                "  WHERE parent_file_audit_id IN ("
+                "    SELECT file_audit_id FROM file_audit_manifest"
+                "    WHERE parent_table_audit_id IN ("
+                "      SELECT table_audit_id FROM table_audit_manifest"
+                "      WHERE ingestion_year = :y AND ingestion_month = :m"
+                "    )"
+                "  )"
+                ")"
+            ), {"y": args.year, "m": args.month})
+            _conn.execute(_t(
+                "DELETE FROM batch_audit_manifest WHERE parent_file_audit_id IN ("
+                "  SELECT file_audit_id FROM file_audit_manifest"
+                "  WHERE parent_table_audit_id IN ("
+                "    SELECT table_audit_id FROM table_audit_manifest"
+                "    WHERE ingestion_year = :y AND ingestion_month = :m"
+                "  )"
+                ")"
+            ), {"y": args.year, "m": args.month})
+            _conn.execute(_t(
+                "DELETE FROM file_audit_manifest WHERE parent_table_audit_id IN ("
+                "  SELECT table_audit_id FROM table_audit_manifest"
+                "  WHERE ingestion_year = :y AND ingestion_month = :m"
+                ")"
+            ), {"y": args.year, "m": args.month})
+            _conn.execute(_t(
+                "DELETE FROM table_audit_manifest"
+                " WHERE ingestion_year = :y AND ingestion_month = :m"
+            ), {"y": args.year, "m": args.month})
+        _logger.info(f"[force-reload] Cleared audit entries for {args.year}-{args.month:02d}")
+
     orchestrator.run(
         year=args.year,
         month=args.month,

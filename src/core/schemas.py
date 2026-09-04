@@ -1,4 +1,4 @@
-from typing import NamedTuple, List, Dict, Tuple, Callable, Optional
+from typing import List, Dict, Optional
 from datetime import datetime
 from pydantic import BaseModel
 

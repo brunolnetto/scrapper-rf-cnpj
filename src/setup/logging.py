@@ -4,7 +4,10 @@ import threading
 from datetime import datetime
 from dotenv import load_dotenv
 from os import getenv, makedirs, path, remove, scandir
-from pythonjsonlogger import jsonlogger
+try:
+    from pythonjsonlogger import jsonlogger
+except ImportError:
+    import pythonjsonlogger as jsonlogger
 from shutil import rmtree
 
 # Constants

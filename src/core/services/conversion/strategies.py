@@ -7,7 +7,7 @@ import time
 from ....setup.logging import logger
 from ..memory.service import MemoryMonitor
 from .models import ProcessingStrategy
-from .utils import infer_unified_schema, infer_schema_single
+from .utils import infer_schema_single
 
 
 def get_processing_strategies(file_size_mb: float, memory_pressure: float) -> List[ProcessingStrategy]:

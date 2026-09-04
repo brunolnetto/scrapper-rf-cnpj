@@ -1,11 +1,10 @@
 from typing import Optional, List, Dict
 from dataclasses import dataclass
 from pathlib import Path
-from dataclasses import dataclass
 
 import polars as pl
 
-from ....setup.config.models import ConversionConfig, MemoryMonitorConfig
+from ....setup.config.models import ConversionConfig
 
 
 @dataclass
@@ -117,7 +116,7 @@ class ChunkIterator:
             
             return chunk
             
-        except Exception as e:
+        except Exception:
             self._exhausted = True
             raise StopIteration
 

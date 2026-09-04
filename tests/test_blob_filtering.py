@@ -38,15 +38,13 @@ def test_blob_filtering():
         # Try alternative path structure
         zip_dir = Path("c:/Users/SuasVendas/github/scrapper-rf-cnpj/data/DOWNLOADED_FILES/2025-09")
         if not zip_dir.exists():
-            print(f"❌ Zip directory not found: {zip_dir}")
-            print(f"📁 Project root: {project_root}")
-            print(f"📁 Looking for: data/DOWNLOADED_FILES/2025-09")
-            return False
+            import pytest
+            pytest.skip(f"Zip directory not found: {zip_dir}")
     
     zip_files = list(zip_dir.glob("*.zip"))
     if not zip_files:
         print(f"❌ No zip files found in: {zip_dir}")
-        return False
+        assert False
     
     print(f"🔍 Testing blob filtering with {len(zip_files)} zip files")
     print(f"📊 File size limit: {dev_config.file_size_limit_mb}MB")
@@ -117,7 +115,7 @@ def test_blob_filtering():
         print(f"  ❌ ERROR: Estabelecimentos filtering incorrect!")
         print(f"    Expected: {'exclude' if should_be_excluded else 'include'} (total {estabelecimentos_total_mb:.1f}MB)")
         print(f"    Actual: {'excluded' if actually_excluded else 'included'}")
-        return False
+        assert False
     
     # Check empresas table
     empresas_files = [f for f in zip_files if 'empresas' in f.name.lower()]
@@ -139,7 +137,7 @@ def test_blob_filtering():
         print(f"  ❌ ERROR: Empresas filtering incorrect!")
         print(f"    Expected: {'exclude' if should_be_excluded else 'include'} (total {empresas_total_mb:.1f}MB)")
         print(f"    Actual: {'excluded' if actually_excluded else 'included'}")
-        return False
+        assert False
     
     # Check socios table
     socios_files = [f for f in zip_files if 'socios' in f.name.lower()]
@@ -161,10 +159,9 @@ def test_blob_filtering():
         print(f"  ❌ ERROR: Socios filtering incorrect!")
         print(f"    Expected: {'exclude' if should_be_excluded else 'include'} (total {socios_total_mb:.1f}MB)")
         print(f"    Actual: {'excluded' if actually_excluded else 'included'}")
-        return False
+        assert False
     
     print(f"\n🎉 Blob filtering test PASSED!")
-    return True
 
 
 def test_table_name_extraction():
@@ -199,7 +196,7 @@ def test_table_name_extraction():
     else:
         print("❌ Table name extraction test FAILED!")
     
-    return all_passed
+    assert all_passed
 
 
 if __name__ == "__main__":

@@ -7,13 +7,11 @@ import os
 import uuid
 import random
 import gc
-from typing import List, Tuple, Optional, Any, Dict
+from typing import List, Tuple, Optional, Any
 from contextlib import asynccontextmanager
-from concurrent.futures import ThreadPoolExecutor
 
 from . import utils as base
 from ..setup.logging import logger
-from .models.audit import AuditStatus
 from .engine import Database
 from ..core.services.memory.service import MemoryMonitor
 
@@ -214,9 +212,12 @@ class DatabaseService:
                 try:
                     # FIX: Always use sequential processing to avoid connection conflicts
                     async with self.managed_connection(pool) as conn:
+                        # Extract batch date from metadata if available (e.g., from AuditService)
+                        batch_date = getattr(table_info, 'batch_date', None)
+                        
                         rows_processed = await self._process_batch_sequential_optimized(
                             conn, batch, sub_batch_size, table_info,
-                            batch_idx, max_retries
+                            batch_idx, max_retries, batch_date
                         )
                     
                     rows_total += rows_processed
@@ -255,7 +256,8 @@ class DatabaseService:
         sub_batch_size: int,
         table_info: Any,
         batch_idx: int,
-        max_retries: int
+        max_retries: int,
+        batch_date: str = None
     ) -> int:
         """
         Optimized sequential processing with single temp table reuse.
@@ -297,7 +299,17 @@ class DatabaseService:
                                     primary_keys = []
                             
                             if primary_keys:
-                                sql = base.upsert_from_temp_sql(table_info.table_name, tmp_table, headers, primary_keys)
+                                # Use SCD2 upsert for business tables (Empresa, Estabelecimento, etc.)
+                                # Fallback to standard upsert for other tables if needed
+                                is_scd2 = hasattr(table_info, 'table_name') and table_info.table_name in ['empresa', 'estabelecimento', 'socios', 'simples']
+                                
+                                if is_scd2:
+                                    sql = base.scd2_upsert_from_temp_sql(
+                                        table_info.table_name, tmp_table, headers, primary_keys, batch_date
+                                    )
+                                else:
+                                    sql = base.upsert_from_temp_sql(table_info.table_name, tmp_table, headers, primary_keys)
+                                    
                                 await conn.execute(sql)
                             else:
                                 # Simple insert for tables without primary keys

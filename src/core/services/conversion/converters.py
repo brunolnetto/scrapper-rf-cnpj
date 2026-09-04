@@ -397,7 +397,7 @@ def convert_table_csvs_multifile(
         logger.info(f"Converting '{table_name}': {len(valid_files)} files, "
                    f"{total_mb:.1f}MB total, largest: {largest_file_mb:.1f}MB")
         
-        status = memory_monitor.get_status_report()
+        status = memory_monitor.get_status_report() if memory_monitor else {}
         available_budget_mb = max(100.0, status.get('budget_remaining_mb', 100.0))
         
         logger.info(f"Memory budget: {available_budget_mb:.1f}MB available")

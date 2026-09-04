@@ -95,6 +95,22 @@ run-etl year month:
 run-current:
     python3 -m src.main
 
+# Run ETL for a range of months: just run-range 2024 8 2025 1
+run-range start_year start_month end_year end_month:
+    #!/usr/bin/env bash
+    set -e
+    y={{start_year}}
+    m={{start_month}}
+    while [ "$y" -lt "{{end_year}}" ] || { [ "$y" -eq "{{end_year}}" ] && [ "$m" -le "{{end_month}}" ]; }; do
+        echo "=== Running ETL for $y-$(printf '%02d' $m) ==="
+        uv run python3 -m src.main --download --convert --load --force-reload --year $y --month $m
+        if [ "$m" -eq 12 ]; then
+            y=$((y + 1)); m=1
+        else
+            m=$((m + 1))
+        fi
+    done
+
 # Validate environment configuration
 validate-env:
     python3 scripts/validate_env.py 

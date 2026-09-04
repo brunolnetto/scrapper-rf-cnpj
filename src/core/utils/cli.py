@@ -1,5 +1,4 @@
 import sys
-import logging
 from src.setup.logging import logger
 from .discovery import discover_latest_period
 

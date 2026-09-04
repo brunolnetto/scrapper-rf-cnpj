@@ -7,7 +7,9 @@ requires-python = ">=3.11"
 dependencies = [
     "asyncpg>=0.30.0",
     "beautifulsoup4>=4.13.4",
+    "duckdb>=1.5.0",
     "lxml>=6.0.1",
+    "narwhals>=2.18.0",
     "numpy>=2.3.2",
     "pandas>=2.3.2",
     "polars>=1.32.3",
@@ -16,13 +18,14 @@ dependencies = [
     "pyarrow>=20.0.0",
     "pydantic>=2.11.7",
     "python-dotenv>=1.1.1",
-    "python_json_logger>=3.3.0",
+    "python-json-logger>=3.3.0",
     "pytz==2024.1",
     "randon>=0.0.6",
     "requests>=2.32.5",
     "rich>=14.1.0",
     "SQLAlchemy>=2.0.43",
     "sqlalchemy_utils>=0.41.2",
+    "sqldim",
     "tenacity>=8.5.0",
     "tqdm>=4.67.1",
     "urllib3>=2.5.0",
@@ -32,7 +35,9 @@ dependencies = [
 dev = [
     "pytest>=8.4.2",
     "pytest-asyncio>=1.1.0",
+    "pytest-cov>=7.0.0",
     "radon>=6.0.1",
+    "testcontainers[postgresql]>=4.9.0",
 ]
 
 [tool.ruff]
@@ -47,3 +52,26 @@ lint.ignore = []
 
 
 
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "--cov=src --cov-report=term-missing"
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["tests/*", "**/__init__.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "pass",
+    "raise ImportError"
+]
+
+[tool.uv.sources]
+sqldim = { path = "../sqldim", editable = true }

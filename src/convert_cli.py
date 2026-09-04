@@ -12,7 +12,7 @@ This script allows selective conversion of CNPJ data tables, useful for testing 
 import argparse
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))

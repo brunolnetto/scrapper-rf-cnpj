@@ -14,6 +14,18 @@ from ..memory.service import MemoryMonitor
 from .models import LargeDatasetConfig, UltraConservativeConfig
 from .utils import read_cgroup_memory_limit_bytes
 from .converters import convert_table_csvs_multifile
+from ....database.utils import get_table_columns as _get_db_columns
+from ...constants import TABLES_INFO_DICT as _TABLES_INFO
+
+
+def _get_source_columns(table_name: str):
+    """Return raw RF source column names (not DB schema columns with SCD meta)."""
+    info = _TABLES_INFO.get(table_name, {})
+    cols = info.get("columns")
+    if cols:
+        return list(cols)
+    _SCD_META = {"sk", "valid_from", "valid_to", "is_current", "row_hash", "metadata", "metadata_diff"}
+    return [c for c in _get_db_columns(table_name) if c not in _SCD_META]
 
 
 def convert_csvs_to_parquet(
@@ -83,7 +95,6 @@ def convert_csvs_to_parquet(
         Progress, SpinnerColumn, BarColumn, TextColumn,
         TimeElapsedColumn, MofNCompleteColumn, TimeRemainingColumn
     )
-    from ....database.utils import get_table_columns
 
     success_count = 0
     error_count = 0
@@ -107,7 +118,7 @@ def convert_csvs_to_parquet(
                 tasks = {}
                 
                 for table_name, zip_map, csv_paths, total_bytes in table_work:
-                    expected_columns = get_table_columns(table_name)
+                    expected_columns = _get_source_columns(table_name)
 
                     # Use new multi-file function
                     task = executor.submit(
@@ -167,7 +178,7 @@ def convert_csvs_to_parquet(
                     time.sleep(1.0)
                 
                 try:
-                    expected_columns = get_table_columns(table_name)
+                    expected_columns = _get_source_columns(table_name)
                     
                     # Use new multi-file function
                     result = convert_table_csvs_multifile(

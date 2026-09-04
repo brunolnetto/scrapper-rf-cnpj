@@ -9,7 +9,6 @@ import json
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from uuid import UUID
-from pathlib import Path
 
 from sqlalchemy import text
 import sqlalchemy.exc
@@ -142,6 +141,47 @@ class AuditRepository:
             raise
         except Exception as e:
             logger.error(f"Unexpected error updating file manifest {file_manifest_id}: {e}")
+            raise
+
+    def update_file_manifest_metadata(
+        self,
+        file_manifest_id: str,
+        checksum: Optional[str] = None,
+        filesize: Optional[int] = None,
+        notes: Optional[str] = None,
+    ) -> None:
+        """Update manifest metadata without altering status or completion timestamps."""
+        try:
+            update_fields = []
+            params = {'manifest_id': file_manifest_id}
+
+            if checksum is not None:
+                update_fields.append('checksum = :checksum')
+                params['checksum'] = checksum
+
+            if filesize is not None:
+                update_fields.append('filesize = :filesize')
+                params['filesize'] = filesize
+
+            if notes is not None:
+                update_fields.append('notes = :notes')
+                params['notes'] = notes
+
+            if not update_fields:
+                return
+
+            with self.database.engine.begin() as conn:
+                conn.execute(text(f'''
+                    UPDATE file_audit_manifest
+                    SET {', '.join(update_fields)}
+                    WHERE file_audit_id = :manifest_id
+                '''), params)
+
+        except (sqlalchemy.exc.SQLAlchemyError, sqlalchemy.exc.DatabaseError) as e:
+            logger.error(f"Database error updating manifest metadata {file_manifest_id}: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error updating manifest metadata {file_manifest_id}: {e}")
             raise
 
     def find_table_audit(self, table_name: str) -> Optional[str]:
