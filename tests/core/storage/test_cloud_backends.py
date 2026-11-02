@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from src.core.storage import StorageBackend
 from src.core.storage.azure_blob import AzureBlobStorageBackend
 from src.core.storage.s3 import S3StorageBackend
 
@@ -123,6 +124,7 @@ def test_cloud_adapter_round_trip_list_exists_and_delete(tmp_path: Path, provide
     else:
         backend = S3StorageBackend("artifact-bucket", client=FakeS3Client())
 
+    assert isinstance(backend, StorageBackend)
     key = "raw/zip/2026/11/source.zip"
     assert backend.upload_file(source, key) == key
     assert backend.exists(key)
@@ -160,6 +162,21 @@ def test_azure_rejects_non_https_account_url():
             "artifacts",
             container_client=FakeAzureContainer(),
         )
+
+
+@pytest.mark.parametrize("prefix", ["/raw/", "../raw/", "raw\\\\..\\\\"])
+def test_cloud_adapters_reject_unsafe_prefixes(prefix: str):
+    azure = AzureBlobStorageBackend(
+        "https://account.blob.core.windows.net",
+        "artifacts",
+        container_client=FakeAzureContainer(),
+    )
+    s3 = S3StorageBackend("artifact-bucket", client=FakeS3Client())
+
+    with pytest.raises(ValueError):
+        azure.list_keys(prefix)
+    with pytest.raises(ValueError):
+        s3.list_keys(prefix)
 
 
 def test_s3_exists_does_not_hide_access_denied():
