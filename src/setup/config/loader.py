@@ -16,7 +16,8 @@ from .models import (
     AuditConfig, 
     DataSourceConfig, 
     DataSinkConfig, 
-    PathConfig
+    PathConfig,
+    StorageConfig
 )
 from .validation import ConfigurationValidator
 from ..logging import logger
