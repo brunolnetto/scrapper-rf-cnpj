@@ -24,16 +24,16 @@ class FakeAzureBlob:
         self.container = container
         self.name = name
 
-    def upload_blob(self, data, overwrite, max_concurrency):
+    def upload_blob(self, data, **_kwargs):
         self.container.objects[self.name] = data.read()
 
-    def download_blob(self, max_concurrency):
+    def download_blob(self, **_kwargs):
         return FakeAzureDownloader(self.container.objects[self.name])
 
     def exists(self):
         return self.name in self.container.objects
 
-    def delete_blob(self, delete_snapshots):
+    def delete_blob(self, **_kwargs):
         if self.name not in self.container.objects:
             raise FakeAzureNotFound()
         del self.container.objects[self.name]
@@ -71,7 +71,7 @@ class FakePaginator:
     def __init__(self, client):
         self.client = client
 
-    def paginate(self, Bucket, Prefix):
+    def paginate(self, Prefix, **_kwargs):
         keys = sorted(
             key for key in self.client.objects
             if key.startswith(Prefix)
@@ -83,15 +83,15 @@ class FakeS3Client:
     def __init__(self):
         self.objects: dict[str, bytes] = {}
 
-    def upload_fileobj(self, fileobj, Bucket, Key, Config=None):
+    def upload_fileobj(self, fileobj, Key, **_kwargs):
         self.objects[Key] = fileobj.read()
 
-    def get_object(self, Bucket, Key):
+    def get_object(self, Key, **_kwargs):
         if Key not in self.objects:
             raise FakeS3Error()
         return {"Body": BytesIO(self.objects[Key])}
 
-    def head_object(self, Bucket, Key):
+    def head_object(self, Key, **_kwargs):
         if Key not in self.objects:
             raise FakeS3Error()
         return {}
@@ -100,7 +100,7 @@ class FakeS3Client:
         assert name == "list_objects_v2"
         return FakePaginator(self)
 
-    def delete_object(self, Bucket, Key):
+    def delete_object(self, Key, **_kwargs):
         self.objects.pop(Key, None)
 
     def close(self):
@@ -193,7 +193,7 @@ def test_azure_rejects_raw_credential_material():
 def test_s3_exists_does_not_hide_access_denied():
     client = FakeS3Client()
 
-    def denied(**kwargs):
+    def denied(**_kwargs):
         raise FakeS3Error(code="AccessDenied", status=403)
 
     client.head_object = denied
