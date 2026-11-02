@@ -18,7 +18,7 @@ def test_factory_selects_azure_backend(monkeypatch):
     monkeypatch.setattr(
         azure_blob,
         "AzureBlobStorageBackend",
-        lambda **kwargs: sentinel,
+        lambda **_kwargs: sentinel,
     )
     config = StorageConfig(
         provider="azure",
