@@ -179,6 +179,17 @@ def test_cloud_adapters_reject_unsafe_prefixes(prefix: str):
         s3.list_keys(prefix)
 
 
+def test_azure_rejects_raw_credential_material():
+    for credential in ("account-key", {"account_key": "account-key"}):
+        with pytest.raises(ValueError):
+            AzureBlobStorageBackend(
+                "https://account.blob.core.windows.net",
+                "artifacts",
+                credential=credential,
+                container_client=FakeAzureContainer(),
+            )
+
+
 def test_s3_exists_does_not_hide_access_denied():
     client = FakeS3Client()
 
