@@ -55,7 +55,7 @@ def test_delete_is_idempotent(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "key",
-    ["", "../outside.txt", "raw/../../outside.txt", "/absolute/path", r"raw\..\outside.txt"],
+    ["", "../outside.txt", "raw/../../outside.txt", "/absolute/path", r"raw\..\outside.txt", r"raw\file.txt"],
 )
 def test_rejects_unsafe_keys(tmp_path: Path, key: str) -> None:
     backend = LocalStorageBackend(tmp_path / "objects")
