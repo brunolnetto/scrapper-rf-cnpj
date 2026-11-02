@@ -37,7 +37,7 @@ def test_download_and_extract_persist_artifacts(monkeypatch, tmp_path: Path):
     import requests
 
     payload = make_zip()
-    monkeypatch.setattr(requests, "get", lambda *args, **kwargs: FakeResponse(payload))
+    monkeypatch.setattr(requests, "get", lambda *_args, **_kwargs: FakeResponse(payload))
 
     config = SimpleNamespace(
         year=2026,
