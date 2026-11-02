@@ -190,6 +190,7 @@ class ConfigLoader:
             DownloadConfig, 
             DevelopmentConfig, 
             Environment,
+            StorageConfig,
         )
 
         from ...utils.memory import _get_system_memory_mb
