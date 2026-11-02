@@ -289,6 +289,11 @@ class ConfigLoader:
             row_limit_percent=float(os.getenv("ETL_DEV_ROW_LIMIT_PERCENT", "0.1"))
         )
         
+        storage = StorageConfig(
+            provider=os.getenv("STORAGE_PROVIDER", "local").strip().lower(),
+            root_path=os.getenv("STORAGE_ROOT_PATH", "data/objects"),
+        )
+
         # Load main ETL config
         pipeline_config = PipelineConfig(
             environment=environment,
