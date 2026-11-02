@@ -57,7 +57,7 @@ def test_download_and_extract_persist_artifacts(monkeypatch, tmp_path: Path):
     service._extract_zipfile(audit, "Empresas.zip", str(download_dir), str(extract_dir))
 
     assert storage.exists("raw/zip/2026/11/Empresas.zip")
-    assert storage.exists("raw/extracted/2026/11/Empresas.csv")
+    assert storage.exists("raw/extracted/2026/11/Empresas/Empresas.csv")
     assert (extract_dir / "Empresas.csv").is_file()
     assert audit.downloaded_at is not None
     assert audit.processed_at is not None
