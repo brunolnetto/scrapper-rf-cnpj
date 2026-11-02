@@ -16,8 +16,7 @@ from .models import (
     AuditConfig, 
     DataSourceConfig, 
     DataSinkConfig, 
-    PathConfig,
-    StorageConfig
+    PathConfig
 )
 from .validation import ConfigurationValidator
 from ..logging import logger
@@ -145,7 +144,8 @@ class ConfigLoader:
             loading=temp_pipeline_config.loading,
             download=temp_pipeline_config.download,
             development=temp_pipeline_config.development,
-            storage=temp_pipeline_config.storage
+            storage=temp_pipeline_config.storage,
+            memory=temp_pipeline_config.memory
         )
         
         # Create final audit config with database
@@ -217,11 +217,6 @@ class ConfigLoader:
             baseline_buffer_mb=256  # Hardcoded - internal buffer
         )
 
-        memory = MemoryMonitorConfig(
-            memory_limit_mb=max(512, int(sys_mem_mb * 0.5)), # Default to 50% of system memory or at least 512MB
-            cleanup_threshold_ratio=0.8,  # Hardcoded - memory management
-            baseline_buffer_mb=256  # Hardcoded - internal buffer
-        )
         
         # Load loading config (consolidated timeout/retry, removed micro-optimizations)
         timeout_seconds = int(os.getenv("ETL_TIMEOUT_SECONDS", "300"))  # Consolidated timeout
