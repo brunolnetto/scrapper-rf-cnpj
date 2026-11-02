@@ -15,7 +15,7 @@ class MainBase(DimensionModel):
     precedes SCD2Mixin in every business model) and makes the remapping
     explicit rather than relying on opaque ``sa_column_kwargs`` passthrough.
     """
-    checksum: Optional[str] = DimField(
+    checksum: Optional[str] = SQLModelField(
         default=None,
         sa_column=Column(String, name="row_hash", index=True, nullable=True),
     )
