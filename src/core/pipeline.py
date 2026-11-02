@@ -10,6 +10,7 @@ from ..database.models.audit import TableAuditManifest, AuditBase, AuditStatus
 from ..database.models.business import MainBase
 from .utils.development_filter import DevelopmentFilter
 from .interfaces import Pipeline
+from .storage import create_storage_backend
 
 from .schemas import FileInfo, AuditMetadata
 from .services.audit.service import AuditService
@@ -30,7 +31,10 @@ class ReceitaCNPJPipeline(Pipeline):
         self._batch_name: Optional[str] = None
 
         # Initialize file downloader and uploader (these are fast)
-        self.file_downloader = FileDownloadService(config=config_service)
+        self.storage_backend = create_storage_backend(config_service.pipeline.storage)
+        self.file_downloader = FileDownloadService(
+            config=config_service, storage_backend=self.storage_backend
+        )
         
         self.dev_filter = DevelopmentFilter(self.config.pipeline.development)
         

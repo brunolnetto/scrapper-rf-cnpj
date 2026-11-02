@@ -262,6 +262,11 @@ ETL_ENABLE_INTERNAL_PARALLELISM=true
 
 ## Security Considerations
 
+### Source download authentication
+- `RF_DOWNLOAD_TOKEN` is optional and, when present, is sent as Basic authentication to the download endpoint.
+- Do not commit real values to `.env.template`; inject the secret through the runtime environment or a secret manager.
+
+
 ### Database Credentials
 - **Principle**: Use least-privilege database users
 - **Separation**: Different users for main and audit databases
