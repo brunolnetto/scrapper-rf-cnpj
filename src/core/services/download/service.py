@@ -213,7 +213,7 @@ class FileDownloadService:
                     if self.storage_backend is not None:
                         self.storage_backend.upload_file(
                             extracted_file,
-                            self._object_key("raw/extracted", relative_key),
+                            self._object_key("raw/extracted", f"{Path(zip_filename).stem}/{relative_key}"),
                         )
 
                     local_target = extract_dir / relative_key
