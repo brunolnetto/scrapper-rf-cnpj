@@ -304,7 +304,8 @@ class ConfigLoader:
             conversion=conversion,
             loading=loading,
             download=download,
-            development=development
+            development=development,
+            storage=storage
         )
         
         return pipeline_config
