@@ -164,7 +164,7 @@ def test_azure_rejects_non_https_account_url():
         )
 
 
-@pytest.mark.parametrize("prefix", ["/raw/", "../raw/", "raw\\\\..\\\\"])
+@pytest.mark.parametrize("prefix", ["/raw/", "../raw/", "raw//", "raw\\\\..\\\\"])
 def test_cloud_adapters_reject_unsafe_prefixes(prefix: str):
     azure = AzureBlobStorageBackend(
         "https://account.blob.core.windows.net",
