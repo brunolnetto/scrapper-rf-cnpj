@@ -1,4 +1,7 @@
 import os
+import shutil
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -10,11 +13,15 @@ from ....setup.logging import logger
 from ....setup.config import ConfigurationService
 from ....utils.misc import get_max_workers
 from ....utils.zip import extract_zip_file
+from ....core.storage import StorageBackend, create_storage_backend
 
 
 class FileDownloadService:
-    def __init__(self, max_workers: int = None, config: ConfigurationService = None):
+    def __init__(self, max_workers: int = None, config: ConfigurationService = None, storage_backend: StorageBackend | None = None):
         self.config = config
+        self.storage_backend = storage_backend
+        if self.storage_backend is None and config is not None:
+            self.storage_backend = create_storage_backend(config.pipeline.storage)
         self.max_workers = max_workers or get_max_workers()
             
         # Apply development mode filtering if enabled
@@ -22,6 +29,16 @@ class FileDownloadService:
             # Reduce workers in development mode for better debugging
             self.max_workers = min(self.max_workers, 2)
             logger.info(f"[DEV-MODE] Limited download workers to {self.max_workers}")
+
+    def _object_key(self, stage: str, filename: str) -> str:
+        """Build a deterministic storage key for the configured ingestion period."""
+        if self.config is None:
+            return f"{stage}/{filename}"
+        year = self.config.year or self.config.pipeline.year
+        month = self.config.month or self.config.pipeline.month
+        if year is None or month is None:
+            raise ValueError("Storage-backed download requires an ingestion year and month")
+        return f"{stage}/{year:04d}/{month:02d}/{filename}"
 
     def download_and_extract(
         self,
@@ -127,16 +144,22 @@ class FileDownloadService:
         has_progress_bar: bool,
     ):
         file_url = f"{url.rstrip('/')}/{zip_filename}"
-        local_filename = os.path.join(download_path, zip_filename)
+        if Path(zip_filename).name != zip_filename:
+            raise ValueError(f"Invalid ZIP filename: {zip_filename!r}")
+        download_dir = Path(download_path)
+        download_dir.mkdir(parents=True, exist_ok=True)
+        local_filename = download_dir / zip_filename
         progress = None
         try:
             logger.info(f"Starting download for file: {zip_filename}")
             import requests
 
             import base64 as _b64
-            _token = "YggdBLfdninEJX9"
-            _auth = _b64.b64encode(f"{_token}:".encode()).decode()
-            _headers = {"Authorization": f"Basic {_auth}"}
+            token = os.getenv("RF_DOWNLOAD_TOKEN")
+            _headers = {}
+            if token:
+                encoded_token = _b64.b64encode(f"{token}:".encode()).decode()
+                _headers["Authorization"] = f"Basic {encoded_token}"
             with requests.get(file_url, stream=True, headers=_headers) as r:
                 r.raise_for_status()
                 total_size = int(r.headers.get("Content-Length", 0))
@@ -152,6 +175,11 @@ class FileDownloadService:
                                 progress.update(len(chunk))
                 if has_progress_bar and progress:
                     progress.close()
+            if self.storage_backend is not None:
+                self.storage_backend.upload_file(
+                    local_filename,
+                    self._object_key("raw/zip", zip_filename),
+                )
             logger.info(f"Successfully downloaded file: {zip_filename}")
             audit.downloaded_at = datetime.now()
             # file_size_bytes removed - file size tracking moved to file manifest level
@@ -163,18 +191,40 @@ class FileDownloadService:
         return audit
 
     def _extract_zipfile(self, audit, zip_filename, download_path, extract_path):
-        full_path = os.path.join(download_path, zip_filename)
+        if Path(zip_filename).name != zip_filename:
+            raise ValueError(f"Invalid ZIP filename: {zip_filename!r}")
+
+        full_path = Path(download_path) / zip_filename
+        extract_dir = Path(extract_path)
+        extract_dir.mkdir(parents=True, exist_ok=True)
+
         try:
             logger.info(f"Extracting file {zip_filename}...")
-            
-            # Check if we're in development mode and limit files per blob
-            max_files = self.config.get_max_files_per_blob()
-            logger.debug(f"[DEV-MODE] Limiting extraction to {max_files} files per blob for {zip_filename}")
-            
-            extract_zip_file(full_path, extract_path, max_files)
-        except Exception as e:
-            logger.error(f"Error extracting file {zip_filename}: {e}")
-        finally:
-            logger.info(f"Finished file extraction of file {zip_filename}.")
+            max_files = self.config.get_max_files_per_blob() if self.config else None
+            if self.config and not self.config.is_development_mode():
+                max_files = None
+
+            with TemporaryDirectory(prefix="cnpj-extract-") as workspace:
+                workspace_path = Path(workspace)
+                extracted_files = extract_zip_file(full_path, workspace_path, max_files)
+
+                for extracted_file in extracted_files:
+                    relative_key = extracted_file.relative_to(workspace_path).as_posix()
+                    if self.storage_backend is not None:
+                        self.storage_backend.upload_file(
+                            extracted_file,
+                            self._object_key("raw/extracted", relative_key),
+                        )
+
+                    local_target = extract_dir / relative_key
+                    local_target.parent.mkdir(parents=True, exist_ok=True)
+                    with extracted_file.open("rb") as source, local_target.open("wb") as target:
+                        shutil.copyfileobj(source, target, length=1024 * 1024)
+
             audit.processed_at = datetime.now()
             return audit
+        except Exception as e:
+            logger.error(f"Error extracting file {zip_filename}: {e}")
+            raise
+        finally:
+            logger.info(f"Finished file extraction of file {zip_filename}.")
