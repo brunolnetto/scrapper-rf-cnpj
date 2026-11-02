@@ -624,6 +624,7 @@ class PipelineConfig(BaseModel):
     """Main pipeline configuration with nested components."""
     
     environment: Environment = Field(default=Environment.DEVELOPMENT, description="Pipeline execution environment (DEVELOPMENT/PRODUCTION)")
+    storage: StorageConfig = Field(default_factory=StorageConfig, description="Durable artifact storage backend")
     development: DevelopmentConfig = Field(default_factory=DevelopmentConfig, description="Development mode and testing settings")
     
     delete_files: bool = Field(default=True, description="Delete temporary files after successful processing")
