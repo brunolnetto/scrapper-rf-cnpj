@@ -454,21 +454,55 @@ class DevelopmentConfig(BaseModel):
 
 
 class StorageConfig(BaseModel):
-    """Durable artifact storage configuration.
+    """Durable artifact storage configuration for local and cloud backends."""
 
-    The first implementation intentionally supports only the local provider.
-    Cloud providers are added in a later, provider-specific change.
-    """
-
-    provider: Literal["local"] = Field(
+    provider: Literal["local", "azure", "s3"] = Field(
         default="local",
-        description="Storage implementation; only local is currently supported"
+        description="Storage provider: local filesystem, Azure Blob Storage, or Amazon S3",
     )
     root_path: str = Field(
         default="data/objects",
         min_length=1,
-        description="Root directory for durable local artifacts"
+        description="Root directory used only by the local backend",
     )
+
+    azure_account_url: Optional[str] = Field(
+        default=None,
+        description="HTTPS Blob service URL, e.g. https://account.blob.core.windows.net",
+    )
+    azure_container_name: Optional[str] = Field(
+        default=None,
+        min_length=3,
+        max_length=63,
+        description="Existing Azure Blob Storage container",
+    )
+    azure_max_concurrency: int = Field(default=4, ge=1, le=16)
+
+    s3_bucket_name: Optional[str] = Field(
+        default=None,
+        min_length=3,
+        max_length=63,
+        description="Existing Amazon S3 bucket",
+    )
+    s3_region_name: Optional[str] = Field(default=None)
+    s3_endpoint_url: Optional[str] = Field(
+        default=None,
+        description="Optional S3-compatible endpoint, primarily for LocalStack/testing",
+    )
+    s3_max_concurrency: int = Field(default=4, ge=1, le=16)
+    s3_multipart_threshold_mb: int = Field(default=64, ge=5, le=512)
+
+    @model_validator(mode="after")
+    def validate_provider_settings(self):
+        if self.provider == "azure":
+            if not self.azure_account_url or not self.azure_account_url.startswith("https://"):
+                raise ValueError("azure_account_url must be an HTTPS URL when STORAGE_PROVIDER=azure")
+            if not self.azure_container_name:
+                raise ValueError("azure_container_name is required when STORAGE_PROVIDER=azure")
+        elif self.provider == "s3":
+            if not self.s3_bucket_name:
+                raise ValueError("s3_bucket_name is required when STORAGE_PROVIDER=s3")
+        return self
 
 
 class PathConfig(BaseModel):
