@@ -13,7 +13,7 @@ from ....setup.logging import logger
 from ....setup.config import ConfigurationService
 from ....utils.misc import get_max_workers
 from ....utils.zip import extract_zip_file
-from ....core.storage import StorageBackend, create_storage_backend
+from ....core.storage import StorageBackend, create_storage_backend, persist_artifact_manifest
 
 
 class FileDownloadService:
@@ -29,6 +29,32 @@ class FileDownloadService:
             # Reduce workers in development mode for better debugging
             self.max_workers = min(self.max_workers, 2)
             logger.info(f"[DEV-MODE] Limited download workers to {self.max_workers}")
+
+    def _record_storage_manifest(self, audit, artifact_path, object_key, stage, source_key=None):
+        if self.storage_backend is None or self.config is None:
+            return None
+
+        year = self.config.year or self.config.pipeline.year
+        month = self.config.month or self.config.pipeline.month
+        if year is None or month is None:
+            raise ValueError("Artifact manifests require an ingestion year and month")
+
+        manifest_key = persist_artifact_manifest(
+            self.storage_backend,
+            artifact_path,
+            object_key,
+            stage=stage,
+            year=year,
+            month=month,
+            source_key=source_key,
+        )
+        notes = dict(getattr(audit, "notes", None) or {})
+        manifests = list(notes.get("storage_manifests", []))
+        if manifest_key not in manifests:
+            manifests.append(manifest_key)
+        notes["storage_manifests"] = manifests
+        audit.notes = notes
+        return manifest_key
 
     def _object_key(self, stage: str, filename: str) -> str:
         """Build a deterministic storage key for the configured ingestion period."""
@@ -180,6 +206,12 @@ class FileDownloadService:
                     local_filename,
                     self._object_key("raw/zip", zip_filename),
                 )
+                self._record_storage_manifest(
+                    audit,
+                    local_filename,
+                    self._object_key("raw/zip", zip_filename),
+                    "raw/zip",
+                )
             logger.info(f"Successfully downloaded file: {zip_filename}")
             audit.downloaded_at = datetime.now()
             # file_size_bytes removed - file size tracking moved to file manifest level
@@ -214,6 +246,13 @@ class FileDownloadService:
                         self.storage_backend.upload_file(
                             extracted_file,
                             self._object_key("raw/extracted", f"{Path(zip_filename).stem}/{relative_key}"),
+                        )
+                        self._record_storage_manifest(
+                            audit,
+                            extracted_file,
+                            self._object_key("raw/extracted", f"{Path(zip_filename).stem}/{relative_key}"),
+                            "raw/extracted",
+                            source_key=self._object_key("raw/zip", zip_filename),
                         )
 
                     local_target = extract_dir / relative_key

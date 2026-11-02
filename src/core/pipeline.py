@@ -10,7 +10,7 @@ from ..database.models.audit import TableAuditManifest, AuditBase, AuditStatus
 from ..database.models.business import MainBase
 from .utils.development_filter import DevelopmentFilter
 from .interfaces import Pipeline
-from .storage import create_storage_backend
+from .storage import create_storage_backend, persist_artifact_manifest
 
 from .schemas import FileInfo, AuditMetadata
 from .services.audit.service import AuditService
@@ -270,16 +270,33 @@ class ReceitaCNPJPipeline(Pipeline):
             raise ValueError("Storage-backed artifacts require an ingestion year and month")
         return f"{stage}/{year:04d}/{month:02d}/"
 
-    def _persist_parquet_artifacts(self, output_dir: Path) -> dict[str, str]:
+    def _persist_parquet_artifacts(self, output_dir: Path) -> dict[str, dict[str, str]]:
         """Persist successful Parquet outputs and return filename-to-key mappings."""
         if self.storage_backend is None:
             return {}
 
         prefix = self._storage_period_prefix("processed/parquet")
-        stored: dict[str, str] = {}
+        year = self.config.year or self.config.pipeline.year
+        month = self.config.month or self.config.pipeline.month
+        if year is None or month is None:
+            raise ValueError("Parquet manifests require an ingestion year and month")
+
+        stored: dict[str, dict[str, str]] = {}
         for parquet_file in sorted(output_dir.glob("*.parquet")):
             key = f"{prefix}{parquet_file.name}"
-            stored[parquet_file.name] = self.storage_backend.upload_file(parquet_file, key)
+            stored_key = self.storage_backend.upload_file(parquet_file, key)
+            manifest_key = persist_artifact_manifest(
+                self.storage_backend,
+                parquet_file,
+                stored_key,
+                stage="processed/parquet",
+                year=year,
+                month=month,
+            )
+            stored[parquet_file.name] = {
+                "storage_key": stored_key,
+                "manifest_key": manifest_key,
+            }
         return stored
 
     def _restore_parquet_artifacts(self, conversion_path: Path) -> list[Path]:
@@ -352,11 +369,13 @@ class ReceitaCNPJPipeline(Pipeline):
                 for zip_name, files in audit_map.get(table_name, {}).items():
                     all_csvs.extend(files)
 
+                storage_metadata = storage_keys.get(parquet_file_path.name, {})
                 processing_metadata = {
                     "conversion_method": "convert_csvs_to_parquet_smart",
                     "output_format": "parquet",
                     "output_file_size_bytes": parquet_file_path.stat().st_size,
-                    "storage_key": storage_keys.get(parquet_file_path.name),
+                    "storage_key": storage_metadata.get("storage_key"),
+                    "storage_manifest_key": storage_metadata.get("manifest_key"),
                 }
                 self.audit_service.update_table_audit_after_conversion(
                     table_name, str(parquet_file_path), processing_metadata, original_sources=all_csvs
