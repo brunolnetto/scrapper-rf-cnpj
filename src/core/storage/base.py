@@ -35,7 +35,8 @@ def validate_object_prefix(prefix: str) -> str:
     if prefix.startswith("/") or "\\" in prefix or "\x00" in prefix:
         raise ValueError(f"Invalid storage prefix: {prefix!r}")
 
-    parts = prefix.rstrip("/").split("/")
+    normalized = prefix[:-1] if prefix.endswith("/") else prefix
+    parts = normalized.split("/")
     if not parts or any(part in {"", ".", ".."} for part in parts):
         raise ValueError(f"Invalid storage prefix: {prefix!r}")
     if _WINDOWS_DRIVE_PREFIX.match(prefix):
