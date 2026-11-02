@@ -34,7 +34,7 @@ def test_factory_selects_s3_backend(monkeypatch):
     from src.core.storage import s3
 
     sentinel = object()
-    monkeypatch.setattr(s3, "S3StorageBackend", lambda **kwargs: sentinel)
+    monkeypatch.setattr(s3, "S3StorageBackend", lambda **_kwargs: sentinel)
     config = StorageConfig(
         provider="s3",
         s3_bucket_name="cnpj-artifacts",
