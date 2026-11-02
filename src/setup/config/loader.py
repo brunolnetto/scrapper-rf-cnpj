@@ -144,7 +144,8 @@ class ConfigLoader:
             conversion=temp_pipeline_config.conversion,
             loading=temp_pipeline_config.loading,
             download=temp_pipeline_config.download,
-            development=temp_pipeline_config.development
+            development=temp_pipeline_config.development,
+            storage=temp_pipeline_config.storage
         )
         
         # Create final audit config with database
