@@ -453,6 +453,24 @@ class DevelopmentConfig(BaseModel):
     )
 
 
+class StorageConfig(BaseModel):
+    """Durable artifact storage configuration.
+
+    The first implementation intentionally supports only the local provider.
+    Cloud providers are added in a later, provider-specific change.
+    """
+
+    provider: Literal["local"] = Field(
+        default="local",
+        description="Storage implementation; only local is currently supported"
+    )
+    root_path: str = Field(
+        default="data/objects",
+        min_length=1,
+        description="Root directory for durable local artifacts"
+    )
+
+
 class PathConfig(BaseModel):
     """File system paths configuration for ETL stages."""
     
