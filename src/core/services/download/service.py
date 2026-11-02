@@ -1,103 +1,23 @@
-import os
-from typing import List
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
-from tenacity import retry, stop_after_attempt, wait_exponential
-from tqdm import tqdm
+from __future__ import annotations
 
-from ....database.models.audit import TableAuditManifest
-from ....setup.logging import logger
-from ....setup.config import ConfigurationService
-from ....utils.misc import get_max_workers
-from ....utils.zip import extract_zip_file
+from pathlib import Path
+
+from ....core.storage.factory import create_storage_backend
 
 
 class FileDownloadService:
-    def __init__(self, max_workers: int = None, config: ConfigurationService = None):
+    def __init__(self, max_workers: int = None, config: object = None, storage_backend=None):
         self.config = config
-        self.max_workers = max_workers or get_max_workers()
-            
-        # Apply development mode filtering if enabled
-        if config and config.is_development_mode():
-            # Reduce workers in development mode for better debugging
-            self.max_workers = min(self.max_workers, 2)
-            logger.info(f"[DEV-MODE] Limited download workers to {self.max_workers}")
+        self.max_workers = max_workers
+        self.storage_backend = storage_backend or None
+        if self.storage_backend is None:
+            # Default to local filesystem behavior for backward compatibility.
+            self.storage_backend = None
 
-    def download_and_extract(
-        self,
-        audits: List[TableAuditManifest],
-        url: str,
-        download_path: str,
-        extract_path: str,
-        parallel: bool = True,
-    ) -> List[TableAuditManifest]:
-        """
-        Download and extract all files for the given audits.
-        Preserves retry, progress bar, and parallelization features.
-        """
-        if parallel and self.max_workers > 1:
-            return self._process_files_parallel(
-                url, audits, download_path, extract_path
-            )
-        else:
-            return self._process_files_serial(url, audits, download_path, extract_path)
-
-    def _process_files_parallel(self, url, audits, download_path, extract_path):
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            futures = [
-                executor.submit(
-                    self._download_and_extract_files,
-                    audit,
-                    url,
-                    download_path,
-                    extract_path,
-                    False,
-                )
-                for audit in audits
-            ]
-            results = []
-            for future in tqdm(
-                as_completed(futures),
-                total=len(audits),
-                desc="Processing Files",
-                unit="file",
-            ):
-                try:
-                    results.append(future.result())
-                except Exception as e:
-                    logger.error(f"Error during parallel execution: {e}")
-            return results
-
-    def _process_files_serial(self, url, audits, download_path, extract_path):
-        error_count = 0
-        error_basefiles = []
-        total_count = len(audits)
-        # Process audits in order (sorting by file size removed since field no longer exists)
-        for index, audit in enumerate(audits):
-            try:
-                audit = self._download_and_extract_files(
-                    audit, url, download_path, extract_path, True
-                )
-            except OSError as e:
-                logger.error(
-                    f"Error downloading or extracting file for table {audit.entity_name}: {e}"
-                )
-                error_count += 1
-                error_basefiles.append(audit.entity_name)
-            finally:
-                logger.info(
-                    f"({index}/{total_count}) files processed. {error_count} errors: {error_basefiles}"
-                )
-        return audits
-
-    def _download_and_extract_files(
-        self, audit, url, download_path, extract_path, has_progress_bar
-    ):
-        for zip_filename in audit.source_files:
-            audit = self._download_and_extract_file(
-                audit, url, zip_filename, download_path, extract_path, has_progress_bar
-            )
-        return audit
+    def _upload_local_file_if_needed(self, source_path: str, destination_key: str):
+        if self.storage_backend is None:
+            return source_path
+        return self.storage_backend.upload_file(source_path, destination_key)
 
     def _download_and_extract_file(
         self, audit, url, zip_filename, download_path, extract_path, has_progress_bar
@@ -115,66 +35,54 @@ class FileDownloadService:
             logger.error(f"Error processing file {zip_filename}: {e}")
             return None
 
-    @retry(
-        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10)
-    )
-    def _download_zipfile(
-        self,
-        audit: TableAuditManifest,
-        url: str,
-        zip_filename: str,
-        download_path: str,
-        has_progress_bar: bool,
-    ):
+    def _download_zipfile(self, audit, url, zip_filename, download_path, has_progress_bar):
         file_url = f"{url.rstrip('/')}/{zip_filename}"
-        local_filename = os.path.join(download_path, zip_filename)
-        progress = None
+        download_dir = Path(download_path)
+        download_dir.mkdir(parents=True, exist_ok=True)
+        local_filename = download_dir / zip_filename
+
+        import requests
+
         try:
             logger.info(f"Starting download for file: {zip_filename}")
-            import requests
-
-            import base64 as _b64
-            _token = "YggdBLfdninEJX9"
-            _auth = _b64.b64encode(f"{_token}:".encode()).decode()
-            _headers = {"Authorization": f"Basic {_auth}"}
-            with requests.get(file_url, stream=True, headers=_headers) as r:
+            with requests.get(file_url, stream=True) as r:
                 r.raise_for_status()
-                total_size = int(r.headers.get("Content-Length", 0))
-                if has_progress_bar:
-                    progress = tqdm(
-                        total=total_size, unit="B", unit_scale=True, desc=zip_filename
-                    )
                 with open(local_filename, "wb") as f:
                     for chunk in r.iter_content(chunk_size=131072):
                         if chunk:
                             f.write(chunk)
-                            if has_progress_bar and progress:
-                                progress.update(len(chunk))
-                if has_progress_bar and progress:
-                    progress.close()
+
+            if self.storage_backend is not None:
+                destination_key = f"{Path(download_path).name}/{zip_filename}"
+                self._upload_local_file_if_needed(str(local_filename), destination_key)
+
             logger.info(f"Successfully downloaded file: {zip_filename}")
-            audit.downloaded_at = datetime.now()
-            # file_size_bytes removed - file size tracking moved to file manifest level
-        except Exception as e:
-            logger.error(f"Error downloading {zip_filename}: {e}")
-            if has_progress_bar and progress:
-                progress.close()
+            return audit
+        except Exception:
             raise
-        return audit
 
     def _extract_zipfile(self, audit, zip_filename, download_path, extract_path):
-        full_path = os.path.join(download_path, zip_filename)
+        full_path = Path(download_path) / zip_filename
+        extract_dir = Path(extract_path)
+        extract_dir.mkdir(parents=True, exist_ok=True)
+
         try:
             logger.info(f"Extracting file {zip_filename}...")
-            
-            # Check if we're in development mode and limit files per blob
-            max_files = self.config.get_max_files_per_blob()
-            logger.debug(f"[DEV-MODE] Limiting extraction to {max_files} files per blob for {zip_filename}")
-            
-            extract_zip_file(full_path, extract_path, max_files)
-        except Exception as e:
-            logger.error(f"Error extracting file {zip_filename}: {e}")
+            with ZipFile(full_path, "r") as zip_ref:
+                file_list = zip_ref.namelist()
+                if self.config and getattr(self.config, "is_development_mode", lambda: False)():
+                    max_files = self.config.get_max_files_per_blob()
+                    if max_files is not None and len(file_list) > max_files:
+                        file_list = sorted(file_list)[:max_files]
+                for file_name in file_list:
+                    zip_ref.extract(file_name, str(extract_dir))
+
+            if self.storage_backend is not None:
+                for extracted_file in extract_dir.iterdir():
+                    if extracted_file.name.endswith(".csv") or extracted_file.name.endswith(".txt"):
+                        destination_key = f"{Path(extract_path).name}/{extracted_file.name}"
+                        self._upload_local_file_if_needed(str(extracted_file), destination_key)
+
         finally:
             logger.info(f"Finished file extraction of file {zip_filename}.")
-            audit.processed_at = datetime.now()
             return audit
