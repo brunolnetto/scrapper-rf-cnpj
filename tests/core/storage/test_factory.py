@@ -11,6 +11,12 @@ def test_factory_creates_local_backend_by_default(tmp_path):
     assert isinstance(backend, LocalStorageBackend)
 
 
-def test_storage_config_rejects_unimplemented_provider():
+@pytest.mark.parametrize("provider", ["azure", "s3"])
+def test_storage_config_requires_provider_target(provider):
     with pytest.raises(ValidationError):
-        StorageConfig(provider="azure")  # type: ignore[arg-type]
+        StorageConfig(provider=provider)
+
+
+def test_storage_config_rejects_unknown_provider():
+    with pytest.raises(ValidationError):
+        StorageConfig(provider="gcs")
