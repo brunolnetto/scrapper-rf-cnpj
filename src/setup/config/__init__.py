@@ -16,6 +16,8 @@ from .models import (
     PipelineConfig,
     AuditConfig,
     AppConfig,
+    PathConfig,
+    StorageConfig,
 )
 from .validation import ConfigurationValidator
 from .profiles import ConfigurationProfile, load_profile, get_profile

@@ -46,6 +46,18 @@ AUDIT_DB_NAME=dadosrfb_analysis
 
 ### 2. File System & Path Configuration
 
+#### Durable Artifact Storage
+```bash
+STORAGE_PROVIDER=local
+STORAGE_ROOT_PATH=data/objects
+```
+- **Purpose**: Selects durable artifact storage independently from temporary ETL workspace paths.
+- **Supported values**: `local` in this first implementation.
+- **Default**: `local`.
+- **STORAGE_ROOT_PATH**: Root directory used by the local object store. This does not replace existing download, extraction and conversion workspace paths.
+- **Cloud providers**: Azure Blob Storage or S3 require dedicated adapters; unsupported providers are rejected instead of silently falling back to local.
+
+
 #### ETL Processing Paths
 ```bash
 DOWNLOAD_PATH='DOWNLOADED_FILES'

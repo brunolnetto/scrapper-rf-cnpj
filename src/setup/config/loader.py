@@ -16,7 +16,8 @@ from .models import (
     AuditConfig, 
     DataSourceConfig, 
     DataSinkConfig, 
-    PathConfig
+    PathConfig,
+    StorageConfig
 )
 from .validation import ConfigurationValidator
 from ..logging import logger
@@ -143,7 +144,8 @@ class ConfigLoader:
             conversion=temp_pipeline_config.conversion,
             loading=temp_pipeline_config.loading,
             download=temp_pipeline_config.download,
-            development=temp_pipeline_config.development
+            development=temp_pipeline_config.development,
+            storage=temp_pipeline_config.storage
         )
         
         # Create final audit config with database
@@ -188,6 +190,7 @@ class ConfigLoader:
             DownloadConfig, 
             DevelopmentConfig, 
             Environment,
+            StorageConfig,
         )
 
         from ...utils.memory import _get_system_memory_mb
@@ -286,6 +289,11 @@ class ConfigLoader:
             row_limit_percent=float(os.getenv("ETL_DEV_ROW_LIMIT_PERCENT", "0.1"))
         )
         
+        storage = StorageConfig(
+            provider=os.getenv("STORAGE_PROVIDER", "local").strip().lower(),
+            root_path=os.getenv("STORAGE_ROOT_PATH", "data/objects"),
+        )
+
         # Load main ETL config
         pipeline_config = PipelineConfig(
             environment=environment,
@@ -296,7 +304,8 @@ class ConfigLoader:
             conversion=conversion,
             loading=loading,
             download=download,
-            development=development
+            development=development,
+            storage=storage
         )
         
         return pipeline_config
