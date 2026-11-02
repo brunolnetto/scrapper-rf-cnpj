@@ -292,6 +292,14 @@ class ConfigLoader:
         storage = StorageConfig(
             provider=os.getenv("STORAGE_PROVIDER", "local").strip().lower(),
             root_path=os.getenv("STORAGE_ROOT_PATH", "data/objects"),
+            azure_account_url=os.getenv("AZURE_STORAGE_ACCOUNT_URL"),
+            azure_container_name=os.getenv("AZURE_STORAGE_CONTAINER"),
+            azure_max_concurrency=int(os.getenv("AZURE_STORAGE_MAX_CONCURRENCY", "4")),
+            s3_bucket_name=os.getenv("AWS_S3_BUCKET"),
+            s3_region_name=os.getenv("AWS_REGION") or None,
+            s3_endpoint_url=os.getenv("AWS_S3_ENDPOINT_URL") or None,
+            s3_max_concurrency=int(os.getenv("AWS_S3_MAX_CONCURRENCY", "4")),
+            s3_multipart_threshold_mb=int(os.getenv("AWS_S3_MULTIPART_THRESHOLD_MB", "64")),
         )
 
         # Load main ETL config
