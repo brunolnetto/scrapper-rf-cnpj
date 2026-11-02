@@ -10,7 +10,8 @@ class AzureBlobStorageBackend:
     """Azure Blob Storage adapter using Microsoft Entra credential discovery.
 
     The container must already exist. Authentication is delegated to
-    DefaultAzureCredential; no account keys or SAS tokens are accepted here.
+    DefaultAzureCredential. Optional credential injection accepts SDK credential
+    objects only; raw account-key/SAS strings and credential dictionaries are rejected.
     """
 
     def __init__(
@@ -28,6 +29,10 @@ class AzureBlobStorageBackend:
             raise ValueError("Azure container_name must be a non-empty container name")
         if max_concurrency < 1:
             raise ValueError("max_concurrency must be >= 1")
+        if isinstance(credential, (str, dict)):
+            raise ValueError(
+                "Pass an Azure SDK credential object; raw keys, SAS strings, and credential dictionaries are not supported"
+            )
 
         self.max_concurrency = max_concurrency
         self._service_client = None
