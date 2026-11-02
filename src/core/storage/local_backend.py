@@ -52,7 +52,7 @@ class LocalStorageBackend:
             raise FileNotFoundError(source)
         target = self._resolve(destination_key)
         self._copy_atomic(source, target)
-        return destination_key.replace("\\", "/")
+        return destination_key
 
     def download_file(self, source_key: str, destination_path: PathLike) -> str:
         source = self._resolve(source_key)
