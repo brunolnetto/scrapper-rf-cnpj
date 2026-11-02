@@ -262,6 +262,43 @@ class ReceitaCNPJPipeline(Pipeline):
 
         return audits
 
+    def _storage_period_prefix(self, stage: str) -> str:
+        """Return a period-scoped object prefix for the current pipeline run."""
+        year = self.config.year or self.config.pipeline.year
+        month = self.config.month or self.config.pipeline.month
+        if year is None or month is None:
+            raise ValueError("Storage-backed artifacts require an ingestion year and month")
+        return f"{stage}/{year:04d}/{month:02d}/"
+
+    def _persist_parquet_artifacts(self, output_dir: Path) -> dict[str, str]:
+        """Persist successful Parquet outputs and return filename-to-key mappings."""
+        if self.storage_backend is None:
+            return {}
+
+        prefix = self._storage_period_prefix("processed/parquet")
+        stored: dict[str, str] = {}
+        for parquet_file in sorted(output_dir.glob("*.parquet")):
+            key = f"{prefix}{parquet_file.name}"
+            stored[parquet_file.name] = self.storage_backend.upload_file(parquet_file, key)
+        return stored
+
+    def _restore_parquet_artifacts(self, conversion_path: Path) -> list[Path]:
+        """Stage persisted Parquet objects locally for the existing loader."""
+        conversion_path.mkdir(parents=True, exist_ok=True)
+        local_files = sorted(conversion_path.glob("*.parquet"))
+        if local_files or self.storage_backend is None:
+            return local_files
+
+        prefix = self._storage_period_prefix("processed/parquet")
+        restored: list[Path] = []
+        for key in self.storage_backend.list_keys(prefix):
+            if not key.lower().endswith(".parquet"):
+                continue
+            target = conversion_path / Path(key).name
+            self.storage_backend.download_file(key, target)
+            restored.append(target)
+        return restored
+
     def convert_to_parquet(self, audit_metadata: AuditMetadata) -> Path:
         from ..utils.misc import makedir
         from .services.conversion.service import convert_csvs_to_parquet_smart
@@ -302,6 +339,9 @@ class ReceitaCNPJPipeline(Pipeline):
 
         logger.info(f"Parquet conversion completed. Files saved to: {output_dir}")
 
+        # Persist completed artifacts separately from the local conversion workspace.
+        storage_keys = self._persist_parquet_artifacts(output_dir)
+
         # IMPROVEMENT: Update table audits to reference Parquet files instead of ZIP files
         logger.info("Updating table audits to reference converted Parquet files...")
         for table_name in audit_map.keys():
@@ -315,7 +355,8 @@ class ReceitaCNPJPipeline(Pipeline):
                 processing_metadata = {
                     "conversion_method": "convert_csvs_to_parquet_smart",
                     "output_format": "parquet",
-                    "output_file_size_bytes": parquet_file_path.stat().st_size  # Moved from table to file level
+                    "output_file_size_bytes": parquet_file_path.stat().st_size,
+                    "storage_key": storage_keys.get(parquet_file_path.name),
                 }
                 self.audit_service.update_table_audit_after_conversion(
                     table_name, str(parquet_file_path), processing_metadata, original_sources=all_csvs
@@ -339,10 +380,8 @@ class ReceitaCNPJPipeline(Pipeline):
         """
         # Check conversion directory first (Parquet files) - higher priority
         conversion_path = self.config.pipeline.get_temporal_conversion_path(self.config.year, self.config.month)
-        parquet_files = []
-        if conversion_path.exists():
-            parquet_files = list(conversion_path.glob("*.parquet"))
-            logger.info(f"Found {len(parquet_files)} Parquet files in {conversion_path}")
+        parquet_files = self._restore_parquet_artifacts(conversion_path)
+        logger.info(f"Found {len(parquet_files)} local or restored Parquet files in {conversion_path}")
 
         # Prioritize Parquet files over CSV files
         if parquet_files:
