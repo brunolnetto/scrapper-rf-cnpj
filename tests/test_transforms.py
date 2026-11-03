@@ -1,7 +1,6 @@
 """
 Tests for src/core/transforms.py — Brazilian Federal Revenue data transforms.
 """
-import pytest
 from src.core.transforms import (
     normalize_null_values,
     clean_leading_zeros_from_fields,
