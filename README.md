@@ -85,18 +85,12 @@ A memória e o espaço necessários dependem do período, dos arquivos seleciona
 
 ## Quickstart
 
-### 1. Clone o projeto e a dependência local
-
-O `pyproject.toml` configura `sqldim` como dependência editável em `../sqldim`. Portanto, os dois repositórios precisam estar lado a lado:
+### 1. Clone o projeto
 
 ```bash
 git clone https://github.com/brunolnetto/scrapper-rf-cnpj.git
 cd scrapper-rf-cnpj
-
-git clone https://github.com/brunolnetto/sqldim.git ../sqldim
 ```
-
-> Se você já possui um checkout de `sqldim`, confirme que ele está no caminho `../sqldim` e em uma versão compatível com a dependência declarada pelo projeto.
 
 ### 2. Instale as dependências
 
@@ -104,7 +98,11 @@ git clone https://github.com/brunolnetto/sqldim.git ../sqldim
 uv sync --locked
 ```
 
-Esse comando cria/atualiza o ambiente virtual a partir do `pyproject.toml` e do `uv.lock`. Não é necessário instalar um `requirements.txt`: o projeto usa o fluxo de dependências do uv.
+O projeto declara `sqldim` como uma dependência Python instalada diretamente do repositório Git, com revisão fixada no `pyproject.toml`. Não é necessário clonar `sqldim` manualmente nem manter dois checkouts lado a lado. Depois de instalado, o pipeline importa a biblioteca normalmente pelos módulos `sqldim.*`.
+
+O pin atual usa o commit `8af2393a6afd695186e97de23501b93a9524d831` do [repositório sqldim](https://github.com/brunolnetto/sqldim). A referência imutável evita que um `uv sync --locked` resolva silenciosamente uma versão diferente. Quando `sqldim` tiver uma distribuição versionada publicada em um índice de pacotes, a dependência poderá migrar para uma especificação de versão.
+
+Não é necessário instalar um `requirements.txt`: o projeto usa `pyproject.toml` e `uv.lock` como fontes das dependências.
 
 ### 3. Prepare os bancos PostgreSQL
 
