@@ -1638,7 +1638,7 @@ requires-dist = [
     { name = "rich", specifier = ">=14.1.0" },
     { name = "sqlalchemy", specifier = ">=2.0.43" },
     { name = "sqlalchemy-utils", specifier = ">=0.41.2" },
-    { name = "sqldim", editable = "../sqldim" },
+    { name = "sqldim", git = "https://github.com/brunolnetto/sqldim.git?rev=8af2393a6afd695186e97de23501b93a9524d831" },
     { name = "tenacity", specifier = ">=8.5.0" },
     { name = "tqdm", specifier = ">=4.67.1" },
     { name = "urllib3", specifier = ">=2.5.0" },
@@ -1745,7 +1745,7 @@ wheels = [
 [[package]]
 name = "sqldim"
 version = "2.0.0"
-source = { editable = "../sqldim" }
+source = { git = "https://github.com/brunolnetto/sqldim.git?rev=8af2393a6afd695186e97de23501b93a9524d831#8af2393a6afd695186e97de23501b93a9524d831" }
 dependencies = [
     { name = "alembic" },
     { name = "duckdb" },
@@ -1754,62 +1754,6 @@ dependencies = [
     { name = "pytz" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "sqlmodel" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "alembic", specifier = ">=1.13.1" },
-    { name = "boto3", marker = "extra == 'kinesis'", specifier = ">=1.34" },
-    { name = "boto3", marker = "extra == 'streaming'", specifier = ">=1.34" },
-    { name = "confluent-kafka", marker = "extra == 'cdc'", specifier = ">=2.3" },
-    { name = "confluent-kafka", marker = "extra == 'kafka'", specifier = ">=2.3" },
-    { name = "confluent-kafka", marker = "extra == 'streaming'", specifier = ">=2.3" },
-    { name = "deltalake", marker = "extra == 'deltalake'", specifier = ">=1.5.0" },
-    { name = "duckdb", specifier = ">=1.5.0" },
-    { name = "duckdb", marker = "extra == 'kafka-native'", specifier = ">=1.1" },
-    { name = "langgraph", marker = "extra == 'nl'", specifier = ">=0.3" },
-    { name = "narwhals", specifier = ">=2.18.0" },
-    { name = "openlineage-python", marker = "extra == 'lineage'", specifier = ">=1.15" },
-    { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.24" },
-    { name = "opentelemetry-exporter-otlp", marker = "extra == 'otel'", specifier = ">=1.24" },
-    { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.24" },
-    { name = "polars", marker = "extra == 'cdc'", specifier = ">=0.20" },
-    { name = "polars", marker = "extra == 'kafka'", specifier = ">=0.20" },
-    { name = "polars", marker = "extra == 'kinesis'", specifier = ">=0.20" },
-    { name = "polars", marker = "extra == 'streaming'", specifier = ">=0.20" },
-    { name = "prompt-toolkit", marker = "extra == 'interactive'", specifier = ">=3" },
-    { name = "pydantic-ai", marker = "extra == 'nl'", specifier = ">=0.0.14" },
-    { name = "pydantic-settings", specifier = ">=2.2.1" },
-    { name = "pytz", specifier = ">=2026.1.post1" },
-    { name = "rich", marker = "extra == 'interactive'", specifier = ">=14" },
-    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.29" },
-    { name = "sqlglot", marker = "extra == 'lineage'", specifier = ">=30.0.1" },
-    { name = "sqlmodel", specifier = ">=0.0.34" },
-]
-provides-extras = ["kafka", "kafka-native", "kinesis", "cdc", "deltalake", "streaming", "otel", "lineage", "nl", "interactive"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "aiosqlite", specifier = ">=0.22.1" },
-    { name = "bandit", extras = ["toml"], specifier = ">=1.7.5" },
-    { name = "faker", specifier = ">=37.0.0" },
-    { name = "mistralai", specifier = ">=2.1.3" },
-    { name = "mypy", specifier = ">=1.10.0" },
-    { name = "pandas", specifier = ">=3.0.1" },
-    { name = "pip-audit", specifier = ">=2.6.1" },
-    { name = "polars", specifier = ">=1.39.0" },
-    { name = "pyarrow", specifier = ">=23.0.1" },
-    { name = "pydantic-ai", extras = ["mistral"], specifier = ">=1.71.0" },
-    { name = "pydantic-ai-slim", extras = ["mistral"], specifier = ">=1.71.0" },
-    { name = "pytest", specifier = ">=9.0.2" },
-    { name = "pytest-asyncio", specifier = ">=1.3.0" },
-    { name = "pytest-cov", specifier = ">=7.0.0" },
-    { name = "pytest-json-report", specifier = ">=1.5.0" },
-    { name = "pytest-postgresql", specifier = ">=8.0.0" },
-    { name = "pytest-xdist", specifier = ">=3.8.0" },
-    { name = "radon", specifier = ">=6.0.1" },
-    { name = "ruff", specifier = ">=0.4.0" },
-    { name = "types-pyyaml", specifier = ">=6.0.0" },
 ]
 
 [[package]]

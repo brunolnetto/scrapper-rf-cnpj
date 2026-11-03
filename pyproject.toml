@@ -24,7 +24,7 @@ dependencies = [
     "rich>=14.1.0",
     "SQLAlchemy>=2.0.43",
     "sqlalchemy_utils>=0.41.2",
-    "sqldim",
+    "sqldim @ git+https://github.com/brunolnetto/sqldim.git@8af2393a6afd695186e97de23501b93a9524d831",
     "tenacity>=8.5.0",
     "tqdm>=4.67.1",
     "urllib3>=2.5.0",
@@ -86,5 +86,3 @@ exclude_lines = [
     "raise ImportError"
 ]
 
-[tool.uv.sources]
-sqldim = { path = "../sqldim", editable = true }
