@@ -24,8 +24,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 import duckdb
 
-from sqldim.contracts import ContractEngine, ContractViolationError
-from sqldim.contracts.report import ContractReport
+from sqldim.contracts import ContractEngine, ContractViolationError, ContractReport
 from sqldim.core.kimball.dimensions.scd.processors import LazySCDMetadataProcessor
 from sqldim.lineage.column import ColumnLineageEntry, ColumnLineageFacet
 from sqldim.sinks import PostgreSQLSink
