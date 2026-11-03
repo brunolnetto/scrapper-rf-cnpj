@@ -17,26 +17,68 @@ Os períodos podem ser informados por ano/mês ou descobertos a partir das publi
 ## Arquitetura
 
 ```mermaid
-flowchart TD
-    RFB["Receita Federal<br/>arquivos ZIP"] --> DL["Download"]
-    DL --> ZIP["ZIP local de trabalho"]
-    DL --> ST["StorageBackend"]
-    ZIP --> EX["Extração segura<br/>workspace temporário"]
-    EX --> CSV["CSV local de trabalho"]
-    EX --> ST
-    CSV --> CV["Conversão<br/>Polars → Parquet"]
-    CV --> PQ["Parquet local de trabalho"]
-    PQ --> LOAD["Carregamento"]
-    LOAD --> PG["PostgreSQL<br/>dados CNPJ"]
-    DL -. eventos de auditoria .-> AUD["PostgreSQL<br/>auditoria"]
-    EX -. eventos de auditoria .-> AUD
-    CV -. eventos de auditoria .-> AUD
-    LOAD -. eventos de auditoria .-> AUD
-    CV --> ST
-    ST --> LOCAL["Local"]
-    ST --> AZ["Azure Blob Storage"]
-    ST --> S3["Amazon S3"]
-    ST --> META["Manifestos JSON<br/>SHA-256 · tamanho · proveniência"]
+flowchart LR
+    subgraph AUDIT["Auditoria da execução"]
+        direction TB
+        EVENTS["Eventos de execução<br/>Download · Extração<br/>Conversão · Carga"]
+        AUD["PostgreSQL<br/>auditoria"]
+
+        EVENTS --> AUD
+    end
+
+    subgraph ETL["Pipeline ETL"]
+        direction TB
+        RFB["Receita Federal<br/>arquivos ZIP"]
+        DL["Download"]
+        ZIP["ZIP local<br/>staging"]
+        EX["Extração segura<br/>workspace temporário"]
+        CSV["CSV local<br/>staging"]
+        CV["Conversão<br/>Polars → Parquet"]
+        PQ["Parquet local<br/>staging"]
+        LOAD["Carregamento"]
+        PG["PostgreSQL<br/>dados CNPJ"]
+
+        RFB --> DL --> ZIP --> EX --> CSV --> CV --> PQ --> LOAD --> PG
+    end
+
+    subgraph STORAGE["Persistência de artefatos"]
+        direction TB
+        ST["StorageBackend"]
+        LOCAL["Local<br/>filesystem"]
+        AZ["Azure Blob Storage"]
+        S3["Amazon S3"]
+        META["Manifestos JSON<br/>SHA-256 · tamanho<br/>período · proveniência"]
+
+        ST --> LOCAL
+        ST --> AZ
+        ST --> S3
+        ST --> META
+    end
+
+    AUDIT -.-|"registra eventos<br/>download · extração<br/>conversão · carga"| ETL
+    ETL -->|"persiste<br/>ZIP · CSV · Parquet"| STORAGE
+
+    classDef source fill:#fde68a,stroke:#b45309,color:#451a03
+    classDef step fill:#bfdbfe,stroke:#1d4ed8,color:#172554
+    classDef staging fill:#fef3c7,stroke:#d97706,color:#451a03
+    classDef database fill:#bbf7d0,stroke:#15803d,color:#052e16
+    classDef audit fill:#e9d5ff,stroke:#7e22ce,color:#3b0764
+    classDef storage fill:#e5e7eb,stroke:#4b5563,color:#111827
+    classDef cloud fill:#bae6fd,stroke:#0369a1,color:#082f49
+    classDef manifest fill:#fecdd3,stroke:#be123c,color:#4c0519
+
+    class RFB source
+    class DL,EX,CV,LOAD step
+    class ZIP,CSV,PQ staging
+    class PG,AUD database
+    class EVENTS audit
+    class ST,LOCAL storage
+    class AZ,S3 cloud
+    class META manifest
+
+    style AUDIT fill:#faf5ff,stroke:#7e22ce,stroke-dasharray:4 4
+    style ETL fill:#eff6ff,stroke:#1d4ed8,stroke-dasharray:4 4
+    style STORAGE fill:#f9fafb,stroke:#4b5563,stroke-dasharray:4 4
 ```
 
 ### Persistência não é filesystem montado
