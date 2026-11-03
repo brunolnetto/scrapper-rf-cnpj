@@ -274,8 +274,6 @@ class DuckDBLoader:
         processor receives a typed source object rather than a raw path string.
         Natural keys are derived from the model's ``__natural_key__`` attribute.
         """
-        from contextlib import suppress
-
         model = _DIM_MODELS.get(table_name)
         if model is None:
             raise ValueError(
