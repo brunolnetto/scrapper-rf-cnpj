@@ -26,16 +26,17 @@ flowchart TD
     EX --> ST
     CSV --> CV["Conversão<br/>Polars → Parquet"]
     CV --> PQ["Parquet local de trabalho"]
+    PQ --> LOAD["Carregamento"]
+    LOAD --> PG["PostgreSQL<br/>dados CNPJ"]
+    DL -. eventos de auditoria .-> AUD["PostgreSQL<br/>auditoria"]
+    EX -. eventos de auditoria .-> AUD
+    CV -. eventos de auditoria .-> AUD
+    LOAD -. eventos de auditoria .-> AUD
     CV --> ST
     ST --> LOCAL["Local"]
     ST --> AZ["Azure Blob Storage"]
     ST --> S3["Amazon S3"]
     ST --> META["Manifestos JSON<br/>SHA-256 · tamanho · proveniência"]
-    PQ --> PG["PostgreSQL<br/>dados CNPJ"]
-    DL -.-> AUD["PostgreSQL<br/>auditoria"]
-    EX -.-> AUD
-    CV -.-> AUD
-    PG -.-> AUD
 ```
 
 ### Persistência não é filesystem montado
