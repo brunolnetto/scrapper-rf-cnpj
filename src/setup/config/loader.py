@@ -145,7 +145,7 @@ class ConfigLoader:
             download=temp_pipeline_config.download,
             development=temp_pipeline_config.development,
             storage=temp_pipeline_config.storage,
-            memory=memory
+            memory=temp_pipeline_config.memory
         )
         
         # Create final audit config with database
@@ -314,7 +314,8 @@ class ConfigLoader:
             loading=loading,
             download=download,
             development=development,
-            storage=storage
+            storage=storage,
+            memory=memory
         )
         
         return pipeline_config
