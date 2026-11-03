@@ -1,7 +1,6 @@
 """
 Tests for src/core/transforms.py — Brazilian Federal Revenue data transforms.
 """
-import pytest
 from src.core.transforms import (
     normalize_null_values,
     clean_leading_zeros_from_fields,
@@ -209,8 +208,8 @@ def test_empresa_transform_map_cnpj_and_currency():
     result = empresa_transform_map(row)
     # cnpj_basico is a natural key → stays top-level
     assert result["cnpj_basico"] == "00001234"
-    # non-key fields are packed into dim_metadata by pack_metadata_transform
-    assert result["dim_metadata"]["capital_social"] == "1000.00"
+    # non-key fields are packed into attributes by pack_metadata_transform
+    assert result["attributes"]["capital_social"] == "1000.00"
 
 def test_socios_transform_map():
     row = {
@@ -221,9 +220,9 @@ def test_socios_transform_map():
     }
     result = socios_transform_map(row)
     assert result["cnpj_basico"] == "00001234"
-    # non-key fields are packed into dim_metadata
-    assert result["dim_metadata"]["data_entrada_sociedade"] == "2024-01-01"
-    assert result["dim_metadata"]["qualificacao_socio"] == "5"
+    # non-key fields are packed into attributes
+    assert result["attributes"]["data_entrada_sociedade"] == "2024-01-01"
+    assert result["attributes"]["qualificacao_socio"] == "5"
 
 def test_estabelecimento_transform_map():
     row = {
@@ -238,9 +237,9 @@ def test_estabelecimento_transform_map():
     result = estabelecimento_transform_map(row)
     # Natural keys stay top-level
     assert result["cnpj_ordem"] == "0001"
-    # Non-key fields go to dim_metadata
-    assert result["dim_metadata"]["data_inicio_atividade"] == "2020-06-01"
-    assert result["dim_metadata"]["motivo_situacao_cadastral"] == "1"
+    # Non-key fields go to attributes
+    assert result["attributes"]["data_inicio_atividade"] == "2020-06-01"
+    assert result["attributes"]["motivo_situacao_cadastral"] == "1"
 
 def test_simples_transform_map_clears_null_dates():
     row = {
@@ -251,8 +250,8 @@ def test_simples_transform_map_clears_null_dates():
         "data_exclusao_mei": BRAZILIAN_NULL_DATE,
     }
     result = simples_transform_map(row)
-    assert result["dim_metadata"]["data_opcao_simples"] == ""
-    assert result["dim_metadata"]["data_exclusao_simples"] == "2024-01-01"
+    assert result["attributes"]["data_opcao_simples"] == ""
+    assert result["attributes"]["data_exclusao_simples"] == "2024-01-01"
 
 def test_transform_handles_exception_gracefully():
     """Transform maps must not raise on bad input — return original row."""
@@ -276,8 +275,8 @@ def test_qualificacao_cleanup_via_socios():
     """build_qualificacao_cleanup_transform covered via socios_transform_map."""
     row = {"cnpj_basico": "1", "qualificacao_socio": "005", "qualificacao_representante_legal": "010"}
     result = socios_transform_map(row)
-    assert result["dim_metadata"]["qualificacao_socio"] == "5"
-    assert result["dim_metadata"]["qualificacao_representante_legal"] == "10"
+    assert result["attributes"]["qualificacao_socio"] == "5"
+    assert result["attributes"]["qualificacao_representante_legal"] == "10"
 
 def test_estabelecimento_date_via_map():
     """build_estabelecimento_date_transform covered via estabelecimento_transform_map."""
@@ -286,7 +285,7 @@ def test_estabelecimento_date_via_map():
         "data_inicio_atividade": "20240101", "data_situacao_cadastral": "20240601",
     }
     result = estabelecimento_transform_map(row)
-    assert result["dim_metadata"]["data_inicio_atividade"] == "2024-01-01"
+    assert result["attributes"]["data_inicio_atividade"] == "2024-01-01"
 
 def test_simples_date_via_map():
     """build_simples_date_transform covered via simples_transform_map."""
@@ -298,13 +297,13 @@ def test_simples_date_via_map():
         "data_exclusao_mei": BRAZILIAN_NULL_DATE,
     }
     result = simples_transform_map(row)
-    assert result["dim_metadata"]["data_opcao_simples"] == ""
-    assert result["dim_metadata"]["data_exclusao_simples"] == "2024-01-01"
+    assert result["attributes"]["data_opcao_simples"] == ""
+    assert result["attributes"]["data_exclusao_simples"] == "2024-01-01"
 
 def test_socios_date_via_map():
     """build_socios_date_transform covered via socios_transform_map."""
     row = {"cnpj_basico": "1", "data_entrada_sociedade": "20231231"}
-    assert socios_transform_map(row)["dim_metadata"]["data_entrada_sociedade"] == "2023-12-31"
+    assert socios_transform_map(row)["attributes"]["data_entrada_sociedade"] == "2023-12-31"
 
 def test_estabelecimento_cnpj_padding_via_map():
     """build_estabelecimento_cnpj_transform covered via estabelecimento_transform_map."""
@@ -322,5 +321,5 @@ def test_reference_codes_via_estabelecimento():
         "motivo_situacao_cadastral": "001", "cnae_fiscal_principal": "0010",
     }
     result = estabelecimento_transform_map(row)
-    assert result["dim_metadata"]["motivo_situacao_cadastral"] == "1"
-    assert result["dim_metadata"]["cnae_fiscal_principal"] == "10"
+    assert result["attributes"]["motivo_situacao_cadastral"] == "1"
+    assert result["attributes"]["cnae_fiscal_principal"] == "10"

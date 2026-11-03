@@ -16,8 +16,7 @@ from .models import (
     AuditConfig, 
     DataSourceConfig, 
     DataSinkConfig, 
-    PathConfig,
-    StorageConfig
+    PathConfig
 )
 from .validation import ConfigurationValidator
 from ..logging import logger
@@ -145,7 +144,8 @@ class ConfigLoader:
             loading=temp_pipeline_config.loading,
             download=temp_pipeline_config.download,
             development=temp_pipeline_config.development,
-            storage=temp_pipeline_config.storage
+            storage=temp_pipeline_config.storage,
+            memory=temp_pipeline_config.memory
         )
         
         # Create final audit config with database
@@ -217,12 +217,13 @@ class ConfigLoader:
             baseline_buffer_mb=256  # Hardcoded - internal buffer
         )
 
+
         memory = MemoryMonitorConfig(
             memory_limit_mb=max(512, int(sys_mem_mb * 0.5)), # Default to 50% of system memory or at least 512MB
             cleanup_threshold_ratio=0.8,  # Hardcoded - memory management
             baseline_buffer_mb=256  # Hardcoded - internal buffer
         )
-        
+
         # Load loading config (consolidated timeout/retry, removed micro-optimizations)
         timeout_seconds = int(os.getenv("ETL_TIMEOUT_SECONDS", "300"))  # Consolidated timeout
         max_retries = int(os.getenv("ETL_MAX_RETRIES", "3"))  # Consolidated retries
@@ -292,6 +293,14 @@ class ConfigLoader:
         storage = StorageConfig(
             provider=os.getenv("STORAGE_PROVIDER", "local").strip().lower(),
             root_path=os.getenv("STORAGE_ROOT_PATH", "data/objects"),
+            azure_account_url=os.getenv("AZURE_STORAGE_ACCOUNT_URL") or None,
+            azure_container_name=os.getenv("AZURE_STORAGE_CONTAINER") or None,
+            azure_max_concurrency=int(os.getenv("AZURE_STORAGE_MAX_CONCURRENCY", "4")),
+            s3_bucket_name=os.getenv("AWS_S3_BUCKET") or None,
+            s3_region_name=os.getenv("AWS_REGION") or None,
+            s3_endpoint_url=os.getenv("AWS_S3_ENDPOINT_URL") or None,
+            s3_max_concurrency=int(os.getenv("AWS_S3_MAX_CONCURRENCY", "4")),
+            s3_multipart_threshold_mb=int(os.getenv("AWS_S3_MULTIPART_THRESHOLD_MB", "64")),
         )
 
         # Load main ETL config
@@ -305,7 +314,8 @@ class ConfigLoader:
             loading=loading,
             download=download,
             development=development,
-            storage=storage
+            storage=storage,
+            memory=memory
         )
         
         return pipeline_config

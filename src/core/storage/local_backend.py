@@ -5,7 +5,7 @@ import shutil
 import tempfile
 from pathlib import Path, PurePosixPath
 
-from .base import PathLike
+from .base import PathLike, validate_object_key, validate_object_prefix
 
 
 class LocalStorageBackend:
@@ -20,13 +20,8 @@ class LocalStorageBackend:
         self.root.mkdir(parents=True, exist_ok=True)
 
     def _resolve(self, key: str) -> Path:
-        if not isinstance(key, str) or not key.strip():
-            raise ValueError("Storage key must be a non-empty string")
-
-        normalized = key.replace("\\", "/")
+        normalized = validate_object_key(key)
         parsed = PurePosixPath(normalized)
-        if parsed.is_absolute() or any(part in {"", ".", ".."} for part in parsed.parts):
-            raise ValueError(f"Invalid storage key: {key!r}")
 
         target = self.root.joinpath(*parsed.parts).resolve()
         if not target.is_relative_to(self.root):
@@ -57,7 +52,7 @@ class LocalStorageBackend:
             raise FileNotFoundError(source)
         target = self._resolve(destination_key)
         self._copy_atomic(source, target)
-        return destination_key.replace("\\", "/")
+        return destination_key
 
     def download_file(self, source_key: str, destination_path: PathLike) -> str:
         source = self._resolve(source_key)
@@ -71,9 +66,7 @@ class LocalStorageBackend:
         return self._resolve(key).is_file()
 
     def list_keys(self, prefix: str = "") -> list[str]:
-        normalized_prefix = prefix.replace("\\", "/")
-        if normalized_prefix:
-            self._resolve(normalized_prefix.rstrip("/"))
+        normalized_prefix = validate_object_prefix(prefix)
         return sorted(
             path.relative_to(self.root).as_posix()
             for path in self.root.rglob("*")

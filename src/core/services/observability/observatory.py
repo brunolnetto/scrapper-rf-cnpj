@@ -37,7 +37,7 @@ from typing import Optional
 
 from sqldim.observability import DriftObservatory
 from sqldim.contracts.engine import EvolutionReport, EvolutionChange
-from sqldim.contracts.report import ContractReport, ContractViolation
+from sqldim.contracts import ContractReport, ContractViolation
 
 _log = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ class PipelineObservatory:
         Detects schema changes by comparing the current column set against
         the previous call's fingerprint for *table_name*.  Builds
         :class:`~sqldim.contracts.engine.EvolutionReport` and
-        :class:`~sqldim.contracts.report.ContractReport` using sqldim's own
+        :class:`~sqldim.contracts.ContractReport` using sqldim's own
         types before ingesting them via the observatory.
         """
         total = rows_inserted + rows_versioned + rows_unchanged
@@ -192,7 +192,7 @@ class PipelineObservatory:
     ) -> None:
         """Ingest the actual ContractEngine validation report into the observatory.
 
-        Forwards the real :class:`~sqldim.contracts.report.ContractReport`
+        Forwards the real :class:`~sqldim.contracts.ContractReport`
         produced by :class:`~sqldim.contracts.ContractEngine` directly to
         :meth:`~sqldim.observability.DriftObservatory.ingest_quality`.
 

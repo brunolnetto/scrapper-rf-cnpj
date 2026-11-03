@@ -50,12 +50,30 @@ AUDIT_DB_NAME=dadosrfb_analysis
 ```bash
 STORAGE_PROVIDER=local
 STORAGE_ROOT_PATH=data/objects
+
+# Azure Blob Storage
+AZURE_STORAGE_ACCOUNT_URL=
+AZURE_STORAGE_CONTAINER=
+AZURE_STORAGE_MAX_CONCURRENCY=4
+
+# Amazon S3
+AWS_S3_BUCKET=
+AWS_REGION=
+AWS_S3_ENDPOINT_URL=
+AWS_S3_MAX_CONCURRENCY=4
+AWS_S3_MULTIPART_THRESHOLD_MB=64
 ```
 - **Purpose**: Selects durable artifact storage independently from temporary ETL workspace paths.
-- **Supported values**: `local` in this first implementation.
-- **Default**: `local`.
-- **STORAGE_ROOT_PATH**: Root directory used by the local object store. This does not replace existing download, extraction and conversion workspace paths.
-- **Cloud providers**: Azure Blob Storage or S3 require dedicated adapters; unsupported providers are rejected instead of silently falling back to local.
+- **Supported values**: `local`, `azure`, and `s3`.
+- **Default**: `local`; cloud SDKs are optional and are imported only when their provider is selected.
+- **Local**: `STORAGE_ROOT_PATH` selects the durable local object-store root. It does not replace download, extraction, or conversion workspaces.
+- **Azure**: Set the HTTPS account URL and an already-created container. Authentication uses `DefaultAzureCredential`: developer credentials locally and managed/workload identity in deployed environments. The runtime identity needs the appropriate Blob data-plane role (for example, Storage Blob Data Contributor for read/write/list/delete).
+- **S3**: Set the bucket and optionally the region (otherwise boto3 resolves its configured default). Credentials use boto3's standard provider chain; prefer IAM roles or web identity over static keys. The runtime principal needs bucket listing and object get/put/delete permissions, plus multipart-upload permissions for large files.
+- **S3-compatible endpoints**: `AWS_S3_ENDPOINT_URL` is intended for LocalStack or compatible services; leave it blank for AWS.
+- **Concurrency**: Provider-specific concurrency settings bound parallel transfer work. S3 multipart threshold is configurable in MiB.
+- **Provisioning**: Containers and buckets must exist before the ETL starts. The adapters do not create or delete storage containers/buckets.
+- **Security**: Do not put account keys, SAS tokens, AWS access keys, or secret keys in `.env.template` or tracked files. Supply identity through the platform credential chain or a secret manager.
+- **Installation**: `uv sync --extra azure`, `uv sync --extra s3`, or `uv sync --extra cloud` installs the corresponding optional SDKs.
 
 
 #### ETL Processing Paths

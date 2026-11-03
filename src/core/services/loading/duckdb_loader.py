@@ -24,8 +24,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 import duckdb
 
-from sqldim.contracts import ContractEngine, ContractViolationError
-from sqldim.contracts.report import ContractReport
+from sqldim.contracts import ContractEngine, ContractViolationError, ContractReport
 from sqldim.core.kimball.dimensions.scd.processors import LazySCDMetadataProcessor
 from sqldim.lineage.column import ColumnLineageEntry, ColumnLineageFacet
 from sqldim.sinks import PostgreSQLSink
@@ -275,8 +274,6 @@ class DuckDBLoader:
         processor receives a typed source object rather than a raw path string.
         Natural keys are derived from the model's ``__natural_key__`` attribute.
         """
-        from contextlib import suppress
-
         model = _DIM_MODELS.get(table_name)
         if model is None:
             raise ValueError(
