@@ -148,7 +148,7 @@ STORAGE_PROVIDER=local
 STORAGE_ROOT_PATH=data/objects
 ```
 
-O arquivo [.env.template](.env.template) é a referência para as variáveis aceitas pelo loader. A documentação complementar está em [docs/ENVIRONMENT_VARIABLES.md](docs/ENVIRONMENT_VARIABLES.md), mas confira os nomes efetivamente presentes no template e no código ao ajustar parâmetros avançados.
+O arquivo [.env.template](.env.template) é a referência prática para as variáveis do ambiente; os nomes efetivamente lidos estão mapeados em `src/setup/config/loader.py`.
 
 **Importante — desenvolvimento versus processamento integral:** `ENVIRONMENT=development` ativa filtros de desenvolvimento automaticamente. No template atual, isso limita o tamanho dos arquivos, a quantidade de arquivos por tabela/ZIP e a fração de linhas processadas. Para desativar esses filtros e processar os arquivos completos, configure:
 
@@ -156,7 +156,7 @@ O arquivo [.env.template](.env.template) é a referência para as variáveis ace
 ENVIRONMENT=production
 ```
 
-A variável `ETL_DEV_ENABLED` presente em templates antigos não controla essa decisão; o loader deriva o modo de desenvolvimento de `ENVIRONMENT`.
+Embora `ETL_DEV_ENABLED` apareça no `.env.template` atual, o loader não a utiliza para essa decisão; a fonte de verdade é `ENVIRONMENT`.
 
 Não versione o arquivo `.env` nem credenciais. Para a autenticação de download da fonte, `RF_DOWNLOAD_TOKEN` é opcional e deve ser fornecido por variável de ambiente ou secret manager.
 
