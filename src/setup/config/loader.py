@@ -217,7 +217,7 @@ class ConfigLoader:
             baseline_buffer_mb=256  # Hardcoded - internal buffer
         )
 
-        
+
         memory = MemoryMonitorConfig(
             memory_limit_mb=max(512, int(sys_mem_mb * 0.5)), # Default to 50% of system memory or at least 512MB
             cleanup_threshold_ratio=0.8,  # Hardcoded - memory management
