@@ -140,9 +140,9 @@ cd scrapper-rf-cnpj
 uv sync --locked
 ```
 
-O projeto declara `sqldim` como uma dependência Python instalada diretamente do repositório Git, com revisão fixada no `pyproject.toml`. Não é necessário clonar `sqldim` manualmente nem manter dois checkouts lado a lado. Depois de instalado, o pipeline importa a biblioteca normalmente pelos módulos `sqldim.*`.
+O projeto declara `sqldim` como uma dependência Python distribuída pelo PyPI. Não é necessário clonar o repositório da biblioteca nem manter checkouts lado a lado. Depois de instalado, o pipeline importa a biblioteca normalmente pelos módulos `sqldim.*`.
 
-O PyPI já publica `sqldim`, mas a versão mais recente listada é `0.1.1`. A revisão do [repositório sqldim](https://github.com/brunolnetto/sqldim) usada por este projeto declara `2.0.0`; por isso, a dependência permanece fixada no commit `8af2393a6afd695186e97de23501b93a9524d831`, em vez de substituir silenciosamente a API por uma versão publicada mais antiga. Após uma versão compatível ser publicada no PyPI, a dependência poderá migrar para uma especificação de versão.
+A dependência exige `sqldim>=2.0.1,<3.0.0`, faixa compatível com a API 2.x usada pelo pipeline. O `uv.lock` fixa a distribuição exata resolvida para cada ambiente, preservando instalações reproduzíveis sem depender de um checkout Git.
 
 Não é necessário instalar um `requirements.txt`: o projeto usa `pyproject.toml` e `uv.lock` como fontes das dependências.
 
@@ -369,7 +369,7 @@ scrapper-rf-cnpj/
 
 ## Troubleshooting
 
-- **Falha ao instalar `sqldim`:** confira o acesso ao GitHub e se o commit fixado no `pyproject.toml` continua disponível; depois execute `uv sync --locked` novamente.
+- **Falha ao instalar `sqldim`:** confira o acesso ao índice PyPI e se a versão exigida em `pyproject.toml` está disponível; depois execute `uv sync --locked` novamente.
 - **O processamento parece incompleto:** confira `ENVIRONMENT`. Em `development`, os filtros de amostragem estão ativos.
 - **Falha de conexão PostgreSQL:** confira host, porta, usuário, senha, nomes dos dois bancos e permissões de criação de tabelas.
 - **Sem espaço em disco:** considere ZIPs, CSVs extraídos, Parquet e workspaces simultâneos; storage remoto não substitui o staging local.

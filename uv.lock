@@ -1469,6 +1469,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pytz"
+version = "2026.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f5/b0/168030b0bfcc334cf09fa3313afdb888d892c8a0027324683d1de0ec277e/pytz-2026.6.tar.gz", hash = "sha256:3b0fc2727707663d6e517936f444fd8a8b240f1fc32f4bf7ee03274245945284", size = 318520, upload-time = "2026-10-29T09:05:47.011Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b6/25/564f3fc5b70c1398d706c51f2b1470d0ea0b1b2f96fee67877b6f5bdf3b6/pytz-2026.6-py2.py3-none-any.whl", hash = "sha256:7fed3fee8fd6bd4a2b7b75a8d56021d0624127bf69bd5691f115db929ac570b3", size = 506321, upload-time = "2026-10-29T09:05:45.14Z" },
+]
+
+[[package]]
 name = "pywin32"
 version = "311"
 source = { registry = "https://pypi.org/simple" }
@@ -1629,7 +1638,7 @@ requires-dist = [
     { name = "rich", specifier = ">=14.1.0" },
     { name = "sqlalchemy", specifier = ">=2.0.43" },
     { name = "sqlalchemy-utils", specifier = ">=0.41.2" },
-    { name = "sqldim", specifier = ">=0.1.1" },
+    { name = "sqldim", specifier = ">=2.0.1,<3.0.0" },
     { name = "tenacity", specifier = ">=8.5.0" },
     { name = "tqdm", specifier = ">=4.67.1" },
     { name = "urllib3", specifier = ">=2.5.0" },
@@ -1735,17 +1744,20 @@ wheels = [
 
 [[package]]
 name = "sqldim"
-version = "0.1.1"
+version = "2.0.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "alembic" },
+    { name = "duckdb" },
+    { name = "narwhals" },
     { name = "pydantic-settings" },
+    { name = "pytz" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "sqlmodel" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/cc/01/9c9acf06074b6d024c7d6b1a4ea147a778f9f24bf3b38b2385600a5c6b6d/sqldim-0.1.1.tar.gz", hash = "sha256:2ac2f17038f6ec9b4bf5500a81dc4af4a8b32aa07071946f12e386aba3841063", size = 58317, upload-time = "2026-03-13T15:16:46.24Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/04/5c/d3c2b022b241f06966376ba5afc480ca3b8a9668668599704f8c17e3116b/sqldim-2.0.1.tar.gz", hash = "sha256:3e115352f2e4610b7c0dffb1715b83a5e411e4d3c7420bc8735fc774c859ec4b", size = 1250190, upload-time = "2026-11-04T01:50:59.043Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0f/4e/39c07ef15a0cbe3cfca0454b136d1d94941cf9e29dd66e1a7304968445cf/sqldim-0.1.1-py3-none-any.whl", hash = "sha256:8f91c93b4a05c3573ad7c2286014cd65f63b47bc845d0341e15d49c6b771d9b8", size = 55688, upload-time = "2026-03-13T15:16:44.608Z" },
+    { url = "https://files.pythonhosted.org/packages/3b/a3/17378b2a61482a8e21c6badb7083856acfe1038938f7619f16e71e64ca2b/sqldim-2.0.1-py3-none-any.whl", hash = "sha256:c93981e0f33b2c1f5ee1e7c1c03df08030473cde10a46c00b48cd2836aada046", size = 735956, upload-time = "2026-11-04T01:50:56.735Z" },
 ]
 
 [[package]]
