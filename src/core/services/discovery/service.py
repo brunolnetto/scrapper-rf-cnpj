@@ -77,6 +77,8 @@ class FederalRevenueDiscoveryService:
         self.config = config
         self.period_pattern = re.compile(r"^(\d{4})-(\d{2})/$")
         self.timeout = 60
+        # Period listing cached for the lifetime of this instance (one run).
+        self._periods_cache: Optional[List[DataPeriod]] = None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -153,9 +155,15 @@ class FederalRevenueDiscoveryService:
         logger.info(f"Discovered {len(periods)} periods via WebDAV")
         return periods
 
-    def discover_available_periods(self) -> List[DataPeriod]:
-        html_content = self.fetch_directory_listing()
-        return self.parse_directory_listing(html_content)
+    def discover_available_periods(self, refresh: bool = False) -> List[DataPeriod]:
+        """List available periods, querying the server once per instance.
+
+        Pass ``refresh=True`` to bypass the cached listing.
+        """
+        if self._periods_cache is None or refresh:
+            html_content = self.fetch_directory_listing()
+            self._periods_cache = self.parse_directory_listing(html_content)
+        return list(self._periods_cache)
 
     def get_latest_period(self) -> Optional[DataPeriod]:
         periods = self.discover_available_periods()
@@ -274,7 +282,7 @@ class FederalRevenueDiscoveryService:
             return datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0)
 
     def close(self):
-        pass
+        self._periods_cache = None
 
     def __enter__(self):
         return self
