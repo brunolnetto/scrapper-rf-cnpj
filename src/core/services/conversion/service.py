@@ -18,6 +18,15 @@ from ....database.utils import get_table_columns as _get_db_columns
 from ...constants import TABLES_INFO_DICT as _TABLES_INFO
 
 
+class ConversionError(RuntimeError):
+    """Raised after conversion when one or more tables failed to convert."""
+
+    def __init__(self, failures: dict[str, str]):
+        self.failures = dict(failures)
+        details = "; ".join(f"{name}: {error}" for name, error in self.failures.items())
+        super().__init__(f"{len(self.failures)} table(s) failed to convert: {details}")
+
+
 def _get_source_columns(table_name: str):
     """Return raw RF source column names (not DB schema columns with SCD meta)."""
     info = _TABLES_INFO.get(table_name, {})
@@ -61,6 +70,9 @@ def convert_csvs_to_parquet(
     # Create global memory monitor
     global_monitor = MemoryMonitor(config)
 
+    # Tables that could not be converted, with the reason (raised at the end).
+    failures: dict[str, str] = {}
+
     # Prepare work queue sorted by total size (all files per table)
     table_work = []
     for table_name, zip_map in audit_map.items():
@@ -68,7 +80,8 @@ def convert_csvs_to_parquet(
         valid_paths = [p for p in csv_paths if p.exists()]
 
         if not valid_paths:
-            logger.warning(f"No valid files for '{table_name}'")
+            logger.error(f"No source files found for '{table_name}' in {unzip_dir}")
+            failures[table_name] = "no source files found"
             continue
 
         total_bytes = sum(p.stat().st_size for p in valid_paths)
@@ -78,6 +91,9 @@ def convert_csvs_to_parquet(
     table_work.sort(key=lambda x: x[3], reverse=True)
 
     logger.info(f"Processing {len(table_work)} tables with valid data")
+
+    if not table_work:
+        raise ConversionError(failures)
 
     # Determine processing approach
     total_dataset_gb = sum(x[3] for x in table_work) / (1024**3)
@@ -146,9 +162,11 @@ def convert_csvs_to_parquet(
                         else:
                             logger.error(f"❌ {result}")
                             error_count += 1
+                            failures[table_name] = str(result)
                     except Exception as e:
                         logger.error(f"❌ Exception in '{table_name}': {e}")
                         error_count += 1
+                        failures[table_name] = str(e)
 
                     completed += 1
                     progress.update(main_task, completed=completed)
@@ -198,10 +216,12 @@ def convert_csvs_to_parquet(
                     else:
                         logger.error(f"❌ {result}")
                         error_count += 1
-                        
+                        failures[table_name] = str(result)
+
                 except Exception as e:
                     logger.error(f"❌ Exception in '{table_name}': {e}")
                     error_count += 1
+                    failures[table_name] = str(e)
 
                 progress.update(main_task, completed=i+1)
 
@@ -213,11 +233,14 @@ def convert_csvs_to_parquet(
     logger.info("CONVERSION SUMMARY")
     logger.info("=" * 60)
     logger.info(f"   ✅ Successful: {success_count} tables")
-    logger.info(f"   ❌ Failed: {error_count} tables")
+    logger.info(f"   ❌ Failed: {len(failures)} tables")
     logger.info(f"   📊 Total processed: {total_bytes_processed:,} bytes ({total_mb:.1f}MB)")
     logger.info(f"   🧠 Final memory usage: {final_status['usage_above_baseline_mb']:.1f}MB above baseline")
     logger.info(f"   📁 Output directory: {output_dir}")
     logger.info("=" * 60)
+
+    if failures:
+        raise ConversionError(failures)
 
 
 # Helper function to add to your existing file

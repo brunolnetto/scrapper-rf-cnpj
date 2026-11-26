@@ -318,7 +318,7 @@ class ReceitaCNPJPipeline(Pipeline):
 
     def convert_to_parquet(self, audit_metadata: AuditMetadata) -> Path:
         from ..utils.misc import makedir
-        from .services.conversion.service import convert_csvs_to_parquet_smart
+        from .services.conversion.service import ConversionError, convert_csvs_to_parquet_smart
 
         num_workers = self.config.pipeline.conversion.workers
         output_dir = self.config.pipeline.get_temporal_conversion_path(self.config.year, self.config.month)
@@ -347,14 +347,29 @@ class ReceitaCNPJPipeline(Pipeline):
 
         extract_path = self.config.pipeline.get_temporal_extraction_path(self.config.year, self.config.month)
 
-        convert_csvs_to_parquet_smart(
-            audit_map,
-            extract_path, 
-            output_dir, 
-            self.config.pipeline.data_source.delimiter
-        )
+        # Tables that converted successfully are still persisted and audited
+        # below; the conversion error is re-raised once that is done.
+        conversion_error: Optional[ConversionError] = None
+        try:
+            convert_csvs_to_parquet_smart(
+                audit_map,
+                extract_path,
+                output_dir,
+                self.config.pipeline.data_source.delimiter
+            )
+            logger.info(f"Parquet conversion completed. Files saved to: {output_dir}")
+        except ConversionError as exc:
+            conversion_error = exc
+            logger.error(f"Parquet conversion finished with failures: {exc}")
+        failed_tables = set(conversion_error.failures) if conversion_error else set()
 
-        logger.info(f"Parquet conversion completed. Files saved to: {output_dir}")
+        # A failed table may leave a partial Parquet file behind; never persist
+        # or load it.
+        for table_name in failed_tables:
+            partial = output_dir / f"{table_name}.parquet"
+            if partial.exists():
+                logger.warning(f"Removing Parquet output of failed table: {partial}")
+                partial.unlink()
 
         # Persist completed artifacts separately from the local conversion workspace.
         storage_keys = self._persist_parquet_artifacts(output_dir)
@@ -362,6 +377,8 @@ class ReceitaCNPJPipeline(Pipeline):
         # IMPROVEMENT: Update table audits to reference Parquet files instead of ZIP files
         logger.info("Updating table audits to reference converted Parquet files...")
         for table_name in audit_map.keys():
+            if table_name in failed_tables:
+                continue
             parquet_file_path = output_dir / f"{table_name}.parquet" 
             if parquet_file_path.exists():
                 # flatten CSV list from audit_map for provenance
@@ -383,6 +400,8 @@ class ReceitaCNPJPipeline(Pipeline):
             else:
                 logger.warning(f"Expected Parquet file not found: {parquet_file_path}")
 
+        if conversion_error is not None:
+            raise conversion_error
 
         return output_dir
 
