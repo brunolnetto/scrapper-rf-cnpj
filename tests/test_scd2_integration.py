@@ -153,6 +153,6 @@ def test_load_records_directly_fails_in_async_context():
     async def _inner():
         return service.load_records_directly(table_info, records)
 
-    ok, err, count = asyncio.get_event_loop().run_until_complete(_inner())
+    ok, err, count = asyncio.run(_inner())
     assert ok is False
     assert "async" in err.lower()

@@ -323,27 +323,11 @@ class FullETLStrategy:
                 logger.warning("[FULL-ETL] No data downloaded")
                 return None
                 
-            # Create audit metadata
+            # Create audit metadata from the files downloaded in this run.
+            # Tables already audited for the period are not re-downloaded;
+            # use --force-reload to reprocess a period from scratch.
             download_path = str(config_service.pipeline.get_temporal_download_path(year, month))
-
-            # If there are already converted Parquet files for this period, prefer
-            # creating audit metadata from those existing files so previously
-            # converted tables (e.g. simples.parquet) are not skipped.
-            conversion_path = config_service.pipeline.get_temporal_conversion_path(year, month)
-            audit_metadata = None
-            try:
-                # If any parquet files exist in the conversion path, build audit metadata
-                # from those files (preferred for local/iterative runs).
-                parquet_files = list(conversion_path.glob('*.parquet'))
-                if parquet_files:
-                    audit_metadata = pipeline.create_audit_metadata_from_existing_csvs()
-
-            except Exception:
-                # Best-effort: fall back to standard audit metadata creation
-                audit_metadata = None
-
-            if not audit_metadata:
-                audit_metadata = pipeline.audit_service.create_audit_metadata(audits, download_path)
+            audit_metadata = pipeline.audit_service.create_audit_metadata(audits, download_path)
             
             # Step 2: Insert table audits BEFORE loading (critical for file manifest linking)
             logger.info("[FULL-ETL] Step 2: Inserting table audits before loading...")
