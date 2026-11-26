@@ -12,16 +12,45 @@ from ..database.db_admin import (
 from .interfaces import Pipeline, OrchestrationStrategy
 
 
+def _load_into_database(pipeline: Pipeline, audit_metadata) -> Any:
+    """Load *audit_metadata* and always release the same loader's resources.
+
+    Runs in a single event loop; ``close_resources`` is awaited even when the
+    load fails, and the load error propagates.
+    """
+    loader = pipeline.data_loader
+
+    async def _run():
+        try:
+            return await loader.load_data(audit_metadata)
+        finally:
+            await loader.close_resources()
+
+    return asyncio.run(_run())
+
+
+def _cleanup_local_files(config_service, year, month, *, extracted: bool = True) -> None:
+    """Remove the period's local download (and extraction) folders when configured."""
+    if not config_service.pipeline.delete_files:
+        return
+    from ..utils.misc import remove_folder
+
+    remove_folder(str(config_service.pipeline.get_temporal_download_path(year, month)))
+    if extracted:
+        remove_folder(str(config_service.pipeline.get_temporal_extraction_path(year, month)))
+    logger.info("Cleaned up local temporary files")
+
+
 class DownloadOnlyStrategy:
     """Strategy for download-only mode."""
     
     def get_name(self) -> str:
         return "Download Only"
     
-    def validate_parameters(self, **kwargs) -> bool:
+    def validate_parameters(self, **_kwargs) -> bool:
         return True  # No specific parameters required
     
-    def execute(self, pipeline: Pipeline, config_service: ConfigurationService, **kwargs) -> Optional[Any]:
+    def execute(self, pipeline: Pipeline, config_service: ConfigurationService, **_kwargs) -> Optional[Any]:
         logger.info("[DOWNLOAD-ONLY] Running in download-only mode...")
         
         try:
@@ -47,7 +76,7 @@ class DownloadAndLoadStrategy:
     def get_name(self) -> str:
         return "Download+Load"
 
-    def validate_parameters(self, **kwargs) -> bool:
+    def validate_parameters(self, **_kwargs) -> bool:
         return True  # No specific parameters required
 
     def execute(self, pipeline: Pipeline, config_service, **kwargs) -> Optional[Any]:
@@ -69,17 +98,8 @@ class DownloadAndLoadStrategy:
         logger.info("[DOWNLOAD+LOAD] Converting to Parquet (required by the loader)...")
         pipeline.convert_to_parquet(audit_metadata)
 
-        loader = pipeline.data_loader
-        try:
-            asyncio.run(loader.load_data(audit_metadata))
-        finally:
-            asyncio.run(loader.close_resources())
-
-        if config_service.pipeline.delete_files:
-            from ..utils.misc import remove_folder
-            remove_folder(download_path)
-            remove_folder(str(config_service.pipeline.get_temporal_extraction_path(year, month)))
-            logger.info("[DOWNLOAD+LOAD] Cleaned up temporary files")
+        _load_into_database(pipeline, audit_metadata)
+        _cleanup_local_files(config_service, year, month)
 
         logger.info("[DOWNLOAD+LOAD] Download+load completed successfully")
         return audit_metadata
@@ -87,147 +107,104 @@ class DownloadAndLoadStrategy:
 
 class DownloadAndConvertStrategy:
     """Strategy for download and convert to Parquet mode."""
-    
+
     def get_name(self) -> str:
         return "Download and Convert"
-    
-    def validate_parameters(self, **kwargs) -> bool:
+
+    def validate_parameters(self, **_kwargs) -> bool:
         return True  # No specific parameters required
-    
-    def execute(self, pipeline: Pipeline, config_service: ConfigurationService, **kwargs) -> Optional[Any]:
+
+    def execute(self, pipeline: Pipeline, config_service: ConfigurationService, **_kwargs) -> Optional[Any]:
         logger.info("[DOWNLOAD-CONVERT] Running in download-and-convert mode...")
-        
-        try:
-            # Download files
-            audits = pipeline.retrieve_data()
-            if not audits:
-                logger.warning("[DOWNLOAD-CONVERT] No files were downloaded")
-                return None
-            
-            # Create audit metadata and convert to Parquet
-            download_path = str(config_service.pipeline.get_temporal_download_path(config_service.year, config_service.month))
-            audit_metadata = pipeline.audit_service.create_audit_metadata(audits, download_path)
-            conversion_path = pipeline.convert_to_parquet(audit_metadata)
-            
-            logger.info(f"[DOWNLOAD-CONVERT] Successfully downloaded {len(audits)} files")
-            logger.info(f"[DOWNLOAD-CONVERT] Files converted to Parquet and saved to: {conversion_path}")
-            
-            # Cleanup downloaded files if configured
-            if config_service.pipeline.delete_files:
-                from ..utils.misc import remove_folder
-                remove_folder(download_path)
-                logger.info("[DOWNLOAD-CONVERT] Cleaned up downloaded files")
-            
-            return conversion_path
-        except (OSError, IOError, ConnectionError, TimeoutError, ValueError, RuntimeError) as e:
-            logger.error(f"[DOWNLOAD-CONVERT] Process failed: {e}")
-            raise
+
+        audits = pipeline.retrieve_data()
+        if not audits:
+            logger.warning("[DOWNLOAD-CONVERT] No files were downloaded")
+            return None
+
+        year, month = config_service.year, config_service.month
+        download_path = str(config_service.pipeline.get_temporal_download_path(year, month))
+        audit_metadata = pipeline.audit_service.create_audit_metadata(audits, download_path)
+        conversion_path = pipeline.convert_to_parquet(audit_metadata)
+
+        logger.info(f"[DOWNLOAD-CONVERT] Successfully downloaded {len(audits)} files")
+        logger.info(f"[DOWNLOAD-CONVERT] Files converted to Parquet and saved to: {conversion_path}")
+
+        # Keep extracted CSVs: only the downloaded archives are removed here.
+        _cleanup_local_files(config_service, year, month, extracted=False)
+        return conversion_path
 
 
 class ConvertOnlyStrategy:
     """Strategy for convert existing CSV files to Parquet mode."""
-    
+
     def get_name(self) -> str:
         return "Convert Only"
-    
-    def validate_parameters(self, **kwargs) -> bool:
+
+    def validate_parameters(self, **_kwargs) -> bool:
         return True  # No specific parameters required
-    
-    def execute(self, pipeline: Pipeline, _config_service: ConfigurationService, **kwargs) -> Optional[Any]:
+
+    def execute(self, pipeline: Pipeline, _config_service: ConfigurationService, **_kwargs) -> Optional[Any]:
         logger.info("[CONVERT-ONLY] Running in convert-only mode...")
-        
-        try:
-            # Convert existing CSV files to Parquet
-            conversion_path = pipeline.convert_existing_csvs_to_parquet()
-            if conversion_path:
-                logger.info("[CONVERT-ONLY] Successfully converted existing CSV files to Parquet")
-                logger.info(f"[CONVERT-ONLY] Parquet files saved to: {conversion_path}")
-            else:
-                logger.warning("[CONVERT-ONLY] No CSV files were converted")
-            return conversion_path
-        except (OSError, IOError, ValueError, RuntimeError) as e:
-            logger.error(f"[CONVERT-ONLY] Conversion failed: {e}")
-            raise
+
+        conversion_path = pipeline.convert_existing_csvs_to_parquet()
+        if conversion_path:
+            logger.info(f"[CONVERT-ONLY] Parquet files saved to: {conversion_path}")
+        else:
+            logger.warning("[CONVERT-ONLY] No CSV files were converted")
+        return conversion_path
 
 
 class ConvertAndLoadStrategy:
     """Strategy for converting existing CSV files and loading to database."""
-    
+
     def get_name(self) -> str:
         return "Convert and Load"
-    
-    def validate_parameters(self, **kwargs) -> bool:
+
+    def validate_parameters(self, **_kwargs) -> bool:
         return True  # No specific parameters required
-    
-    def execute(self, pipeline: Pipeline, _config_service: ConfigurationService, **kwargs) -> Optional[Any]:
+
+    def execute(self, pipeline: Pipeline, _config_service: ConfigurationService, **_kwargs) -> Optional[Any]:
         logger.info("[CONVERT-LOAD] Running in convert-and-load mode...")
-        
-        try:
-            # Create metadata from existing CSV files
-            audit_metadata = pipeline.create_audit_metadata_from_existing_csvs()
-            if not audit_metadata:
-                logger.warning("[CONVERT-LOAD] No existing CSV files found")
-                return None
-            
-            # Convert to Parquet
-            conversion_path = pipeline.convert_to_parquet(audit_metadata)
-            logger.info(f"[CONVERT-LOAD] Files converted to Parquet: {conversion_path}")
-            
-            # Insert table audits into the database first (pre-conversion insert - skip file manifests)
-            pipeline.audit_service.insert_audits(audit_metadata, create_file_manifests=False)
-            logger.info("[CONVERT-LOAD] Table audits inserted successfully")
-            
-            # Load to database
-            asyncio.run(pipeline.data_loader.load_data(audit_metadata))
-            
-            # on shutdown (also sync) close resources:
-            asyncio.run(pipeline.data_loader.close_resources())
-            
-            logger.info("[CONVERT-LOAD] Successfully converted and loaded files to database")
-            
-            return audit_metadata
-            
-        except (OSError, IOError, ConnectionError, TimeoutError, ValueError, RuntimeError) as e:
-            logger.error(f"[CONVERT-LOAD] Process failed: {e}")
-            raise
+
+        audit_metadata = pipeline.create_audit_metadata_from_existing_csvs()
+        if not audit_metadata:
+            logger.warning("[CONVERT-LOAD] No existing CSV files found")
+            return None
+
+        # Insert table audits before converting so conversion metadata can be
+        # recorded on them (file manifests are created per file during loading).
+        pipeline.audit_service.insert_audits(audit_metadata, create_file_manifests=False)
+
+        conversion_path = pipeline.convert_to_parquet(audit_metadata)
+        logger.info(f"[CONVERT-LOAD] Files converted to Parquet: {conversion_path}")
+
+        _load_into_database(pipeline, audit_metadata)
+        logger.info("[CONVERT-LOAD] Successfully converted and loaded files to database")
+        return audit_metadata
 
 
 class LoadOnlyStrategy:
-    """Strategy for loading existing Parquet/CSV files to database."""
-    
+    """Strategy for loading existing Parquet files to database."""
+
     def get_name(self) -> str:
         return "Load Only"
-    
-    def validate_parameters(self, **kwargs) -> bool:
+
+    def validate_parameters(self, **_kwargs) -> bool:
         return True  # No specific parameters required
 
-    def execute(self, pipeline: Pipeline, _config_service: ConfigurationService, **kwargs) -> Optional[Any]:
+    def execute(self, pipeline: Pipeline, _config_service: ConfigurationService, **_kwargs) -> Optional[Any]:
         logger.info("[LOAD-ONLY] Running in load-only mode...")
-        
-        try:
-            # Create metadata from existing files and load
-            audit_metadata = pipeline.create_audit_metadata_from_existing_parquet()
 
-            if not audit_metadata:
-                logger.warning("[LOAD-ONLY] No existing files found to load")
-                return None
-            
-            # Insert table audits into the database first (pre-load insert - skip file manifests)
-            pipeline.audit_service.insert_audits(audit_metadata, create_file_manifests=False)
-            logger.info("[LOAD-ONLY] Table audits inserted successfully")
-            
-            # Use data loader to load into database
-            asyncio.run(pipeline.data_loader.load_data(audit_metadata))
-            
-            # on shutdown (also sync) close resources:
-            asyncio.run(pipeline.data_loader.close_resources())
+        audit_metadata = pipeline.create_audit_metadata_from_existing_parquet()
+        if not audit_metadata:
+            logger.warning("[LOAD-ONLY] No existing files found to load")
+            return None
 
-            logger.info("[LOAD-ONLY] Successfully loaded existing files to database")
-            return audit_metadata
-                
-        except (OSError, IOError, ConnectionError, TimeoutError, ValueError, RuntimeError) as e:
-            logger.error(f"[LOAD-ONLY] Load failed: {e}")
-            raise
+        pipeline.audit_service.insert_audits(audit_metadata, create_file_manifests=False)
+        _load_into_database(pipeline, audit_metadata)
+        logger.info("[LOAD-ONLY] Successfully loaded existing files to database")
+        return audit_metadata
 
 
 class FullETLStrategy:
@@ -318,18 +295,10 @@ class FullETLStrategy:
             
             # Step 4: Load data (file manifests can now link to existing table audits)
             logger.info("[FULL-ETL] Step 4: Loading data to database...")
-            asyncio.run(pipeline.data_loader.load_data(audit_metadata))
-
-            # on shutdown (also sync) close resources:
-            asyncio.run(pipeline.data_loader.close_resources())
+            _load_into_database(pipeline, audit_metadata)
 
             # Step 5: Cleanup downloaded files if configured
-            if config_service.pipeline.delete_files:
-                from ..utils.misc import remove_folder
-                remove_folder(download_path)
-                extract_path = str(config_service.pipeline.get_temporal_extraction_path(year, month))
-                remove_folder(extract_path)
-                logger.info("[FULL-ETL] Cleaned up temporary files")
+            _cleanup_local_files(config_service, year, month)
             
             if audit_metadata:
                 # Get final row counts for validation
