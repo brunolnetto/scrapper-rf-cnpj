@@ -20,7 +20,7 @@ import math
 from ....setup.logging import logger
 from ....setup.config.models import ConversionConfig
 from .strategies import process_csv_with_strategies
-from .utils import compute_chunk_size_for_file, infer_unified_schema
+from .utils import compute_chunk_size_for_file, infer_unified_schema, remove_quietly
 from ..memory.service import MemoryMonitor
 
 
@@ -279,12 +279,7 @@ def convert_with_two_pass_integration(
             if not chunk_files:
                 logger.warning(f"Partition {part_idx} has no data, skipping")
                 # cleanup empty chunk dir
-                try:
-                    for p in part_chunk_dir.glob('*'):
-                        p.unlink()
-                    part_chunk_dir.rmdir()
-                except:
-                    pass
+                remove_quietly(part_chunk_dir)
                 continue
             
             # combine chunk files lazily into single partition file
@@ -300,16 +295,10 @@ def convert_with_two_pass_integration(
                 combined.sink_parquet(str(part_output), compression=config.compression if hasattr(config, 'compression') else "snappy", row_group_size=50000, maintain_order=False, statistics=False)
                 # remove chunk files
                 for f in chunk_files:
-                    try:
-                        f.unlink()
-                    except:
-                        pass
+                    remove_quietly(f)
             partition_files.append(part_output)
             # remove the chunk dir
-            try:
-                part_chunk_dir.rmdir()
-            except:
-                pass
+            remove_quietly(part_chunk_dir)
             if memory_monitor.is_memory_pressure_high():
                 memory_monitor.perform_aggressive_cleanup()
         
@@ -329,42 +318,13 @@ def convert_with_two_pass_integration(
             combined.sink_parquet(str(output_path), compression=config.compression if hasattr(config, 'compression') else "snappy", row_group_size=50000, maintain_order=False, statistics=False)
             # cleanup partitions
             for pf in partition_files:
-                try:
-                    pf.unlink()
-                except:
-                    pass
+                remove_quietly(pf)
         
         return {"rows_processed": total_rows, "output_bytes": output_path.stat().st_size if output_path.exists() else 0, "partitions_used": len(partitions), "strategy": "two_pass_planned"}
     finally:
         # Final best-effort cleanup of any leftover chunk files and directories
-        try:
-            if temp_dir.exists():
-                for p in temp_dir.glob('*'):
-                    try:
-                        # remove nested directories' files then dirs
-                        if p.is_dir():
-                            for c in p.glob('*'):
-                                try:
-                                    c.unlink()
-                                except:
-                                    pass
-                            try:
-                                p.rmdir()
-                            except:
-                                pass
-                        else:
-                            try:
-                                p.unlink()
-                            except:
-                                pass
-                    except Exception:
-                        pass
-                try:
-                    temp_dir.rmdir()
-                except:
-                    pass
-        except Exception:
-            pass
+        if temp_dir.exists():
+            remove_quietly(temp_dir)
 
 
 def convert_table_csvs_multifile(
@@ -443,11 +403,7 @@ def convert_table_csvs_multifile(
         
     except Exception as e:
         logger.exception(f"Conversion failed for '{table_name}': {e}")
-        if final_output.exists():
-            try:
-                final_output.unlink()
-            except:
-                pass
+        remove_quietly(final_output)
         return f"[ERROR] Failed '{table_name}': {e}"
 
 
@@ -623,8 +579,8 @@ def convert_with_stream_merge_integration(
                 try:
                     mem_used = memory_monitor.get_memory_usage_above_baseline()
                     logger.info(f"Memory after writing stream part: {mem_used}MB above baseline")
-                except Exception:
-                    pass
+                except Exception as exc:  # profiling only; never fail the conversion
+                    logger.debug(f"Memory profiling unavailable: {exc}")
                 
                 del batches, combined
                 gc.collect()
@@ -678,27 +634,12 @@ def convert_with_stream_merge_integration(
             )
             # cleanup parts
             for p in parts:
-                try:
-                    p.unlink()
-                except:
-                    pass
+                remove_quietly(p)
         return {"rows_processed": total_rows, "output_bytes": output_path.stat().st_size if output_path.exists() else 0, "strategy": "stream_merge"}
     finally:
         # Best-effort cleanup if temp dir still exists
-        try:
-            if temp_dir.exists():
-                # remove any leftover files
-                for p in temp_dir.glob("*"):
-                    try:
-                        p.unlink()
-                    except:
-                        pass
-                try:
-                    temp_dir.rmdir()
-                except:
-                    pass
-        except Exception:
-            pass
+        if temp_dir.exists():
+            remove_quietly(temp_dir)
 
 
 

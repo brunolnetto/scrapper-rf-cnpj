@@ -7,7 +7,7 @@ import time
 from ....setup.logging import logger
 from ..memory.service import MemoryMonitor
 from .models import ProcessingStrategy
-from .utils import infer_schema_single
+from .utils import infer_schema_single, remove_quietly
 
 
 def get_processing_strategies(file_size_mb: float, memory_pressure: float) -> List[ProcessingStrategy]:
@@ -100,8 +100,11 @@ def _execute_chunked_strategy(
                         if len(current_columns) == len(expected_columns):
                             column_mapping = {current_columns[i]: expected_columns[i] for i in range(len(expected_columns))}
                             lazy_chunk = lazy_chunk.rename(column_mapping).select(expected_columns)
-                    except Exception:
-                        pass
+                    except pl.exceptions.PolarsError as exc:
+                        logger.warning(
+                            f"Could not rename columns of {csv_path.name} to the expected schema; "
+                            f"keeping original names: {exc}"
+                        )
                 
                 # Check if chunk has data
                 chunk_df = lazy_chunk.collect()
@@ -369,21 +372,13 @@ def process_csv_with_strategies(
             except (MemoryError, pl.ComputeError) as e:
                 logger.warning(f"Strategy {strategy.name} failed: {e}")
                 # Clean up any partial output
-                if output_path.exists():
-                    try:
-                        output_path.unlink()
-                    except:
-                        pass
+                remove_quietly(output_path)
                 # Try next strategy
                 continue
             except Exception as e:
                 logger.error(f"Unexpected error in strategy {strategy.name}: {e}")
                 # Clean up and try next strategy
-                if output_path.exists():
-                    try:
-                        output_path.unlink()
-                    except:
-                        pass
+                remove_quietly(output_path)
                 continue
         
         # All strategies failed
@@ -391,10 +386,6 @@ def process_csv_with_strategies(
         
     except Exception as e:
         # Final cleanup on total failure
-        if output_path.exists():
-            try:
-                output_path.unlink()
-            except:
-                pass
+        remove_quietly(output_path)
         memory_monitor.perform_aggressive_cleanup()
         raise e
