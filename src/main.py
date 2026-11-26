@@ -111,47 +111,15 @@ If no year/month specified: Auto-discovers latest available period from Federal 
     # Create orchestrator with strategy
     orchestrator = PipelineOrchestrator(pipeline, strategy, config_service)
 
-    # Run with parameters
-    # Force-reload: wipe audit entries for the period so the run is idempotent
-    if getattr(args, "force_reload", False) and args.year and args.month:
-        from .database.models.audit import AuditBase
-        from .setup.base import init_database
-        _adb = init_database(config_service.audit.database, AuditBase)
-        with _adb.engine.begin() as _conn:
-            _t = __import__("sqlalchemy").text
-            # Delete leaf → root: subbatch → batch → file → table
-            _conn.execute(_t(
-                "DELETE FROM subbatch_audit_manifest WHERE parent_batch_audit_id IN ("
-                "  SELECT batch_audit_id FROM batch_audit_manifest"
-                "  WHERE parent_file_audit_id IN ("
-                "    SELECT file_audit_id FROM file_audit_manifest"
-                "    WHERE parent_table_audit_id IN ("
-                "      SELECT table_audit_id FROM table_audit_manifest"
-                "      WHERE ingestion_year = :y AND ingestion_month = :m"
-                "    )"
-                "  )"
-                ")"
-            ), {"y": args.year, "m": args.month})
-            _conn.execute(_t(
-                "DELETE FROM batch_audit_manifest WHERE parent_file_audit_id IN ("
-                "  SELECT file_audit_id FROM file_audit_manifest"
-                "  WHERE parent_table_audit_id IN ("
-                "    SELECT table_audit_id FROM table_audit_manifest"
-                "    WHERE ingestion_year = :y AND ingestion_month = :m"
-                "  )"
-                ")"
-            ), {"y": args.year, "m": args.month})
-            _conn.execute(_t(
-                "DELETE FROM file_audit_manifest WHERE parent_table_audit_id IN ("
-                "  SELECT table_audit_id FROM table_audit_manifest"
-                "  WHERE ingestion_year = :y AND ingestion_month = :m"
-                ")"
-            ), {"y": args.year, "m": args.month})
-            _conn.execute(_t(
-                "DELETE FROM table_audit_manifest"
-                " WHERE ingestion_year = :y AND ingestion_month = :m"
-            ), {"y": args.year, "m": args.month})
-        _logger.info(f"[force-reload] Cleared audit entries for {args.year}-{args.month:02d}")
+    # Force-reload: wipe audit entries for the period so the run is idempotent.
+    # validate_cli_arguments resolves the latest period when none was given.
+    if args.force_reload:
+        if not (args.year and args.month):
+            raise ValueError("--force-reload requires a resolved year/month period")
+        deleted = pipeline.audit_service.delete_period_audits(args.year, args.month)
+        _logger.info(
+            f"[force-reload] Cleared audit entries for {args.year}-{args.month:02d}: {deleted}"
+        )
 
     orchestrator.run(
         year=args.year,
