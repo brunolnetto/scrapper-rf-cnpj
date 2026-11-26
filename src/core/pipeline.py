@@ -24,6 +24,8 @@ class ReceitaCNPJPipeline(Pipeline):
         # Lazy initialization - don't connect to databases until needed
         self._database = None
         self._audit_service = None
+        self._data_loader = None
+        self._discovery_service = None
         self._initialized = False
 
         # Batch tracking state
@@ -54,25 +56,27 @@ class ReceitaCNPJPipeline(Pipeline):
     
     @property
     def data_loader(self):
-        """Lazy data loader initialization."""
-        from .services.loading.service import FileLoadingService
+        """Lazily create the data loader once and reuse it for the run."""
+        if self._data_loader is None:
+            from .services.loading.service import FileLoadingService
 
-        # Ensure databases (and sqldim engine) are initialised first
-        _ = self.database
+            # Ensure databases (and sqldim engine) are initialised first
+            _ = self.database
 
-        self._data_loader = FileLoadingService(
-            self.database,
-            self.config,
-            self._audit_service,
-        )
+            self._data_loader = FileLoadingService(
+                self.database,
+                self.config,
+                self._audit_service,
+            )
         return self._data_loader
 
     @property
     def discovery_service(self):
-        """Lazy discovery service initialization for Federal Revenue data periods."""
-        from .services.discovery.service import FederalRevenueDiscoveryService
+        """Lazily create the discovery service once and reuse it for the run."""
+        if self._discovery_service is None:
+            from .services.discovery.service import FederalRevenueDiscoveryService
 
-        self._discovery_service = FederalRevenueDiscoveryService(self.config)
+            self._discovery_service = FederalRevenueDiscoveryService(self.config)
         return self._discovery_service
 
     def _init_databases(self) -> None:
