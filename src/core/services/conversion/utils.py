@@ -10,6 +10,7 @@ from pathlib import Path
 import polars as pl
 import gc
 import os
+import shutil
 from typing import Optional, Dict, List 
 
 
@@ -28,14 +29,30 @@ def read_cgroup_memory_limit_bytes() -> Optional[int]:
     for p in try_paths:
         try:
             if os.path.exists(p):
-                val = open(p, "r").read().strip()
+                with open(p, "r") as fh:
+                    val = fh.read().strip()
                 if val in ("max", ""):
                     return None
                 return int(val)
-        except Exception:
-            pass
+        except (OSError, ValueError) as exc:
+            logger.debug(f"Could not read cgroup memory limit from {p}: {exc}")
     # Could add more exhaustive lookup using /proc/self/cgroup, but this covers common setups.
     return None
+
+def remove_quietly(path: Path) -> None:
+    """Best-effort removal of a temporary file or directory tree.
+
+    Cleanup must never fail a conversion, but failures are logged so leftover
+    temp files do not go unnoticed.
+    """
+    try:
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning(f"Could not remove temporary path {path}: {exc}")
+
 
 # helper: estimate avg row bytes (from small sample)
 def estimate_avg_row_bytes(csv_path: Path, delimiter: str, sample_rows: int = 1000) -> int:

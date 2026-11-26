@@ -64,8 +64,8 @@ def convert_csvs_to_parquet(
         memory = psutil.virtual_memory()
         logger.info(f"System Memory: {memory.total/(1024**3):.2f}GB total, "
                     f"{memory.available/(1024**3):.2f}GB available")
-    except:
-        pass
+    except Exception as exc:  # informational log only (psutil may raise its own errors)
+        logger.debug(f"Could not read system memory info: {exc}")
 
     # Create global memory monitor
     global_monitor = MemoryMonitor(config)
@@ -294,7 +294,8 @@ def convert_csvs_to_parquet_smart(
         else:
             logger.info(f"Standard system ({total_gb:.1f}GB), using standard config")
             config = ConversionConfig()
-    except:
+    except Exception as exc:  # detection is advisory; fall back to the default config
+        logger.warning(f"Could not detect system memory, using default conversion config: {exc}")
         config = ConversionConfig()
     
     # Use enhanced conversion
