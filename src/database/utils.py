@@ -536,29 +536,3 @@ def validate_table_info(table_info) -> bool:
         table_info.types = safe_get_column_types(table_info)
     
     return True
-
-
-# Integration function for the LoadingService
-def prepare_table_info_for_loading(table_name: str):
-    """
-    Prepare fully validated and enhanced TableInfo for loading operations.
-    This is the recommended function to use in LoadingService.
-    """
-    try:
-        # Create enhanced table info
-        table_info = create_enhanced_table_info(table_name)
-        
-        # Validate it has everything needed
-        if not validate_table_info(table_info):
-            raise ValueError(f"TableInfo validation failed for {table_name}")
-        
-        logger.debug(f"Prepared table info for {table_name}: "
-                    f"columns={len(table_info.columns)}, "
-                    f"primary_keys={table_info.primary_keys}, "
-                    f"types_defined={len(table_info.types)}")
-        
-        return table_info
-        
-    except Exception as e:
-        logger.error(f"Failed to prepare table info for {table_name}: {e}")
-        raise

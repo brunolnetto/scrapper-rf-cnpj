@@ -235,8 +235,9 @@ class DatabaseService:
                                       f"Cleanup freed {cleanup_stats.get('freed_mb', 0):.1f}MB")
                     
                 except Exception as e:
+                    # No `del batch` here: it may already be deleted above, and a
+                    # NameError would mask the original exception.
                     logger.error(f"[DatabaseService] Batch {batch_idx} failed: {e}")
-                    del batch
                     raise
             
             logger.info(f"[DatabaseService] Completed processing: {rows_total} rows processed")

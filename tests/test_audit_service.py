@@ -188,7 +188,6 @@ class TestAuditServiceConcurrency:
     @pytest.fixture
     def mock_database(self):
         """Create a mocked database with connection support."""
-        from unittest.mock import MagicMock
         db = MagicMock()
         conn = MagicMock()
         db.engine.begin.return_value.__enter__.return_value = conn
