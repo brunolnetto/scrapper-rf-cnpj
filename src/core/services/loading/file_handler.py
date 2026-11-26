@@ -138,10 +138,12 @@ class FileHandler:
                 _ = pf.metadata
                 del pf
                 return True
-            except Exception:
+            except Exception as exc:  # any pyarrow failure means "not a parquet file"
+                logger.debug(f"{file_path} is not readable as parquet: {exc}")
                 return False
-                
-        except Exception:
+
+        except OSError as exc:
+            logger.debug(f"Could not open {file_path} for parquet validation: {exc}")
             return False
     
     def _validate_csv_content(self, file_path: str) -> bool:
@@ -162,24 +164,19 @@ class FileHandler:
                 
                 del sample_lines  # Explicit cleanup
                 return True
-                
-        except Exception:
+
+        except (OSError, LookupError) as exc:  # LookupError: unknown encoding
+            logger.debug(f"Could not open {file_path} for CSV validation: {exc}")
             return False
     
     def _detect_format_by_content(self, file_path: str) -> Optional[str]:
         """Content-based format detection with memory efficiency."""
-        try:
-            # Try Parquet first (binary format)
-            if self._validate_parquet_content(file_path):
-                return 'parquet'
-            
-            # Try CSV
-            if self._validate_csv_content(file_path):
-                return 'csv'
-            
-            return None
-        except Exception:
-            return None
+        # Both validators handle their own errors and return False.
+        if self._validate_parquet_content(file_path):  # binary format first
+            return 'parquet'
+        if self._validate_csv_content(file_path):
+            return 'csv'
+        return None
     
     def _emergency_cleanup(self):
         """Emergency cleanup for process shutdown."""
@@ -393,8 +390,9 @@ class FileHandler:
         try:
             import psutil
             return psutil.virtual_memory().available / 1024 / 1024
-        except Exception:
-            return 4000.0  # Default to assuming 4GB available if check fails
+        except Exception as exc:  # sizing heuristic only
+            logger.debug(f"Could not read available memory, assuming 4GB: {exc}")
+            return 4000.0
 
     def _calibrate_memory_requirements(self, file_path: str, headers: List[str], sample_size: int = 1000) -> Optional[dict]:
         """
