@@ -147,45 +147,36 @@ class ReceitaCNPJPipeline(Pipeline):
 
     def scrap_data(self) -> List[FileInfo]:
         """
-        Scrape data files for the configured year and month using discovery service.
-        
-        This method now uses the integrated discovery service instead of 
-        duplicating the scraping logic.
-        
+        Scrape data files for the configured year and month using the discovery service.
+
+        Errors propagate: an unavailable period raises ``ValueError`` and
+        network/parsing failures raise as-is, so the run fails instead of
+        reporting "no data". A period that exists but lists no files returns
+        an empty list.
+
         Returns:
             List of FileInfo objects for available files
         """
-        try:
-            # Use discovery service to scrape files for the configured period
-            period_files = self.discovery_service.scrape_period_files(
-                year=self.config.pipeline.year,
-                month=self.config.pipeline.month
+        year = self.config.pipeline.year
+        month = self.config.pipeline.month
+        period_files = self.discovery_service.scrape_period_files(year=year, month=month)
+
+        files_info = [
+            FileInfo(
+                filename=period_file.filename,
+                tablename=self._derive_tablename_from_filename(period_file.filename),
+                path=period_file.download_url,
+                updated_at=period_file.updated_at,
+                file_size=period_file.file_size,
             )
-            
-            # Convert PeriodFileInfo to FileInfo for compatibility
-            files_info = []
-            for period_file in period_files:
-                # Derive tablename from filename using the mapping
-                tablename = self._derive_tablename_from_filename(period_file.filename)
-                
-                file_info = FileInfo(
-                    filename=period_file.filename,
-                    tablename=tablename,
-                    path=period_file.download_url,
-                    updated_at=period_file.updated_at,
-                    file_size=period_file.file_size
-                )
-                files_info.append(file_info)
-            
-            logger.info(f"Discovery service found {len(files_info)} files for {self.config.pipeline.year}-{self.config.pipeline.month:02d}")
-            return files_info
-            
-        except ValueError as e:
-            logger.error(f"Period not available: {e}")
-            return []
-        except Exception as e:
-            logger.error(f"Failed to scrape data using discovery service: {e}")
-            return []
+            for period_file in period_files
+        ]
+
+        if files_info:
+            logger.info(f"Discovery service found {len(files_info)} files for {year}-{month:02d}")
+        else:
+            logger.warning(f"Period {year}-{month:02d} exists but lists no files")
+        return files_info
 
     def _derive_tablename_from_filename(self, filename: str) -> str:
         """
