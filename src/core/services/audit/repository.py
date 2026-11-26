@@ -28,6 +28,47 @@ class AuditRepository:
     
     def __init__(self, database: Database):
         self.database = database
+
+    def delete_period_audits(self, year: int, month: int) -> Dict[str, int]:
+        """Delete every audit row of an ingestion period, leaf to root.
+
+        Removes subbatch → batch → file → table manifests linked to the
+        period's table audits in one transaction. Child tables that do not
+        exist in the audit database are skipped. Returns the number of rows
+        deleted per table.
+        """
+        from sqlalchemy import inspect
+
+        table_ids = (
+            "SELECT table_audit_id FROM table_audit_manifest "
+            "WHERE ingestion_year = :y AND ingestion_month = :m"
+        )
+        file_ids = f"SELECT file_audit_id FROM file_audit_manifest WHERE parent_table_audit_id IN ({table_ids})"
+        batch_ids = f"SELECT batch_audit_id FROM batch_audit_manifest WHERE parent_file_audit_id IN ({file_ids})"
+        statements = [
+            ("subbatch_audit_manifest", f"DELETE FROM subbatch_audit_manifest WHERE parent_batch_audit_id IN ({batch_ids})"),
+            ("batch_audit_manifest", f"DELETE FROM batch_audit_manifest WHERE parent_file_audit_id IN ({file_ids})"),
+            ("file_audit_manifest", f"DELETE FROM file_audit_manifest WHERE parent_table_audit_id IN ({table_ids})"),
+            ("table_audit_manifest", "DELETE FROM table_audit_manifest WHERE ingestion_year = :y AND ingestion_month = :m"),
+        ]
+        # A child statement references its ancestors, so it needs all of them.
+        required = {
+            "subbatch_audit_manifest": {"subbatch_audit_manifest", "batch_audit_manifest", "file_audit_manifest"},
+            "batch_audit_manifest": {"batch_audit_manifest", "file_audit_manifest"},
+            "file_audit_manifest": {"file_audit_manifest"},
+            "table_audit_manifest": {"table_audit_manifest"},
+        }
+
+        params = {"y": year, "m": month}
+        deleted: Dict[str, int] = {}
+        with self.database.engine.begin() as conn:
+            existing = set(inspect(conn).get_table_names())
+            for table, sql in statements:
+                if not required[table] <= existing:
+                    logger.warning(f"[force-reload] Skipping {table}: table(s) missing from audit database")
+                    continue
+                deleted[table] = conn.execute(text(sql), params).rowcount
+        return deleted
     
     def insert_file_manifest(
         self, 

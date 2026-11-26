@@ -180,6 +180,10 @@ class AuditService:
             max_workers = getattr(self.config.pipeline.loading, 'internal_concurrency', 3)
             self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="audit-worker")
 
+    def delete_period_audits(self, year: int, month: int) -> Dict[str, int]:
+        """Delete all audit rows for an ingestion period (used by --force-reload)."""
+        return self.repository.delete_period_audits(year, month)
+
     def __enter__(self):
         return self
         
