@@ -166,21 +166,24 @@ class PipelineObservatory:
         """Return a DuckDB relation with breaking change rate per dataset."""
         try:
             return self._obs.breaking_change_rate()
-        except Exception:
+        except Exception as exc:  # optional analytics: report and return no data
+            _log.warning("Observability query breaking_change_rate failed: %s", exc)
             return None
 
     def query_worst_quality_datasets(self):
         """Return a DuckDB relation with worst quality datasets."""
         try:
             return self._obs.worst_quality_datasets()
-        except Exception:
+        except Exception as exc:  # optional analytics: report and return no data
+            _log.warning("Observability query worst_quality_datasets failed: %s", exc)
             return None
 
     def query_drift_velocity(self):
         """Return a DuckDB relation with schema drift velocity over time."""
         try:
             return self._obs.drift_velocity()
-        except Exception:
+        except Exception as exc:  # optional analytics: report and return no data
+            _log.warning("Observability query drift_velocity failed: %s", exc)
             return None
 
     def ingest_source_quality(

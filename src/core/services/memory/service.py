@@ -7,6 +7,8 @@ from typing import Optional, Dict, Callable, List, Any
 
 import psutil
 
+from ....setup.logging import logger
+
 # Assume MemoryMonitorConfig is your pydantic model. Example added fields expected:
 # - memory_limit_mb (int)
 # - cleanup_threshold_ratio (float)
@@ -77,8 +79,8 @@ class MemoryMonitor:
                     system_available_mb=sys_info.available / (1024*1024),
                     system_used_percent=sys_info.percent,
                 )
-            except Exception:
-                pass
+            except (psutil.Error, OSError) as e:
+                logger.debug(f"Process memory info unavailable, using system-only snapshot: {e}")
 
         sys_info = self._get_sys()
         return MemorySnapshot(
@@ -196,8 +198,8 @@ class MemoryMonitor:
         if callable(self.on_cleanup):
             try:
                 self.on_cleanup()
-            except Exception:
-                pass
+            except Exception as e:  # user hook: never break the cleanup cycle
+                logger.warning(f"Memory cleanup hook failed: {e}")
 
         # Stage 1: multiple GC passes but measure after each; stop early if no change
         prev_rss = before.process_rss_mb
@@ -210,24 +212,19 @@ class MemoryMonitor:
             prev_rss = cur.process_rss_mb
 
         # Stage 2: optional OS-level trim (glibc) — best-effort
-        try:
-            libc = None
-            if os.name == "posix":
+        if os.name == "posix":
+            try:
                 import ctypes
-                libc = ctypes.CDLL("libc.so.6")
-                try:
-                    libc.malloc_trim(0)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                ctypes.CDLL("libc.so.6").malloc_trim(0)
+            except (OSError, AttributeError) as e:  # non-glibc libc (e.g. musl/macOS)
+                logger.debug(f"malloc_trim unavailable: {e}")
 
         # Stage 3: sync (best-effort)
         try:
             if hasattr(os, "sync"):
                 os.sync()
-        except Exception:
-            pass
+        except OSError as e:
+            logger.debug(f"os.sync failed: {e}")
 
         after = self._get_current_memory_info()
         freed = max(0.0, before.process_rss_mb - after.process_rss_mb)

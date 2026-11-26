@@ -92,8 +92,9 @@ def convert_brazilian_currency(row_dict: Dict[str, Any]) -> Dict[str, Any]:
             val = str(row_dict["capital_social"]).strip().replace(".", "").replace(",", ".")
             if val:
                 row_dict["capital_social"] = f"{float(val):.2f}"
-    except Exception:
-        pass
+    except (ValueError, TypeError) as e:
+        # Keep the raw value; per-row, so debug level to avoid flooding the log
+        logger.debug(f"Could not parse capital_social {row_dict.get('capital_social')!r}: {e}")
     return row_dict
 
 
