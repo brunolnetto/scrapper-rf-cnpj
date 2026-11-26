@@ -134,11 +134,15 @@ class BatchAccumulator:
             elif not self.is_cancelled():
                 # Schedule next check
                 self._watchdog_timer = Timer(self.timeout_config.watchdog_interval_seconds, watchdog_check)
+                # Daemon: a forgotten watchdog must never keep the process alive.
+                self._watchdog_timer.daemon = True
                 self._watchdog_timer.start()
         
         with self._lock:
             if not self._watchdog_timer and not self._cancelled.is_set():
                 self._watchdog_timer = Timer(self.timeout_config.watchdog_interval_seconds, watchdog_check)
+                # Daemon: a forgotten watchdog must never keep the process alive.
+                self._watchdog_timer.daemon = True
                 self._watchdog_timer.start()
     
     def get_metrics_snapshot(self) -> Dict[str, Any]:
@@ -321,15 +325,19 @@ class AuditService:
             self._cleanup_subbatch_context(subbatch_id)
 
     def _cleanup_batch_context(self, batch_id: uuid.UUID) -> None:
-        """Clean up batch context after completion."""
+        """Clean up batch context after completion (and stop its watchdog)."""
         with self._metrics_lock:
-            self._active_batches.pop(str(batch_id), None)
+            accumulator = self._active_batches.pop(str(batch_id), None)
+        if accumulator is not None:
+            accumulator.cancel()
 
     def _cleanup_subbatch_context(self, subbatch_id: uuid.UUID) -> None:
-        """Clean up subbatch context after completion."""
+        """Clean up subbatch context after completion (and stop its watchdog)."""
         with self._metrics_lock:
-            self._active_subbatches.pop(str(subbatch_id), None)
+            accumulator = self._active_subbatches.pop(str(subbatch_id), None)
             self._subbatch_to_batch.pop(str(subbatch_id), None)
+        if accumulator is not None:
+            accumulator.cancel()
 
     def create_audits_from_files(
         self, files_info: List[FileInfo]
@@ -1006,7 +1014,8 @@ class AuditService:
                 "temp_storage_mb": getattr(accumulator, 'temp_storage_mb', 0)
             }
             
-            # Cleanup
+            # Cleanup: stop the watchdog, otherwise its timer reschedules forever
+            accumulator.cancel()
             self._active_batches.pop(str(batch_id), None)
         
         # Collect comprehensive batch metrics
@@ -1082,7 +1091,8 @@ class AuditService:
                 "recovery_actions": getattr(accumulator, 'recovery_actions', [])
             }
             
-            # Cleanup
+            # Cleanup: stop the watchdog, otherwise its timer reschedules forever
+            accumulator.cancel()
             self._active_subbatches.pop(str(subbatch_id), None)
             self._subbatch_to_batch.pop(str(subbatch_id), None)
         
