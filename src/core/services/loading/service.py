@@ -42,6 +42,8 @@ class AuditHandles:
     table_manifest_id: Optional[str] = None
     file_manifest_id: Optional[str] = None
     batch_id: Optional[str] = None
+    # Deferred checksum/size enrichment of the file manifest, awaited on finalize.
+    metadata_task: Optional[asyncio.Task] = None
 
 
 class FileLoadingService:
@@ -156,11 +158,75 @@ class FileLoadingService:
             if hasattr(self.config, "year") and hasattr(self.config, "month")
             else None
         )
-        return self._duckdb_loader.load(
-            parquet_path=parquet_file,
-            table_name=table_name,
-            batch_date=batch_date,
-        )
+
+        # Audit hierarchy: table → file manifest (this Parquet) → batch →
+        # subbatch (the DuckDB merge step). Audit failures never stop the load.
+        handles = await self._initialize_file_audit(table_name, parquet_file, None)
+        try:
+            result = self._duckdb_loader.load(
+                parquet_path=parquet_file,
+                table_name=table_name,
+                batch_date=batch_date,
+            )
+        except Exception as exc:
+            await self._finalize_file_audit(handles, table_name, (False, str(exc), 0))
+            raise
+        await self._finalize_file_audit(handles, table_name, result)
+        return result
+
+    async def _finalize_file_audit(
+        self,
+        handles: AuditHandles,
+        table_name: str,
+        result: Tuple[bool, Optional[str], int],
+    ) -> None:
+        """Close the file-level audit opened by _initialize_file_audit.
+
+        Records the merge step as a subbatch, marks the file manifest
+        COMPLETED/FAILED with rows and error, completes the batch with its
+        accumulated metrics, and waits for the deferred checksum enrichment.
+        Errors are logged, never raised.
+        """
+        if not self.audit_service:
+            return
+        success, error, rows = result
+        status = AuditStatus.COMPLETED if success else AuditStatus.FAILED
+
+        if handles.batch_id:
+            if success:
+                await self._record_subbatch_completion(handles.batch_id, table_name, 1, rows)
+            else:
+                await self._record_failed_subbatch(handles.batch_id, table_name, 1, error or "unknown error")
+
+        if handles.file_manifest_id:
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self._update_file_manifest,
+                        handles.file_manifest_id, status, int(rows or 0), error,
+                    ),
+                    timeout=5.0,
+                )
+            except Exception as e:
+                logger.warning(f"[LoadingService] Failed to update file manifest for '{table_name}': {e}")
+
+        if handles.batch_id:
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self.audit_service._complete_batch_with_accumulated_metrics,
+                        handles.batch_id, status, None if success else error,
+                    ),
+                    timeout=5.0,
+                )
+            except Exception as e:
+                logger.warning(f"[LoadingService] Failed to complete batch for '{table_name}': {e}")
+
+        if handles.metadata_task is not None:
+            try:
+                await handles.metadata_task
+            except Exception as e:
+                logger.warning(f"[LoadingService] Manifest metadata enrichment failed for '{table_name}': {e}")
 
     def _apply_development_filtering(self, table_files: Optional[List[str]], table_name: str) -> Optional[List[Path]]:
         """Apply development filtering to files."""
@@ -289,7 +355,9 @@ class FileLoadingService:
         handles.file_manifest_id = file_manifest_id
 
         if defer_manifest_checksum and file_manifest_id:
-            asyncio.create_task(
+            # Keep a reference so the task is awaited (and not garbage-collected
+            # or left pending when the event loop closes).
+            handles.metadata_task = asyncio.create_task(
                 self._finalize_manifest_metadata(
                     file_manifest_id=file_manifest_id,
                     file_path=str(file_path)
