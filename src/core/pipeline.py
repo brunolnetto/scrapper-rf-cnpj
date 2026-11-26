@@ -180,31 +180,16 @@ class ReceitaCNPJPipeline(Pipeline):
 
     def _derive_tablename_from_filename(self, filename: str) -> str:
         """
-        Derive the table name from a ZIP filename based on the TABLES_INFO_DICT mapping.
-        
-        Args:
-            filename: The ZIP filename (e.g., "Cnaes.zip", "Empresas1.zip")
-            
-        Returns:
-            The corresponding table name (e.g., "cnae", "empresa")
+        Derive the table name from a ZIP filename (e.g. "Cnaes.zip" -> "cnae",
+        "Empresas1.zip" -> "empresa"). Returns "unknown" for other files.
         """
-        from .constants import TABLES_INFO_DICT
-        
-        # Remove .zip extension and convert to lowercase for matching
-        base_name = filename.replace('.zip', '').lower()
-        
-        # Find the best match based on the label patterns
-        for table_name, table_info in TABLES_INFO_DICT.items():
-            label = table_info["label"].lower()
-            expression = table_info["expression"].lower()
-            
-            # Check if the filename contains the label or expression
-            if label in base_name or expression in base_name:
-                return table_name
+        from .utils.pipeline import table_for_zip_filename
 
-        # If no match found, return a default or log warning
-        logger.warning(f"Could not derive tablename from filename: {filename}")
-        return "unknown"
+        table = table_for_zip_filename(filename)
+        if table is None:
+            logger.warning(f"Could not derive tablename from filename: {filename}")
+            return "unknown"
+        return table
 
     def fetch_audit_data(self) -> List[TableAuditManifest]:
         files_info = self.scrap_data()
