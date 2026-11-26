@@ -16,6 +16,25 @@ from ....utils.zip import extract_zip_file
 from ....core.storage import StorageBackend, create_storage_backend, persist_artifact_manifest
 
 
+class DownloadError(RuntimeError):
+    """Raised when one or more files could not be downloaded or extracted.
+
+    ``failures`` maps each affected table (audit entity) to the error message
+    so callers can report exactly what is missing.
+    """
+
+    def __init__(self, failures: dict[str, str]):
+        self.failures = dict(failures)
+        details = "; ".join(f"{name}: {error}" for name, error in self.failures.items())
+        super().__init__(
+            f"{len(self.failures)} file group(s) failed to download/extract: {details}"
+        )
+
+
+def _audit_label(audit) -> str:
+    return str(getattr(audit, "entity_name", None) or getattr(audit, "source_files", None) or audit)
+
+
 class FileDownloadService:
     def __init__(self, max_workers: int = None, config: ConfigurationService = None, storage_backend: StorageBackend | None = None):
         self.config = config
@@ -86,8 +105,10 @@ class FileDownloadService:
             return self._process_files_serial(url, audits, download_path, extract_path)
 
     def _process_files_parallel(self, url, audits, download_path, extract_path):
+        failures: dict[str, str] = {}
+        results = []
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            futures = [
+            future_to_audit = {
                 executor.submit(
                     self._download_and_extract_files,
                     audit,
@@ -95,43 +116,49 @@ class FileDownloadService:
                     download_path,
                     extract_path,
                     False,
-                )
+                ): audit
                 for audit in audits
-            ]
-            results = []
+            }
             for future in tqdm(
-                as_completed(futures),
+                as_completed(future_to_audit),
                 total=len(audits),
                 desc="Processing Files",
                 unit="file",
             ):
+                audit = future_to_audit[future]
                 try:
                     results.append(future.result())
                 except Exception as e:
-                    logger.error(f"Error during parallel execution: {e}")
-            return results
+                    label = _audit_label(audit)
+                    logger.error(f"Error downloading or extracting files for {label}: {e}")
+                    failures[label] = str(e)
+        if failures:
+            raise DownloadError(failures)
+        return results
 
     def _process_files_serial(self, url, audits, download_path, extract_path):
-        error_count = 0
-        error_basefiles = []
+        failures: dict[str, str] = {}
+        results = []
         total_count = len(audits)
-        # Process audits in order (sorting by file size removed since field no longer exists)
-        for index, audit in enumerate(audits):
+        for index, audit in enumerate(audits, start=1):
             try:
-                audit = self._download_and_extract_files(
-                    audit, url, download_path, extract_path, True
+                results.append(
+                    self._download_and_extract_files(
+                        audit, url, download_path, extract_path, True
+                    )
                 )
-            except OSError as e:
-                logger.error(
-                    f"Error downloading or extracting file for table {audit.entity_name}: {e}"
-                )
-                error_count += 1
-                error_basefiles.append(audit.entity_name)
+            except Exception as e:
+                label = _audit_label(audit)
+                logger.error(f"Error downloading or extracting files for {label}: {e}")
+                failures[label] = str(e)
             finally:
                 logger.info(
-                    f"({index}/{total_count}) files processed. {error_count} errors: {error_basefiles}"
+                    f"({index}/{total_count}) files processed. "
+                    f"{len(failures)} errors: {list(failures)}"
                 )
-        return audits
+        if failures:
+            raise DownloadError(failures)
+        return results
 
     def _download_and_extract_files(
         self, audit, url, download_path, extract_path, has_progress_bar
@@ -149,17 +176,16 @@ class FileDownloadService:
             audit = self._download_zipfile(
                 audit, url, zip_filename, download_path, has_progress_bar
             )
-            if audit:
-                audit = self._extract_zipfile(
-                    audit, zip_filename, download_path, extract_path
-                )
-            return audit
+            return self._extract_zipfile(
+                audit, zip_filename, download_path, extract_path
+            )
         except Exception as e:
-            logger.error(f"Error processing file {zip_filename}: {e}")
-            return None
+            raise RuntimeError(f"{zip_filename}: {e}") from e
 
     @retry(
-        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10)
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        reraise=True,
     )
     def _download_zipfile(
         self,
