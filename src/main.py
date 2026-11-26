@@ -1,6 +1,10 @@
 # Project: ETL - CNPJs da Receita Federal do Brasil
 # Objective: Download, transform, and load Brazilian Federal Revenue CNPJ data
 import argparse
+import logging
+import os
+import sys
+from typing import NoReturn, Optional, Sequence
 
 # Find time bottleneck between calls
 from .setup.config import get_config
@@ -11,7 +15,12 @@ from .core.utils.cli import validate_cli_arguments
 
 from .setup.logging import logger as _logger
 
-def main():
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    """Run the pipeline and return the process exit code.
+
+    Failures propagate as exceptions; :func:`run_cli` maps them to a
+    non-zero exit code.
+    """
     parser = argparse.ArgumentParser(
         description="Run CNPJ ETL pipeline with flexible step selection.",
         epilog="""
@@ -77,7 +86,7 @@ If no year/month specified: Auto-discovers latest available period from Federal 
         help="Delete audit entries for the target year/month before running (allows clean re-run)"
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # Handle default case (no flags = full ETL)
     if not (args.download or args.convert or args.load):
@@ -150,6 +159,48 @@ If no year/month specified: Auto-discovers latest available period from Federal 
         full_refresh=args.full_refresh,
         clear_tables=args.clear_tables,
     )
+    return 0
+
+
+def _exit_code_from_system_exit(exc: SystemExit) -> int:
+    if exc.code is None:
+        return 0
+    if isinstance(exc.code, int):
+        return exc.code
+    return 1
+
+
+def _hard_exit(code: int) -> NoReturn:
+    """Flush logs and streams, then terminate without waiting on threads.
+
+    Some services (database pools, timers, executors) can leave non-daemon
+    threads behind, which would keep the interpreter alive after the run.
+    ``os._exit`` skips that wait, so everything that must reach disk is
+    flushed explicitly first.
+    """
+    logging.shutdown()
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    os._exit(code)
+
+
+def run_cli(argv: Optional[Sequence[str]] = None) -> NoReturn:
+    """CLI entrypoint: run :func:`main` and exit with a meaningful status."""
+    try:
+        code = main(argv)
+    except SystemExit as exc:
+        code = _exit_code_from_system_exit(exc)
+    except KeyboardInterrupt:
+        _logger.error("Pipeline interrupted by user")
+        code = 130
+    except BaseException:
+        _logger.exception("Pipeline failed")
+        code = 1
+    _hard_exit(code)
+
 
 if __name__ == "__main__":
-    main()
+    run_cli()
