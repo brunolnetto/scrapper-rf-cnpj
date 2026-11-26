@@ -150,7 +150,7 @@ def _hard_exit(code: int) -> NoReturn:
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.flush()
-        except Exception:
+        except (OSError, ValueError):  # stream already closed/broken at exit; nothing left to report to
             pass
     os._exit(code)
 

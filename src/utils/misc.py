@@ -133,13 +133,13 @@ def delete_var(var):
     """
     Deletes a variable from memory.
 
+    Note: this only drops the function's own reference; the caller's name
+    still holds the object. Kept for backward compatibility.
+
     Args:
         var: The variable to delete.
     """
-    try:
-        del var
-    except:
-        pass
+    del var
 
 def update_progress(index, total, message):
     """

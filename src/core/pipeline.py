@@ -591,7 +591,7 @@ class ReceitaCNPJPipeline(Pipeline):
                 self.config.pipeline and 
                 self.config.pipeline.data_sink
             )
-        except Exception:
+        except AttributeError:  # partially built config: treat as not ready
             return False
     
     def get_name(self) -> str:

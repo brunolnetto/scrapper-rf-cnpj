@@ -341,8 +341,8 @@ def create_table_info_from_dict(table_name: str, config_dict: Dict[str, Any]) ->
         if not columns and table_model:
             try:
                 columns = [col.name for col in table_model.__table__.columns]
-            except Exception:
-                pass
+            except AttributeError as e:
+                logger.debug(f"Table model {table_model!r} has no SQLAlchemy columns: {e}")
         
         # Inject SCD2 columns if defined in configuration
         scd2_cols = config_dict.get('scd2_columns', [])

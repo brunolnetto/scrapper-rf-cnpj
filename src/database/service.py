@@ -113,8 +113,8 @@ class DatabaseService:
                     try:
                         await conn.execute(f'DROP TABLE IF EXISTS {base.quote_ident(tmp_table)};')
                         self.temp_tables_created.discard(tmp_table)
-                    except Exception:
-                        pass
+                    except Exception as drop_exc:  # in finally: must not mask the original error
+                        logger.warning(f"Could not drop temporary table {tmp_table}: {drop_exc}")
                         
         except Exception as e:
             logger.error(f"Async record loading failed for table '{table_info.table_name}': {e}")
@@ -332,8 +332,8 @@ class DatabaseService:
                         if "does not exist" in str(e).lower():
                             try:
                                 await conn.execute(base.create_temp_table_sql(tmp_table, headers, types_map))
-                            except Exception:
-                                pass  # Will fail on next attempt if still broken
+                            except Exception as recreate_exc:  # next retry attempt will surface it
+                                logger.warning(f"Could not recreate temporary table {tmp_table}: {recreate_exc}")
                         
                         await asyncio.sleep(2 ** attempt + random.uniform(0, 0.5))
                 
