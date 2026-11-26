@@ -15,6 +15,13 @@ from ....utils.misc import get_max_workers
 from ....utils.zip import extract_zip_file
 from ....core.storage import StorageBackend, create_storage_backend, persist_artifact_manifest
 
+CONNECT_TIMEOUT_SECONDS = 30
+DEFAULT_READ_TIMEOUT_SECONDS = 300
+
+
+class IncompleteDownloadError(IOError):
+    """The number of bytes written differs from the advertised Content-Length."""
+
 
 class FileDownloadService:
     def __init__(self, max_workers: int = None, config: ConfigurationService = None, storage_backend: StorageBackend | None = None):
@@ -55,6 +62,16 @@ class FileDownloadService:
         notes["storage_manifests"] = manifests
         audit.notes = notes
         return manifest_key
+
+    def _request_timeout(self) -> tuple[int, int]:
+        """(connect, read) timeout for HTTP requests.
+
+        The read timeout bounds the wait between received bytes, not the
+        whole transfer, so it is safe for multi-GB files.
+        """
+        download_config = getattr(getattr(self.config, "pipeline", None), "download", None)
+        read_timeout = getattr(download_config, "timeout_seconds", None) or DEFAULT_READ_TIMEOUT_SECONDS
+        return CONNECT_TIMEOUT_SECONDS, int(read_timeout)
 
     def _object_key(self, stage: str, filename: str) -> str:
         """Build a deterministic storage key for the configured ingestion period."""
@@ -186,7 +203,9 @@ class FileDownloadService:
             if token:
                 encoded_token = _b64.b64encode(f"{token}:".encode()).decode()
                 _headers["Authorization"] = f"Basic {encoded_token}"
-            with requests.get(file_url, stream=True, headers=_headers) as r:
+            with requests.get(
+                file_url, stream=True, headers=_headers, timeout=self._request_timeout()
+            ) as r:
                 r.raise_for_status()
                 total_size = int(r.headers.get("Content-Length", 0))
                 if has_progress_bar:
@@ -201,6 +220,11 @@ class FileDownloadService:
                                 progress.update(len(chunk))
                 if has_progress_bar and progress:
                     progress.close()
+            written = local_filename.stat().st_size
+            if total_size and written != total_size:
+                raise IncompleteDownloadError(
+                    f"expected {total_size} bytes, got {written}"
+                )
             if self.storage_backend is not None:
                 self.storage_backend.upload_file(
                     local_filename,
@@ -219,6 +243,8 @@ class FileDownloadService:
             logger.error(f"Error downloading {zip_filename}: {e}")
             if has_progress_bar and progress:
                 progress.close()
+            # Never leave a partial archive behind for a later step to trust.
+            local_filename.unlink(missing_ok=True)
             raise
         return audit
 
