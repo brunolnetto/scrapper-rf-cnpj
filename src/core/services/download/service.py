@@ -1,3 +1,4 @@
+import errno
 import os
 import shutil
 from pathlib import Path
@@ -41,6 +42,20 @@ class DownloadError(RuntimeError):
         super().__init__(
             f"{len(self.failures)} file group(s) failed to download/extract: {details}"
         )
+
+
+def _move_into_place(source: Path, target: Path) -> None:
+    """Rename *source* to *target*, copying only across filesystems."""
+    try:
+        os.replace(source, target)
+    except OSError as e:
+        if e.errno != errno.EXDEV:
+            raise
+        tmp_target = target.with_name(f".{target.name}.partial")
+        with source.open("rb") as src, tmp_target.open("wb") as dst:
+            shutil.copyfileobj(src, dst, length=1024 * 1024)
+        os.replace(tmp_target, target)
+        source.unlink()
 
 
 def _audit_label(audit) -> str:
@@ -349,7 +364,10 @@ class FileDownloadService:
             if self.config and not self.config.is_development_mode():
                 max_files = None
 
-            with TemporaryDirectory(prefix="cnpj-extract-") as workspace:
+            # The workspace lives next to the extraction directory (same
+            # filesystem) so extracted files are renamed into place instead of
+            # copied, keeping peak disk usage at one copy of the CSVs.
+            with TemporaryDirectory(prefix=".cnpj-extract-", dir=extract_dir.parent) as workspace:
                 workspace_path = Path(workspace)
                 extracted_files = extract_zip_file(full_path, workspace_path, max_files)
 
@@ -370,8 +388,7 @@ class FileDownloadService:
 
                     local_target = extract_dir / relative_key
                     local_target.parent.mkdir(parents=True, exist_ok=True)
-                    with extracted_file.open("rb") as source, local_target.open("wb") as target:
-                        shutil.copyfileobj(source, target, length=1024 * 1024)
+                    _move_into_place(extracted_file, local_target)
 
             audit.processed_at = datetime.now()
             return audit
