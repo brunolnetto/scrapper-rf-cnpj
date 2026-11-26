@@ -474,13 +474,14 @@ class DuckDBLoader:
         schema_columns: Optional[list] = None
         try:
             pq_path_str = str(parquet_path).replace("\\", "/")
-            schema_columns = [
-                r[0] for r in duckdb.connect(":memory:").execute(
-                    f"DESCRIBE SELECT * FROM read_parquet('{pq_path_str}')"
-                ).fetchall()
-            ]
-        except Exception:
-            pass
+            with duckdb.connect(":memory:") as con:
+                schema_columns = [
+                    r[0] for r in con.execute(
+                        f"DESCRIBE SELECT * FROM read_parquet('{pq_path_str}')"
+                    ).fetchall()
+                ]
+        except duckdb.Error as schema_err:  # observability only; record without columns
+            logger.debug(f"[Observatory] Could not read schema of {parquet_path}: {schema_err}")
 
         try:
             self._observatory.record_load_result(

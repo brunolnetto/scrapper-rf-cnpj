@@ -69,8 +69,8 @@ class BatchAccumulator:
                 self.total_rows += int(rows or 0)
                 try:
                     self.total_bytes += int(bytes_ or 0)
-                except Exception:
-                    pass
+                except (TypeError, ValueError):
+                    logger.debug(f"Ignoring non-numeric byte count {bytes_!r} in batch metrics")
             elif norm_status == AuditStatus.FAILED:
                 self.files_failed += 1
             

@@ -89,12 +89,10 @@ class FileLoadingService:
     def _serialize_notes(self, notes: dict) -> str:
         """Serialize notes dict to JSON."""
         try:
-            return json.dumps(notes)
-        except Exception:
-            try:
-                return json.dumps({"error": "notes_serialization_failed"})
-            except Exception:
-                return "{}"
+            return json.dumps(notes, default=str)
+        except (TypeError, ValueError) as exc:  # e.g. circular references
+            logger.warning(f"Could not serialize audit notes: {exc}")
+            return json.dumps({"error": "notes_serialization_failed"})
 
     def _find_existing_file_manifest(self, file_path_obj: Path, table_manifest_id: str) -> Optional[str]:
         """Find existing file manifest."""
@@ -110,7 +108,8 @@ class FileLoadingService:
                 )
                 row = result.fetchone()
                 return str(row[0]) if row and row[0] else None
-        except Exception:
+        except Exception as exc:  # audit lookup must not stop the load; a new manifest is created instead
+            logger.warning(f"Could not look up existing file manifest for {file_path_obj}: {exc}")
             return None
 
     async def load_table(
