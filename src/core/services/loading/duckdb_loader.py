@@ -404,17 +404,24 @@ class DuckDBLoader:
         # Build final column list (business cols + row_hash)
         dst_cols = ", ".join(pg_cols + ["row_hash"])
 
-        # For reference tables: delete-then-reload (they are small, < 100k rows)
+        # For reference tables: delete-then-reload (they are small, < 100k rows).
+        # Both statements run in one transaction so a failed INSERT rolls back
+        # the DELETE and the previous contents stay in place.
         delete_sql = f"DELETE FROM {pg_table};"
         insert_sql = (
             f"INSERT INTO {pg_table} ({dst_cols}) "
             f"SELECT {select_clause}, {row_hash_expr} "
             f"FROM read_parquet('{pq_path_str}') AS s;"
         )
-        conn.execute(delete_sql)
-        conn.execute(insert_sql)
-
-        count = conn.execute(f"SELECT COUNT(*) FROM {pg_table};").fetchone()[0]
+        conn.begin()
+        try:
+            conn.execute(delete_sql)
+            conn.execute(insert_sql)
+            count = conn.execute(f"SELECT COUNT(*) FROM {pg_table};").fetchone()[0]
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         return count
 
     # ------------------------------------------------------------------
