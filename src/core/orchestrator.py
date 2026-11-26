@@ -55,13 +55,11 @@ class PipelineOrchestrator:
         
         # Validate pipeline configuration
         if not self.pipeline.validate_config():
-            logger.error(f"[ERROR] Invalid configuration for pipeline: {self.pipeline.get_name()}")
-            return None
-        
+            raise ValueError(f"Invalid configuration for pipeline: {self.pipeline.get_name()}")
+
         # Validate strategy parameters
         if not self.strategy.validate_parameters(**kwargs):
-            logger.error(f"[ERROR] Invalid parameters for strategy: {self.strategy.get_name()}")
-            return None
+            raise ValueError(f"Invalid parameters for strategy: {self.strategy.get_name()}")
 
         # --- Lineage ---
         emitter = ConsoleLineageEmitter()
@@ -131,7 +129,4 @@ class PipelineOrchestrator:
             # Calculate and log execution time
             execution_time = time.perf_counter() - start_time
             logger.info(f"[METRICS] Total execution time: {execution_time:.2f} seconds")
-
-            import os
-            os._exit(0)
 
