@@ -28,6 +28,15 @@ from .duckdb_loader import DuckDBLoader, make_duckdb_loader
 from ..observability.observatory import PipelineObservatory
 from ...medallion import CNPJ_LOAD_ORDER
 
+class LoadError(RuntimeError):
+    """Raised after loading when one or more tables failed to load."""
+
+    def __init__(self, failures: Dict[str, str]):
+        self.failures = dict(failures)
+        details = "; ".join(f"{name}: {error}" for name, error in self.failures.items())
+        super().__init__(f"{len(self.failures)} table(s) failed to load: {details}")
+
+
 @dataclass
 class AuditHandles:
     table_manifest_id: Optional[str] = None
@@ -651,17 +660,21 @@ class FileLoadingService:
 
         results = await self.load_multiple_tables(table_to_files)
 
+        failures: Dict[str, str] = {}
         for audit in audit_metadata.audit_list:
             result = results.get(audit.entity_name)
+            audit.completed_at = datetime.now()
             if result and result[0]:  # success
-                audit.completed_at = datetime.now()
                 logger.debug(f"Set completed_at for {audit.entity_name}: success with {result[2]} rows")
-            else:
-                audit.completed_at = datetime.now()
-                if result:
-                    logger.warning(f"Completed {audit.entity_name} with issues: {result[1]}")
-                else:
-                    logger.warning(f"No result recorded for {audit.entity_name}")
+            elif result:
+                logger.error(f"Failed to load {audit.entity_name}: {result[1]}")
+                failures[audit.entity_name] = result[1] or "unknown error"
+            elif audit.entity_name in table_to_files:
+                logger.error(f"No load result recorded for {audit.entity_name}")
+                failures[audit.entity_name] = "no load result recorded"
+
+        if failures:
+            raise LoadError(failures)
 
         return audit_metadata
 
@@ -727,8 +740,13 @@ class FileLoadingService:
                 results[table_name] = (False, error_msg, 0)
                 continue
             
-            # Process table
-            table_result = await self._process_single_table(table_name, table_to_files[table_name])
+            # Process table. An exception for one table must not stop the
+            # others; it is recorded and surfaced by load_data().
+            try:
+                table_result = await self._process_single_table(table_name, table_to_files[table_name])
+            except Exception as e:
+                logger.error(f"[LoadingService] Table '{table_name}' raised: {e}")
+                table_result = (False, str(e), 0)
             results[table_name] = table_result
             
             logger.info(f"[LoadingService] Table '{table_name}' completed: {table_result[2]:,} rows")
@@ -858,6 +876,7 @@ class FileLoadingService:
             from sqlalchemy import text
             
             success, error, rows = table_result
+            audit_status = AuditStatus.COMPLETED if success else AuditStatus.FAILED
             completion_metadata = {
                 "loading_completed": True,
                 "completion_timestamp": datetime.now().isoformat(),
@@ -878,12 +897,14 @@ class FileLoadingService:
                     text('''
                         UPDATE table_audit_manifest 
                         SET completed_at = :completed_at,
+                            status = :status,
                             notes = :metadata_json
                         WHERE entity_name = :entity_name
                           AND completed_at IS NULL
                     '''),
                     {
                         'completed_at': datetime.now(),
+                        'status': audit_status.value,
                         'metadata_json': json.dumps(completion_metadata),
                         'entity_name': table_name
                     }
