@@ -13,7 +13,12 @@ from ....setup.logging import logger
 from ....setup.config import ConfigurationService
 from ....utils.misc import get_max_workers
 from ....utils.zip import extract_zip_file
-from ....core.storage import StorageBackend, create_storage_backend, persist_artifact_manifest
+from ....core.storage import (
+    StorageBackend,
+    create_storage_backend,
+    persist_artifact_manifest,
+    read_artifact_manifest,
+)
 
 CONNECT_TIMEOUT_SECONDS = 30
 DEFAULT_READ_TIMEOUT_SECONDS = 300
@@ -91,6 +96,39 @@ class FileDownloadService:
         download_config = getattr(getattr(self.config, "pipeline", None), "download", None)
         read_timeout = getattr(download_config, "timeout_seconds", None) or DEFAULT_READ_TIMEOUT_SECONDS
         return CONNECT_TIMEOUT_SECONDS, int(read_timeout)
+
+    def _reuse_existing_zip(self, local_filename: Path, object_key: str, expected_size: int) -> str | None:
+        """Reuse a previously downloaded archive instead of downloading it again.
+
+        Returns ``"local"`` when the local file already has the expected size,
+        ``"storage"`` when it was restored from durable storage (whose manifest
+        records the expected size), or ``None`` when it must be downloaded.
+        Without a known ``expected_size`` nothing is reused.
+        """
+        if expected_size <= 0:
+            return None
+
+        if local_filename.is_file() and local_filename.stat().st_size == expected_size:
+            return "local"
+
+        if self.storage_backend is None or self.config is None:
+            return None
+        try:
+            if not self.storage_backend.exists(object_key):
+                return None
+            manifest = read_artifact_manifest(self.storage_backend, object_key)
+            if not manifest or manifest.get("size_bytes") != expected_size:
+                return None
+            self.storage_backend.download_file(object_key, local_filename)
+        except Exception as e:
+            logger.warning(f"Could not restore {object_key} from storage, downloading instead: {e}")
+            local_filename.unlink(missing_ok=True)
+            return None
+
+        if local_filename.stat().st_size != expected_size:
+            local_filename.unlink(missing_ok=True)
+            return None
+        return "storage"
 
     def _object_key(self, stage: str, filename: str) -> str:
         """Build a deterministic storage key for the configured ingestion period."""
@@ -229,23 +267,46 @@ class FileDownloadService:
             if token:
                 encoded_token = _b64.b64encode(f"{token}:".encode()).decode()
                 _headers["Authorization"] = f"Basic {encoded_token}"
+            object_key = (
+                self._object_key("raw/zip", zip_filename)
+                if self.storage_backend is not None and self.config is not None
+                else None
+            )
             with requests.get(
                 file_url, stream=True, headers=_headers, timeout=self._request_timeout()
             ) as r:
                 r.raise_for_status()
                 total_size = int(r.headers.get("Content-Length", 0))
-                if has_progress_bar:
-                    progress = tqdm(
-                        total=total_size, unit="B", unit_scale=True, desc=zip_filename
-                    )
-                with open(local_filename, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=131072):
-                        if chunk:
-                            f.write(chunk)
-                            if has_progress_bar and progress:
-                                progress.update(len(chunk))
-                if has_progress_bar and progress:
-                    progress.close()
+                # Only the headers have been read so far: when an identical
+                # archive is already available the body is never transferred.
+                reused = self._reuse_existing_zip(local_filename, object_key, total_size)
+                if reused is None:
+                    if has_progress_bar:
+                        progress = tqdm(
+                            total=total_size, unit="B", unit_scale=True, desc=zip_filename
+                        )
+                    with open(local_filename, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=131072):
+                            if chunk:
+                                f.write(chunk)
+                                if has_progress_bar and progress:
+                                    progress.update(len(chunk))
+                    if has_progress_bar and progress:
+                        progress.close()
+
+            if reused is not None:
+                logger.info(f"Reusing {zip_filename} from {reused} ({total_size} bytes); skipping download")
+                if (
+                    reused == "local"
+                    and self.storage_backend is not None
+                    and object_key is not None
+                    and not self.storage_backend.exists(object_key)
+                ):
+                    self.storage_backend.upload_file(local_filename, object_key)
+                    self._record_storage_manifest(audit, local_filename, object_key, "raw/zip")
+                audit.downloaded_at = datetime.now()
+                return audit
+
             written = local_filename.stat().st_size
             if total_size and written != total_size:
                 raise IncompleteDownloadError(

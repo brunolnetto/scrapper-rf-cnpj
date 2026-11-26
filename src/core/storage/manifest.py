@@ -9,6 +9,25 @@ from pathlib import Path
 from .base import StorageBackend, PathLike
 
 
+def manifest_key_for(object_key: str) -> str:
+    """Storage key of the JSON manifest that describes *object_key*."""
+    return f"metadata/{object_key}.json"
+
+
+def read_artifact_manifest(storage: StorageBackend, object_key: str) -> dict | None:
+    """Return the manifest of *object_key*, or None when it is missing or unreadable."""
+    manifest_key = manifest_key_for(object_key)
+    try:
+        if not storage.exists(manifest_key):
+            return None
+        with tempfile.TemporaryDirectory(prefix="cnpj-manifest-") as workspace:
+            manifest_path = Path(workspace) / "manifest.json"
+            storage.download_file(manifest_key, manifest_path)
+            return json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
 def persist_artifact_manifest(
     storage: StorageBackend,
     artifact_path: PathLike,
@@ -47,7 +66,7 @@ def persist_artifact_manifest(
         },
         "recorded_at": datetime.now(timezone.utc).isoformat(),
     }
-    manifest_key = f"metadata/{object_key}.json"
+    manifest_key = manifest_key_for(object_key)
 
     with tempfile.TemporaryDirectory(prefix="cnpj-manifest-") as workspace:
         manifest_path = Path(workspace) / "manifest.json"
