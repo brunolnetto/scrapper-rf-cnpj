@@ -38,76 +38,51 @@ class DownloadOnlyStrategy:
 
 
 class DownloadAndLoadStrategy:
-    """Strategy for downloading and loading data directly, skipping conversion."""
-    
+    """Strategy for downloading and loading data (``--download --load``).
+
+    The loader is Parquet-only (DuckDB + source contracts), so the downloaded
+    CSVs are converted to Parquet as an intermediate step before loading.
+    """
+
     def get_name(self) -> str:
         return "Download+Load"
-    
+
     def validate_parameters(self, **kwargs) -> bool:
         return True  # No specific parameters required
-    
+
     def execute(self, pipeline: Pipeline, config_service, **kwargs) -> Optional[Any]:
-        logger.info("[DOWNLOAD+LOAD] Running download+load strategy (skip conversion)...")
-        
-        try:
-            # Download data first
-            downloaded_files = pipeline.retrieve_data()
-            if not downloaded_files:
-                logger.error("[DOWNLOAD+LOAD] Download failed, no files retrieved")
-                return None
-            
-            logger.info(f"[DOWNLOAD+LOAD] Downloaded {len(downloaded_files)} file(s), proceeding with direct CSV loading")
-            
-            # Load CSV files directly without conversion
-            audit_metadata = pipeline.load_csv_files_directly()
-            if not audit_metadata:
-                logger.warning("[DOWNLOAD+LOAD] Direct CSV loading returned no results")
-                return None
-                
-            logger.info("[DOWNLOAD+LOAD] Successfully completed download+load without conversion")
-            return audit_metadata
-            
-        except (OSError, IOError, ValueError, RuntimeError) as e:
-            logger.error(f"[DOWNLOAD+LOAD] Strategy failed: {e}")
-            logger.info("[DOWNLOAD+LOAD] Falling back to standard ETL flow...")
-            return self._execute_standard_flow(pipeline, config_service, **kwargs)
-    
-    def _execute_standard_flow(self, pipeline: Pipeline, config_service, **kwargs) -> Optional[Any]:
-        """Fallback to standard download -> convert -> load flow."""
-        try:
-            # Download
-            downloaded_files = pipeline.retrieve_data()
-            if not downloaded_files:
-                return None
-            
-            # Create audit metadata for loading
-            year = kwargs.get('year', config_service.year)
-            month = kwargs.get('month', config_service.month)
-            download_path = str(config_service.pipeline.get_temporal_download_path(year, month))
-            audit_metadata = pipeline.audit_service.create_audit_metadata(downloaded_files, download_path)
-            
-            # Insert table audits before loading (do not create file manifests yet)
-            pipeline.audit_service.insert_audits(audit_metadata, create_file_manifests=False)
-            
-            # Convert
-            converted_files = pipeline.convert_to_parquet(audit_metadata)
-            if not converted_files:
-                logger.warning("[DOWNLOAD+LOAD] Conversion failed in fallback")
-                return None
-            
-            # Load data using the proper method
-            loading_result = asyncio.run(pipeline.data_loader.load_data(audit_metadata))
+        logger.info("[DOWNLOAD+LOAD] Running download+load strategy...")
 
-            # on shutdown (also sync) close resources:
-            asyncio.run(pipeline.data_loader.close_resources())
+        audits = pipeline.retrieve_data()
+        if not audits:
+            logger.warning("[DOWNLOAD+LOAD] No files were downloaded")
+            return None
 
-            logger.info("[DOWNLOAD+LOAD] ETL flow completed successfully")
-            
-            return loading_result
-            
-        except (OSError, IOError, ConnectionError, TimeoutError, ValueError, RuntimeError) as e:
-            logger.error(f"[DOWNLOAD+LOAD] Fallback strategy failed: {e}")
-            raise
+        year = kwargs.get('year') or config_service.year
+        month = kwargs.get('month') or config_service.month
+        download_path = str(config_service.pipeline.get_temporal_download_path(year, month))
+
+        audit_metadata = pipeline.audit_service.create_audit_metadata(audits, download_path)
+        # Insert table audits before loading (file manifests are created per file later)
+        pipeline.audit_service.insert_audits(audit_metadata, create_file_manifests=False)
+
+        logger.info("[DOWNLOAD+LOAD] Converting to Parquet (required by the loader)...")
+        pipeline.convert_to_parquet(audit_metadata)
+
+        loader = pipeline.data_loader
+        try:
+            asyncio.run(loader.load_data(audit_metadata))
+        finally:
+            asyncio.run(loader.close_resources())
+
+        if config_service.pipeline.delete_files:
+            from ..utils.misc import remove_folder
+            remove_folder(download_path)
+            remove_folder(str(config_service.pipeline.get_temporal_extraction_path(year, month)))
+            logger.info("[DOWNLOAD+LOAD] Cleaned up temporary files")
+
+        logger.info("[DOWNLOAD+LOAD] Download+load completed successfully")
+        return audit_metadata
 
 
 class DownloadAndConvertStrategy:
