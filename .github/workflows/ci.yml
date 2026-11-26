@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.13"
+      - run: uv sync --locked --only-dev
+      # Blocking: rules that catch real bugs (undefined names, syntax errors,
+      # redefinitions, invalid comparisons).
+      - name: Ruff (blocking rules)
+        run: uv run --no-sync ruff check src tests --select F821,F822,F823,F811,F63,F7,E9
+      # Full configured rule set, reported as annotations until the existing
+      # backlog is cleaned up; then drop continue-on-error.
+      - name: Ruff (full report)
+        continue-on-error: true
+        run: uv run --no-sync ruff check src tests --output-format=github
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --locked --all-extras
+      # Docker is available on ubuntu-latest for the testcontainers PostgreSQL tests.
+      - run: uv run --no-sync pytest
