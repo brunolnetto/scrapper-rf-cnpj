@@ -4,10 +4,6 @@ from typing import Protocol, Optional, Any
 class Pipeline(Protocol):
     """Pipeline interface for orchestrator agnosticism."""
     
-    def run(self, **kwargs) -> Optional[Any]:
-        """Execute the pipeline with given parameters."""
-        ...
-    
     def validate_config(self) -> bool:
         """Validate pipeline configuration."""
         ...
